@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/apple-icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Narra — 将提示词与学习资料转化为结构化智能讲解内容的多智能体平台。"
+    />
+    <title>Narra</title>
+    <script>
+      // 首帧前应用主题，避免暗色模式闪白
+      ;(function () {
+        try {
+          var m = localStorage.getItem('narra-theme') || 'system'
+          var dark =
+            m === 'dark' ||
+            (m === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          if (dark) document.documentElement.classList.add('dark')
+        } catch (e) {}
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
