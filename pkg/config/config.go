@@ -6,6 +6,7 @@ import "time"
 type Config struct {
 	App      AppConfig      `mapstructure:"app"`
 	Database DatabaseConfig `mapstructure:"database"`
+	LLM      LLMConfig      `mapstructure:"llm"`
 	JWT      JWTConfig      `mapstructure:"jwt"`
 	Log      LogConfig      `mapstructure:"log"`
 	CORS     CORSConfig     `mapstructure:"cors"`
@@ -43,6 +44,20 @@ type RedisConfig struct {
 	Password string `mapstructure:"password"`
 	DB       int    `mapstructure:"db"`
 	PoolSize int    `mapstructure:"pool_size"`
+}
+
+// LLMConfig 大模型配置，喂给 Eino 的 ChatModel。
+//
+// 平铺而不是 provider 列表，是因为 V1 只用一家：OpenAI、DeepSeek、通义走的都是
+// OpenAI 兼容协议，换一家只需改 BaseURL 和 Model。将来真要多厂商并存、按课程选模型时，
+// 再改成分组结构，并把选中的 provider 记进 classrooms.generation_config（§4.2）。
+//
+// APIKey 不要写进配置文件：走环境变量 LLM_API_KEY 覆盖（见 loader.go）。
+type LLMConfig struct {
+	APIKey  string        `mapstructure:"api_key"`  // 密钥
+	BaseURL string        `mapstructure:"base_url"` // 接口地址，如 https://api.openai.com/v1
+	Model   string        `mapstructure:"model"`    // 模型 ID，如 gpt-4o-mini
+	Timeout time.Duration `mapstructure:"timeout"`  // 单次请求超时
 }
 
 // JWTConfig JWT 配置

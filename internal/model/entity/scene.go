@@ -13,29 +13,31 @@ const (
 	SceneTypeComplete    = "complete" // 课程完成页
 )
 
-// 场景内容状态 scenes.content_status（§5.2）。
+// 场景状态 scenes.status（§5.2）。
+//
+// 只有一个状态，不拆 content / narration 两个。曾经拆过，理由是「页面好了但讲解还没好」这个
+// 中间态；但进门条件本来就是「文本和音频都齐」，这个中间态没有任何消费方——前端 data/scenes.ts
+// 也一直只有一个 SceneStatus 字段。Ready 的含义是页面 JSON 与它全部讲解段落都已就绪。
 const (
-	SceneContentStatusPending    = "pending"    // 已有大纲，等待生成页面 JSON
-	SceneContentStatusGenerating = "generating" // 正在生成页面 JSON
-	SceneContentStatusReady      = "ready"      // 页面 JSON 已生成，可供前端渲染
-	SceneContentStatusFailed     = "failed"     // 生成失败，可重试
-)
-
-// 场景讲解状态 scenes.narration_status（§5.2）。
-const (
-	SceneNarrationStatusPending    = "pending"    // 页面 JSON 已生成，等待生成讲解段落
-	SceneNarrationStatusGenerating = "generating" // 正在生成老师讲解段落
-	SceneNarrationStatusReady      = "ready"      // 所有讲解段落均已生成
-	SceneNarrationStatusFailed     = "failed"     // 讲解生成失败，可重试
+	SceneStatusPending    = "pending"    // 已有大纲，等待生成
+	SceneStatusGenerating = "generating" // 正在生成页面 JSON 或讲解段落
+	SceneStatusReady      = "ready"      // 页面 JSON 与全部讲解段落均已生成，可完整播放
+	SceneStatusFailed     = "failed"     // 生成失败；跳过该场景、继续生成后面的，这一页不会再补齐
 )
 
 // Scene 课程场景/课件页，对应表 scenes（设计文档 §4.4）。
 //
-// 页面内容与老师讲解拆成两个独立状态，用于准确表达「页面已经生成，但讲解还在生成」
-// 的中间状态；两者都为 ready 时场景才可完整播放（§5.2）。
+// Status 是单一状态，同时覆盖页面 JSON 与讲解段落两关：两者都就绪才算 Ready。
+// 讲解段落各自的状态在 SceneSegment.Status（§4.5），本表的 Status 是它的汇总——
+// 只要还有一个段落没就绪，本场景就不是 Ready。
 //
-// 约束（§4.4）：UNIQUE (classroom_id, sort_order)，以及 Type、ContentStatus、
-// NarrationStatus 三个 CHECK，均写在 SQL migration 中。
+// 约束（§4.4）：UNIQUE (classroom_id, sort_order)，以及 Type、Status 两个 CHECK，
+// 均写在 SQL migration 中。
+//
+// 那条唯一约束用普通 UNIQUE 即可：生成流程按顺序逐页插入，插完没有任何入口会调换顺序
+// （Pro 工作台整体推迟到 V2，设计文档 §9.5）。将来真做工作台时要改成 DEFERRABLE
+// INITIALLY IMMEDIATE —— 重排会让 sort_order 中途出现同号，普通唯一约束在语句结束时
+// 就会报冲突，重排做不下去。届时配合 SET CONSTRAINTS ... DEFERRED 把检查推到 COMMIT。
 type Scene struct {
 	BaseModel
 
@@ -44,8 +46,7 @@ type Scene struct {
 	Type        string `gorm:"column:type;type:varchar(32);not null" json:"type"`    // 场景分类标签，不参与渲染；slide | quiz | interactive | pbl | complete
 	Title       string `gorm:"column:title;type:varchar(200);not null" json:"title"` // 场景标题；由大模型产出，写入前须按字符截断到 200 以内
 
-	ContentStatus   string `gorm:"column:content_status;type:varchar(32);not null" json:"content_status"`     // 页面 JSON 生成状态，见 §5.2
-	NarrationStatus string `gorm:"column:narration_status;type:varchar(32);not null" json:"narration_status"` // 老师讲解段落生成状态，见 §5.2
+	Status string `gorm:"column:status;type:varchar(32);not null" json:"status"` // 场景状态，见 §5.2；Ready = 页面 JSON 与全部讲解段落都已就绪
 
 	// Content 场景内容，无论场景 Type 是什么都统一为 {"blocks":[...]}，例如：
 	//   {"blocks":[{"key":"intro-variable","type":"paragraph","content":"..."}]}
@@ -60,7 +61,7 @@ type Scene struct {
 
 	// ErrorMessage 本场景生成失败的错误摘要。一页失败不会中断流程——跳过它、继续生成后面的
 	// 场景，所以这一页为什么没出得来只有这里记。与 classrooms.generation_error 分工不同：
-	// 那边记的是「整条流程为什么停了」，这一列记的是「这一页为什么没生成出来」。
+	// 那边记的是「这门课为什么没做完」，这一列记的是「这一页为什么没生成出来」。
 	// 只写能给人看的摘要，禁止写入原始 API 响应、堆栈和密钥，落库前按字符截断（建议 500）。
 	// 类型用 text 而非 varchar：varchar 超长是报错，会把整个生成事务回滚掉。
 	ErrorMessage *string `gorm:"column:error_message;type:text" json:"error_message"`

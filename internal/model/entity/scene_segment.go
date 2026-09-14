@@ -16,7 +16,13 @@ const (
 //
 // 本表不重复保存内容块类型：类型统一由 scenes.content.blocks[].type 提供，前端通过
 // ContentKey 找到对应 block 后读取，避免数据库字段与场景 JSON 类型不一致。
+//
+// 本表也不记录发言角色：讲解只由教师发声（§4.3），存下来就是个恒等于教师行的常量，
+// 还要额外校验它属不属于本课程——而这条「属于同一课程」的约束从本表这一侧根本写不成
+// 普通外键（本表只直接挂 scene_id，要经由 scenes.classroom_id 才推得出课程）。
+// 所以干脆不存，发言角色就是教师，由 classroom_agents 里 agent_key = 'teacher' 那一行确定。
 // 教师音色同样不在此重复保存，从 classroom_agents.voice_id 读取。
+// 将来若开放多角色讲解，再加一列发言角色外键。
 //
 // Status 覆盖讲稿与 TTS 两关，但只有一个值，所以失败时要靠 Text 区分是哪一关挂的：
 // Text 非空 + failed = 讲稿写出来了、挂的是音频合成，重试只需重做音频；Text 为空 + failed
@@ -29,14 +35,13 @@ const (
 // 约束（§4.5）：UNIQUE (scene_id, content_key)、UNIQUE (scene_id, sort_order)。
 // scene_id 同时参与这两个复合唯一约束，而 GORM 的 tag 在同一字段上无法声明两个复合索引
 // （ParseTagSetting 对重复 key 是覆盖而非追加），因此这两条约束写在 SQL migration 中。
+//
+// UNIQUE (scene_id, sort_order) 用普通 UNIQUE 即可，理由与 scenes 那条相同（V1 不重排，
+// 见 §4.4）。将来工作台落地时，两条要一起改成可延迟，讲解顺序会跟着页面重排一起挪位。
 type SceneSegment struct {
 	BaseModel
 
 	SceneID uint64 `gorm:"column:scene_id;not null" json:"scene_id"` // 所属场景；级联删除
-
-	// SpeakerClassroomAgentID 发言角色，必须属于同一课程。
-	// V1 默认由教师角色讲解，保留角色外键以支持未来多角色讲解。
-	SpeakerClassroomAgentID uint64 `gorm:"column:speaker_classroom_agent_id;not null" json:"speaker_classroom_agent_id"`
 
 	ContentKey string `gorm:"column:content_key;type:varchar(120);not null" json:"content_key"` // 对应场景 JSON 内容块的稳定 key；由大模型产出，写入前须按字符截断到 120 以内
 	SortOrder  int32  `gorm:"column:sort_order;not null" json:"sort_order"`                     // 讲解播放顺序

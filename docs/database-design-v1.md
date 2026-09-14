@@ -1,9 +1,9 @@
-# Narra V1 数据库设计（审核稿）
+# Narra V1 数据库设计（定稿）
 
-> 状态：待审核  
+> 状态：已定稿（2026-09-14）  
 > 适用版本：本地单机部署 V1  
 > 数据库：PostgreSQL 16+  
-> 最后更新：2026-09-11
+> 最后更新：2026-09-14
 
 ---
 
@@ -16,7 +16,8 @@ Narra V1 是本地部署的个人/团队内使用版本。数据库只保存业�
 - **不启用**登录、注册、鉴权、用户、角色、权限和多租户：不在任何路由上挂鉴权中间件，不校验任何身份。
 - 不创建 `users`、`roles`、`permissions`、`api_keys` 等表。
 - 不在数据库保存模型 API Key、数据库密码、TLS 私钥或其他密钥。
-- 上下文、会话消息和记忆必须持久化到 PostgreSQL；Redis 仅用于加速读取、短期上下文缓存与实时任务状态，不能作为唯一存储。
+- **V1 不做 Pro 工作台**：工作台会话、消息、课程记忆这三张表及其相关接口整体推迟到 V2（见 §9.5）。
+- 不用 Redis 当唯一存储：Redis 只用于加速读取与实时任务状态。
 
 关于鉴权代码：仓库中已存在 JWT 与鉴权中间件的骨架（`pkg/jwt/`、`internal/middleware/auth.go`）以及 `configs` 中的 `jwt` 配置段。这是**为后续迭代预留的骨架，V1 不启用**——当前无任何调用方，不挂载到路由，配置加载也不校验 `jwt.secret`。将来启用时需同时完成两件事：替换 `jwt.secret` 的占位值，并按 §9.1 创建用户表。
 
@@ -24,9 +25,7 @@ Narra V1 是本地部署的个人/团队内使用版本。数据库只保存业�
 
 - 创建、整理、删除和恢复本地课程。
 - 一节课程有多个有序场景（讲解、测验、互动、项目实践、完成页）。
-- 课程生成在后台进行：用户可中途离开，回来按课程状态继续查看；首页场景的内容与讲解都生成完毕即可进入课堂，其余场景继续生成。生成失败时整门课程置为失败并保留原因，用户回首页重新发起。
-- Pro 工作台以课程为入口：每个会话必须归属一门课程；在会话中通过对话修改该课程的课件页。V1 不提供撤销。
-- 工作台 Agent 可调用 `web_search`（与课堂 Agent 是同一个工具）和 `doc_extract` 两个工具。素材上传、解析与 RAG 检索由其他模块负责，本设计只提供工作台会话作为素材归属的锚点。
+- 课程生成在后台进行：用户可中途离开，回来按课程状态继续查看；首页场景的内容与讲解都生成完毕即可进入课堂，其余场景继续生成。生成中断时保留原因，用户回首页重新发起；若中断时首页已经就绪，课程仍可进入，只是剩余场景不会再生成（见 §5.1）。
 - 为未来增加用户体系预留扩展路径，但 V1 的任意业务记录都不依赖用户表。
 
 ---
@@ -40,19 +39,13 @@ folders
                  ├───── 0..N scenes
                  │             │
                  │             └───── 0..N scene_segments
-                 ├───── 0..N classroom_agents
-                 ├───── 0..N classroom_memories
-                 └───── 1..N workbench_sessions
-                                      │
-                                      └───── 0..N workbench_messages
+                 └───── 0..N classroom_agents
 ```
 
 ### 2.1 关系说明
 
 - 文件夹可为空：未归档课程的 `classrooms.folder_id` 为 `NULL`。
-- 课程是核心聚合根；场景、角色快照、讲解段落、课程记忆和工作台会话均从属于课程。
-- 工作台会话**必须**归属某一门课程，不存在无课程的会话；进入工作台首先选择课程，选定后默认开一个新会话，历史会话按课程分组查看。
-- 工作台会话的产出是直接修改所属课程的场景，因此会话与 `scenes` 之间不设直接外键，通过 `classroom_id` 间接关联。
+- 课程是核心聚合根；场景、角色快照与讲解段落均从属于课程。
 
 ---
 
@@ -62,7 +55,7 @@ folders
 |---|---|
 | 主键 | `bigint` + `GENERATED ALWAYS AS IDENTITY`（即 `bigserial` 语义）；Go 侧对应 `uint64` |
 | 时间 | `timestamptz`，统一存 UTC |
-| 删除策略 | **全部硬删除，无软删除**；文件夹和课程直接删除，课程从属数据级联删除，含工作台会话及其下消息，以及课程记忆 |
+| 删除策略 | **全部硬删除，无软删除**；文件夹和课程直接删除，课程的从属数据（场景、讲解段落、课程角色）级联删除 |
 | 可变结构 | 使用 `jsonb`，但必须在应用层做版本与 schema 校验 |
 | 文本编码 | UTF-8 |
 | 命名 | 表和列使用 `snake_case`；枚举值使用小写英文 |
@@ -79,7 +72,7 @@ updated_at timestamptz NOT NULL DEFAULT now()
 
 **V1 不使用软删除。** 业务实体一律硬删除，删除的连带影响交给 `CASCADE`（§6）。会话删除是硬删除，其下的消息随之级联删除；因此没有任何表带 `deleted_at`，查询也不需要过滤已删除行。
 
-**文本列的长度是硬约束，不是提示。** PostgreSQL 的 `varchar(n)` 超长是**报错**，不是静默截断——一次超长会回滚整个事务，把同一批已经写好的数据一起丢掉。因此凡是可能由大模型产出或来自用户自由输入的 `varchar` 列，写入前必须在应用层**按字符**（不是按字节）截断到上限以内；数据库的长度约束只负责拦下漏网的脏数据。目前属于这一类的是 `classroom_agents.name` / `persona`、`scenes.title`、`scene_segments.content_key`、`workbench_sessions.title`。
+**文本列的长度是硬约束，不是提示。** PostgreSQL 的 `varchar(n)` 超长是**报错**，不是静默截断——一次超长会回滚整个事务，把同一批已经写好的数据一起丢掉。因此凡是可能由大模型产出或来自用户自由输入的 `varchar` 列，写入前必须在应用层**按字符**（不是按字节）截断到上限以内；数据库的长度约束只负责拦下漏网的脏数据。目前属于这一类的是 `classroom_agents.name` / `persona`、`scenes.title`、`scene_segments.content_key`。
 
 ---
 
@@ -106,7 +99,7 @@ updated_at timestamptz NOT NULL DEFAULT now()
 | `requirement` | `text` | 非空 | 用户原始生成需求 |
 | `mode` | `varchar(32)` | 非空，CHECK | `vocational` 或 `interactive` |
 | `status` | `varchar(32)` | 非空，CHECK | 课程当前状态，见 5.1 |
-| `generation_error` | `text` | 可空 | 整条生成流程中断的原因；仅 `status = 'failed'` 时有值 |
+| `generation_error` | `text` | 可空 | 这次生成没能把课做完整的原因；为空表示课程生成完整、不必再等。`failed` 与 `playable` 上都可能出现，见 §5.1 |
 | `generation_config` | `jsonb` | 非空，默认 `{}` | 模型、搜索、解析器等本次生成快照 |
 | `agent_config` | `jsonb` | 非空，默认 `{}` | 角色选择模式、自动生成策略与 TTS 配置 |
 | `created_at` | `timestamptz` | 非空 | 创建时间 |
@@ -115,11 +108,22 @@ updated_at timestamptz NOT NULL DEFAULT now()
 约束：
 
 - `CHECK (mode IN ('vocational', 'interactive'))`。
-- `CHECK (status IN ('draft', 'outlining', 'generating', 'playable', 'ready', 'failed'))`，与 §5.1 一一对应；增减状态值时必须同时改这里。
+- `CHECK (status IN ('generating', 'playable', 'ready', 'failed'))`，与 §5.1 一一对应；增减状态值时必须同时改这里。
 
-生成状态直接记在本表上，**没有独立的生成任务表**。V1 一次生成只跑一趟：不并发、不重试、不取消、不支持断点续传，因此「这门课生成到哪了」就是 `status`、「为什么停了」就是 `generation_error`。将来若开放「对同一门课重新生成」，才需要单独的表记录每一趟任务。
+生成状态直接记在本表上，**没有独立的生成任务表**。V1 一次生成只跑一趟：不并发、不重试、不取消、不支持断点续传，因此「这门课生成到哪了」就是 `status`、「为什么没做完」就是 `generation_error`。将来若开放「对同一门课重新生成」，才需要单独的表记录每一趟任务。
 
-`generation_error` 与 `scenes.error_message` 分工不同：后者记的是「这一页为什么没生成出来」，记的时候整条流程还在往下跑；前者记的是「整个流程为什么停了」。大纲阶段挂掉时一条场景都还没建，`scenes` 表里空无一物，这一列是唯一的失败记录。两者同样只写能给人看的摘要，禁止写入原始 API 响应、堆栈和密钥，落库前按字符截断。
+**`generation_error` 有值 ⇔ 这门课不会再生成了。** 它和 `status` 回答的是两个不同的问题：`status` 只回答「**能不能进课堂**」，这一列只回答「**还会不会继续生成**」。两者是正交的，所以 `playable` 配一个非空的 `generation_error` 是合法状态，不是脏数据。
+
+会写这一列的有两种情况：
+
+- **流程中断**——进程挂了、崩溃了，剩下的场景永远不会再生成。
+- **流程跑完了，但带着洞**——某些页面生成失败被跳过（§4.4），而 V1 没有单页重试（§5.1），这些洞就永远留在那儿了。这种情况尤其容易漏：流程自己跑到了终点，`status` 停在 `playable`，没有任何东西会再来改它；不留一条记录的话，前端会一直显示「正在生成」，等一个不会来的结果。
+
+相应地，`status = 'ready'` 的含义收紧为「**全部完整生成，没有洞**」。
+
+**这一列有值不等于课程进不去。** 流程中断时如果首页已经生成好（`status = 'playable'`），课程仍然可以进入，只是后面的场景不会再补上。把这种课打成 `failed` 是错的：它在中断前用户明明进得去，打完反而进不去了。
+
+`generation_error` 与 `scenes.error_message` 分工不同：后者记的是「这一页为什么没生成出来」，记的时候整条流程还在往下跑；前者记的是「这门课为什么没做完」。大纲阶段挂掉时一条场景都还没建，`scenes` 表里空无一物，这一列是唯一的失败记录。两者同样只写能给人看的摘要，禁止写入原始 API 响应、堆栈和密钥，落库前按字符截断（`generation_error` 同样建议 500）。
 
 `generation_config` 推荐结构：
 
@@ -151,7 +155,7 @@ updated_at timestamptz NOT NULL DEFAULT now()
 
 `preset` 表示用户手动选择代码中已有的角色；`auto` 表示系统从这 6 个槽位中自动选择，并由**大模型重写名称、人设与提示词**。无论哪种来源，大模型都不创建新的角色定义：`role`、`role_type`、`color` 由后端按槽位从代码预设取出，`avatar` 与 `voice_id` 在 `auto` 下由大模型从那 6 套预设值中挑选，且必须经应用层校验。写入课程后的 `name`、`persona`、`role`、`role_type`、`system_prompt`、`voice_id`、`avatar` 和 `color` 都是本课程的冻结快照。
 
-这张表保存一节课程最终实际使用的角色。它不是全局角色库；角色的默认定义、系统提示词模板和可用音色目录仍由代码/配置维护。课程生成时将最终使用的角色信息复制到本表，保证后续回放和重试不受默认配置变化影响。
+这张表保存一节课程最终实际使用的角色。它不是全局角色库；角色的默认定义、系统提示词模板和可用音色目录仍由代码/配置维护。课程生成时将最终使用的角色信息复制到本表，保证后续回放不受默认配置变化影响。
 
 生成时哪些字段会变：
 
@@ -224,8 +228,7 @@ updated_at timestamptz NOT NULL DEFAULT now()
 | `sort_order` | `integer` | 非空，`>= 0` | 场景顺序，从 0 开始 |
 | `type` | `varchar(32)` | 非空，CHECK | `slide`、`quiz`、`interactive`、`pbl`、`complete` |
 | `title` | `varchar(200)` | 非空 | 场景标题；由大模型产出，写入前须按字符截断 |
-| `content_status` | `varchar(32)` | 非空，CHECK | 页面 JSON 生成状态，见 5.2 |
-| `narration_status` | `varchar(32)` | 非空，CHECK | 老师讲解段落生成状态，见 5.2 |
+| `status` | `varchar(32)` | 非空，CHECK | 场景状态，见 5.2；`ready` 表示页面 JSON 与全部讲解段落都已就绪 |
 | `content` | `jsonb` | 非空，默认 `{}` | 场景内容，统一为 `{"blocks":[...]}`，前端按每个 block 的 `type` 渲染 |
 | `error_message` | `text` | 可空 | 本场景生成失败的错误摘要，写入规则见下 |
 | `created_at` | `timestamptz` | 非空 | 创建时间 |
@@ -233,9 +236,13 @@ updated_at timestamptz NOT NULL DEFAULT now()
 
 约束：
 
-- `UNIQUE (classroom_id, sort_order)`。
+- `UNIQUE (classroom_id, sort_order)`，普通唯一约束即可。
 - `CHECK (type IN ('slide', 'quiz', 'interactive', 'pbl', 'complete'))`。
-- `CHECK (content_status IN ('pending', 'generating', 'ready', 'failed'))`、`CHECK (narration_status IN ('pending', 'generating', 'ready', 'failed'))`，与 §5.2 一一对应。
+- `CHECK (status IN ('pending', 'generating', 'ready', 'failed'))`，与 §5.2 一一对应。
+
+**`sort_order` 从 0 开始、连续、不重复。** 生成流程按顺序逐页插入，插进去之后没有任何入口会调换顺序，所以普通唯一约束就够——它保证同一门课里不会有两页占同一个位置。
+
+V1 没有「重排页面」这个功能（Pro 工作台整体推迟到 V2，见 §9.5）。**将来做工作台时，这条约束要改成 `DEFERRABLE INITIALLY IMMEDIATE`**：重排要把受影响的 `sort_order` 整体挪位，挪的过程中必然出现两行暂时同号——把原来第 3 页改成 4 时，第 4 页还是 4——而普通唯一约束在**每条语句结束时**就检查，会当场报冲突，重排根本做不下去。改成可延迟之后，重排那个事务在开头加一句 `SET CONSTRAINTS scenes_classroom_id_sort_order_key DEFERRED;` 把检查推到 `COMMIT`，中间态的同号在提交前自己消失（注意这条语句的作用域只到事务结束）。代价是**可延迟的唯一约束不能当 `INSERT ... ON CONFLICT` 的仲裁者**，PostgreSQL 明确不支持，将来要在这张表上做 upsert 时一并考虑。
 
 `content` 与前端场景渲染模型一致，统一为 `blocks` 数组，前端按**每个 block 的 `type`** 选择渲染方式：
 
@@ -294,7 +301,6 @@ scenes.content
 |---|---|---|---|
 | `id` | `bigint` | PK | 讲解段落 ID |
 | `scene_id` | `bigint` | FK，非空 | 所属场景；级联删除 |
-| `speaker_classroom_agent_id` | `bigint` | FK，非空 | 发言角色；通常关联本课程的教师角色 |
 | `content_key` | `varchar(120)` | 非空 | 对应场景 JSON 内容块的稳定 key；由大模型产出，写入前须按字符截断 |
 | `sort_order` | `integer` | 非空，`>= 0` | 讲解播放顺序 |
 | `text` | `text` | 非空 | 老师实际讲解的文本 |
@@ -307,16 +313,17 @@ scenes.content
 约束：
 
 - `UNIQUE (scene_id, content_key)`，同一场景内一个内容块只对应一个讲解段落。
-- `UNIQUE (scene_id, sort_order)`，保证播放顺序稳定。
-- `speaker_classroom_agent_id` 必须属于同一课程；V1 默认由教师角色讲解，但保留角色外键以支持未来多角色讲解。
+- `UNIQUE (scene_id, sort_order)`，保证播放顺序稳定；普通唯一约束即可，理由与 `scenes` 那条相同（V1 不重排，见 §4.4）。将来工作台落地时两条要一起改成可延迟，讲解顺序会跟着页面重排一起挪位。
 - `content_key` 必须能在所属场景 JSON 的 `blocks` 中找到；内容块的 `type` 只从 JSON 读取。
 - `CHECK (status IN ('pending', 'generating', 'ready', 'failed'))`。
 - `CHECK (status <> 'ready' OR audio_path IS NOT NULL)`：`ready` 的含义就是「这一段能播了」，所以必须已经有音频；`pending`、`generating`、`failed` 下允许为空。音频时长不落库，前端从音频元素自身读（`HTMLAudioElement.duration`）。
 
 **`status` 覆盖讲稿与 TTS 两关，但只有一个值**，所以失败时要靠 `text` 区分是哪一关挂的：
 
-- `text` 非空 + `failed` → 讲稿已经写出来了，挂的是 TTS 合成。重试只需重做音频，不用重写讲稿。
-- `text` 为空 + `failed` → 讲稿本身没生成出来，整段重做。
+- `text` 非空 + `failed` → 讲稿已经写出来了，挂的是 TTS 合成。
+- `text` 为空 + `failed` → 讲稿本身没生成出来。
+
+V1 **不提供重试**（见 §5.1），所以这个区分只用来告诉用户「这一段卡在哪一关」，不触发任何自动动作。
 
 `text` 是 `not null`，讲稿还没生成时存空串而不是 `NULL`——这是上面这条判断能成立的前提。
 
@@ -328,133 +335,29 @@ scenes.content
 
 播放第 N 段时，前端根据 `content_key` 查找对应 DOM 元素，执行高亮、滚动和播放同步。不能只依赖数组下标，因为用户编辑或重新排序场景内容后，下标可能发生变化。
 
-教师音色不在本表重复保存，而是从 `classroom_agents.voice_id` 读取。课程角色表中的教师记录确定本节课最终使用的音色，讲解段落只保存发言角色引用。
+**本表不记录发言角色。** 讲解只由教师发声（§4.3），存下来就是个恒等于教师行的常量，还得额外校验它属不属于本课程——而这条「必须属于同一课程」的约束从本表这一侧根本写不成普通外键（本表只直接挂着 `scene_id`，要经由 `scenes.classroom_id` 才推得出课程）。所以干脆不存：发言角色就是教师，由 `classroom_agents` 里 `agent_key = 'teacher'` 那一行确定，`UNIQUE (classroom_id, agent_key)` 已经保证了它唯一。
 
-### 4.6 `workbench_sessions`：工作台会话
+教师音色同样不在本表重复保存，从 `classroom_agents.voice_id` 读取。将来若开放多角色讲解，再加一列发言角色外键。
 
-| 字段 | 类型 | 约束 | 说明 |
-|---|---|---|---|
-| `id` | `bigint` | PK | 会话 ID |
-| `classroom_id` | `bigint` | FK，**非空** | 所属课程；课程删除时级联删除 |
-| `title` | `varchar(200)` | 非空 | 会话标题；写入前须按字符截断 |
-| `summary` | `text` | 可空 | 滚动摘要：把已覆盖的历史消息压成的一段话；为空表示还没有摘要 |
-| `summary_until_sequence` | `integer` | 可空 | 摘要已覆盖到的最后一条消息序号；与 `summary` 同时为空或同时有值 |
-| `created_at` | `timestamptz` | 非空 | 创建时间 |
-| `updated_at` | `timestamptz` | 非空 | 更新时间 |
+### 4.6 工具调用：V1 不建表
 
-规则：
+课堂 Agent 的工具调用**不进入业务数据库**：调用与结果由**链路追踪模块**统一采集（该模块的可观测设计不在本文件范围），本设计只在工具调用处埋点。业务库这一侧什么都不存。
 
-- 会话**必须**归属一门课程，`classroom_id` 不可为空；课程删除时会话级联删除，不保留孤儿会话。
-- 会话在用户发出**第一条消息**时才落库。进入课程后未发言就离开，不会产生空会话。
-- **删除会话是硬删除**，其下的 `workbench_messages` 随 `CASCADE` 一并删除（§6）。V1 不提供归档，也不提供恢复——一个会话要么在，要么没了。因此本表没有 `status`，也没有 `deleted_at`。
-- 历史会话按课程分组查询，条件为 `classroom_id`，配合 §7 的索引。
-- 工作台 Agent 可调用的工具是 `web_search` 与 `doc_extract`（`web_search` 与课堂 Agent 用的是同一个），外加用于写入课程记忆的 `remember`（§4.8）。其中素材的存储与解析由素材模块负责（见第 6 节），本设计不建素材表。
-- skill 是代码中的常量集合（例如「精简讲解」「补充练习」），**不建表**。工作台前端目前没有加载 skill 的入口（i18n 里那句 `loadSkill` 属于已删除页面的遗留，无组件引用），而且就算要做，skill 是「这一轮加载」的消息级信息，会话级的字段也记不住它。
-- **本表没有 `agent_config`。** 工作台 Agent 该有的配置项都不归会话管：模型由课程决定——同一门课自始至终用一个模型，存在 `classrooms.generation_config` 的 `provider_id` / `model_id`（§4.2）；skill 见上一条。
-- **`summary` 是滚动摘要，一个会话始终只有这一份。** 会话聊长、上下文快塞满时，把「已有摘要 + 这一批新消息」一起交给大模型重新压一遍，覆盖写回。不保留历史版本，也不是「压一批插一行」——后者恢复时要把多条摘要拼起来，内容还互相重叠。
-- 摘要**落库**的理由不是怕 Redis 丢，而是**重跑的结果不稳定**：大模型是概率的，同一批消息压两次得到的两段话不一样，上下文一变 Agent 的行为就漂移。所以压出来一次就存下来。
-- `summary_until_sequence` 是「还有哪些消息没被摘要覆盖」的判据：拼上下文时只送 `sequence > summary_until_sequence` 的原始消息，再加上这份摘要。为空表示还没压过，全部消息照常发送。
-
-### 4.7 `workbench_messages`：工作台消息
-
-| 字段 | 类型 | 约束 | 说明 |
-|---|---|---|---|
-| `id` | `bigint` | PK | 消息 ID |
-| `session_id` | `bigint` | FK，非空 | 所属会话；级联删除 |
-| `sequence` | `integer` | 非空，`> 0` | 会话内严格递增的消息序号 |
-| `role` | `varchar(32)` | 非空，CHECK | `user`、`assistant` |
-| `content` | `text` | 非空，默认空字符串 | 文本内容 |
-| `content_format` | `varchar(32)` | 非空，默认 `markdown`，CHECK | `markdown`、`plain_text` |
-| `status` | `varchar(32)` | 非空，默认 `complete`，CHECK | `complete`、`failed` |
-| `metadata` | `jsonb` | 非空，默认 `{}` | 预留扩展位，V1 无消费方 |
-| `created_at` | `timestamptz` | 非空 | 创建时间 |
-| `updated_at` | `timestamptz` | 非空 | 更新时间 |
-
-约束：
-
-- `UNIQUE (session_id, sequence)`。
-- `CHECK (role IN ('user', 'assistant'))`、`CHECK (content_format IN ('markdown', 'plain_text'))`、`CHECK (status IN ('complete', 'failed'))`。
-
-规则：
-
-- **本表只存给人看的对话，`role` 只有 `user` 和 `assistant` 两种。** 工具调用不进本表：`web_search`、`doc_extract` 的调用与结果由链路追踪模块采集（§4.9）。这样表里留下的就是一份干净的对话记录。
-- **assistant 消息落库前必须把 `tool_calls` 剥掉，`content` 只存纯文本。** 不能存成 `{"text": "...", "tool_calls": [...]}` 这种混合体——`content_format` 已经声明是 `markdown` / `plain_text`，存进去的就得真的是那个格式。
-- **模型「先输出空文本 + `tool_calls`、等工具结果回来再说话」的中间态不落库**，只落最终那条有文本的 assistant 消息，否则表里会堆一串 `content = ''` 的空行。
-- 由此付出的代价是：Agent 拼上下文时看不到自己上一轮调过什么。这里认了——工具结果的权威副本在别处（解析结果在素材模块、课件改动在 `scenes`），而且几万字的工具结果进了上下文照样会被滚动摘要压掉（§4.6）。
-- **写入时机：成功落一条 `complete`，失败落一条 `failed`，不写 `streaming` 中间态。** 流式过程中不落库，吐完了才插，所以每条回复只写一次库。不采用「先插空行、边流边更新」的写法——要么每个 token 都写一次库，要么断线时库里留半句残话，两种都不划算。也正因为不产生 `streaming` 行，就没有「崩溃后残留的半截消息」需要清理。
-- **失败时 `content` 存已经吐出来的那部分**，前端刷新后仍能显示「生成失败，点击重试」。不落这条的话界面上会一片空白，用户会以为自己的消息没发出去。
-- **进程崩溃时这次回复在库里没有任何记录**，用户重问一次即可。
-- **`metadata` 是预留的扩展位，写入时留空对象 `{}`。** 设计意图是放模型、token、引用来源这类附加信息，但 V1 前端不展示模型名、不显示 token 用量、也没有引用 UI，所以**暂时没有消费方**。保留它是为了以后往里加 key 时不必改表结构（`jsonb` 的 key 不需要 migration）。
-
-### 4.8 `classroom_memories`：课程长期记忆
-
-本表只装**课程长期记忆**：用户偏好、课程设定这类跨会话还要用的信息，一条一句。它**不是对话摘要**——摘要是会话级的单一属性，存在 `workbench_sessions.summary`（见 §4.6）。
-
-**归属课程而不是会话。** 一门课下会有多条会话（§4.6），记忆要跨会话生效；挂在会话上的话，用户在会话 A 里说的偏好，新开一个会话 B 就看不到了。查记忆直接按 `classroom_id` 取，不需要 join `workbench_sessions`；用户删掉一个旧会话，也不会连带删掉这门课的偏好。
-
-因此本表不需要再用一个字段标注记忆种类：能进本表的就代表「跨会话还要用」。会话级的东西不进来——原话在 `workbench_messages`，聊过的浓缩在 `workbench_sessions.summary`。
-
-会话上下文以 PostgreSQL 为准，Redis 只缓存最近窗口。即使 Redis 被清空或过期，也可以从 `workbench_messages`（原始消息）和 `workbench_sessions.summary`（滚动摘要）恢复上下文。
-
-| 字段 | 类型 | 约束 | 说明 |
-|---|---|---|---|
-| `id` | `bigint` | PK | 记忆 ID |
-| `classroom_id` | `bigint` | FK，非空 | 所属课程；级联删除 |
-| `content` | `text` | 非空 | 记忆内容，自包含、不带指代的一整句话 |
-| `created_at` | `timestamptz` | 非空 | 创建时间 |
-| `updated_at` | `timestamptz` | 非空 | 更新时间 |
-
-#### 写入规则
-
-**由谁写。** 工作台 Agent 通过一个 `remember` 工具主动写入。代码不自动抽取（不为了记忆每轮额外跑一次大模型），也不依赖用户手动点击。
-
-**判断标准只有一条：换个会话，这句话还成立吗。** 成立才写。
-
-| 用户说的 | 下个会话还成立吗 | 进哪 |
-|---|---|---|
-| "这门课讲解口语化一点" | 成立 | 进本表 |
-| "面向初二学生" | 成立 | 进本表 |
-| "别用太多动画" | 成立 | 进本表 |
-| "第3页加个例子" | 不成立，只对这次改动有意义 | 不进，归 `workbench_messages` |
-| "刚才那页重做一下" | 不成立 | 不进，归 `workbench_messages` |
-
-判断由大模型在工具描述（提示词）的约束下完成——"换了会话还成不成立"是语义判断，代码兜底不了。提示词里必须写明三件事：
-
-1. 附上正反例，即上表。
-2. **明确说"大多数轮次什么都不该记"**——大模型有讨好倾向，不压住它会每轮都往里塞。
-3. 要求改写成自包含、不带指代的句子："改成口语化" → "这门课的讲解改成口语化"。否则过后翻出来不知道改的是什么。
-
-**不做去重。** 同一条规矩说两遍会写两行，交给 Agent 自己看着办（它拼上下文时本来就能看到全部记忆）。V1 不加去重逻辑。
-
-#### 读取规则
-
-拼上下文的顺序是：**本表记忆 + `workbench_sessions.summary` + `summary_until_sequence` 之后的原始消息**。
-
-送多少条：`ORDER BY id DESC LIMIT 50`。**这只是保险丝**——一门课实际能定几条长期规矩？"口语化"、"面向初二"、"别太多动画"，5 到 15 条顶天了，到不了 50。真到了 50 条，说明提示词写坏了，该去修提示词。
-
-因此**表里不设上限、不做删除**，`LIMIT` 只加在查询上——比"写入时删最旧的"少一段逻辑，还不会误删。触发上限时被挤掉的是最早记的那批，而"这门课面向初二学生"恰恰是最早记、最该一直带着的，所以更不能让它成为常规路径。
-
-V1 不做记忆管理界面。若日后滥记成灾，再加一个设置页把记忆列出来让用户删。
-
-### 4.9 工具调用：V1 不建表
-
-工作台与课堂 Agent 的工具调用**不进入业务数据库**：调用与结果由**链路追踪模块**统一采集（该模块的可观测设计不在本文件范围），本设计只在工具调用处埋点。业务库这一侧什么都不存——`workbench_messages` 里也不会出现工具消息（§4.7）。
-
-V1 需要埋点的工具：
+V1 只有一个 Agent 会调工具，就是课堂 Agent（§4.3）：
 
 | 工具 | 谁用 | 说明 |
 |---|---|---|
-| `web_search` | 课堂 Agent、工作台 Agent | 网络搜索，两边调的是同一个工具 |
-| `doc_extract` | 课堂 Agent、工作台 Agent | 解析上传的 PDF/Word/PPT/MD |
-| `remember` | 工作台 Agent | 写入课程长期记忆（§4.8） |
+| `web_search` | 课堂 Agent | 网络搜索，用来补充课程内容 |
+| `doc_extract` | 课堂 Agent | 解析上传的 PDF/Word/PPT/MD |
+| `tts` | 课堂 Agent | 把讲解文本合成成音频，写 `scene_segments.audio_path` |
 
 埋点用结构化日志：
 
 ```go
 logger.Info("tool_call",
     zap.String("tool", toolID),
+    zap.String("classroom_id", classroomID),
     zap.Duration("duration", d),
-    zap.String("session_id", sessionID),
     zap.String("status", status),
 )
 ```
@@ -465,7 +368,7 @@ logger.Info("tool_call",
 - 调用量小——`doc_extract` 一次会话至多几次，`web_search` 更少——业务库不需要为它建表。
 - V1 无 worker 租约与重试机制，不需要 `call_id` 提供的幂等去重。
 - 若独立成表并挂业务外键 `ON DELETE CASCADE`，课程删除会连带删除排错证据，与可观测性「数据应比被观测对象活得更久」的要求相悖。
-- 工具结果很长（`doc_extract` 一份 50 页 PDF 几万字），存进业务库是对素材模块已有副本的重复；就算存下来，拼上下文时也会被滚动摘要压掉（§4.6），换不到任何东西。
+- 工具结果很长（`doc_extract` 一份 50 页 PDF 几万字），存进业务库是对素材模块已有副本的重复，换不到任何东西。
 
 ---
 
@@ -475,50 +378,57 @@ logger.Info("tool_call",
 
 | 状态 | 含义 |
 |---|---|
-| `draft` | 已创建，尚未开始生成 |
-| `outlining` | 正在生成课程大纲 |
-| `generating` | 正在逐场景生成内容，首页尚未就绪 |
-| `playable` | 首页已就绪，可以进入课堂；后续场景仍在生成 |
-| `ready` | 所有场景及其讲解均已生成 |
-| `failed` | 生成流程中断，课程不可进入 |
+| `generating` | 正在生成（大纲与场景内容算在一起），首页尚未就绪，进不去 |
+| `playable` | 首页已就绪，可以进入课堂；后续场景仍在生成，或流程已中断不再生成（看 `generation_error`） |
+| `ready` | 所有场景及其讲解均已生成，没有任何一页失败 |
+| `failed` | 生成中断，且首页尚未就绪，课程不可进入 |
 
-**「首页已就绪」的判据**是 `sort_order = 0` 那个场景的 `content_status` 与 `narration_status` 都为 `ready`，也就是文本和音频都有了。角色不算门槛：`classroom_agents` 是课程级的，随大纲一起产出，它没有「生成中」这个中间态（表上也没有状态字段），卡不住首页。
+只有四个值，不要往回加。曾经的 `draft`（已创建、未开始）和 `outlining`（正在生成大纲）都已删除：课程建出来就开始跑，没有「等用户确认大纲」这一步；大纲和逐页内容在前端都显示成「正在生成」，用户分不出区别，后端自己知道走到哪一步就够了，不需要往库里写。
 
-`playable` 独立成一个值，是为了让课程列表页能区分「还在生成，进不去」和「能进了，后面还在跑」。只有 `generating` 的话，前端得自己去数场景才知道第一页好没好。生成全部完成后由 `playable` 进入 `ready`；整条流程中断则由 `outlining`、`generating` 或 `playable` 进入 `failed`，并写入 `generation_error`。
+**「首页已就绪」的判据**是 `sort_order = 0` 那个场景的 `status = 'ready'`，也就是页面 JSON 和它的讲解音频都有了。角色不算门槛：`classroom_agents` 是课程级的，随大纲一起产出，它没有「生成中」这个中间态（表上也没有状态字段），卡不住首页。
 
-**服务端启动时必须清理僵尸状态。** 生成任务跑在服务端进程内：用户中途离开不影响它，但服务端自身重启（部署、崩溃）会让任务消失，而 `status` 还停在 `outlining` 或 `generating`——这门课会永远显示「生成中」、永远进不去，且不会再有任何东西来改它。所以启动时要把所有 `status IN ('outlining','generating')` 的课程置为 `failed` 并写入 `generation_error`。V1 不支持断点续传，中断的生成只能回首页重新发起。
+`playable` 独立成一个值，是为了让课程列表页能区分「还在生成，进不去」和「能进了，后面还在跑」。只有 `generating` 的话，前端得自己去数场景才知道第一页好没好。生成全部完成后由 `playable` 进入 `ready`。
+
+**生成结束时 `status` 怎么变，要看首页好没好：**
+
+| 情况 | `status` | `generation_error` | 用户看到 |
+|---|---|---|---|
+| 流程中断，首页还没好 | `failed` | 有值 | 进不去，只能回首页重新发起 |
+| 流程中断，首页已经好了 | 留在 `playable` | 有值 | 照样能进课堂，后面的场景不会再补上 |
+| 流程跑完了，但有页面失败 | 留在 `playable` | 有值 | 同上 |
+| 流程跑完了，没有洞 | `ready` | 空 | 全部页面都能看 |
+
+`status` 只回答「**能不能进**」，`generation_error` 只回答「**还会不会继续生成**」，两者是正交的。所以 `playable` 配一个非空的 `generation_error` 是合法状态，不是数据错误：能进，但后面几页没了。把中断的 `playable` 一并打成 `failed` 是错的——那门课在中断前用户明明进得去，打完反而进不去了。
+
+**服务端启动时必须清理僵尸状态。** 生成任务跑在服务端进程内：用户中途离开不影响它，但服务端自身重启（部署、崩溃）会让任务消失，而 `status` 还停在 `generating` 或 `playable`——这门课的状态不会再有任何东西来改它。所以启动时这两类都要扫一遍，按上表前两行分流：
+
+- `status = 'generating'` → 置为 `failed`，并写入 `generation_error`。
+- `status = 'playable'` → **保持 `playable` 不动**，只写入 `generation_error`。
+
+`ready` 不扫：它表示流程已经跑到终点，重启不影响它，扫了反而会把好好的课误判成中断的。
+
+上表第三行（跑完了但带着洞）不归启动清理管，而是**生成流程自己收尾时**的责任：流程正常跑完后，先检查是否所有场景的 `status` 都是 `ready`。是则置 `ready`；只要有一个不是，就置 `playable` 并写入 `generation_error`（写明是哪几页没出来），不能让它无声无息地停在 `playable`。
+
+场景级的僵尸状态（`scenes.status`、`scene_segments.status` 卡在 `generating`）同样在启动清理时一并扫掉，规则与课程一致：所属课程的 `status` 被置 `failed` 的，它那些 `generating` 的场景与段落一并置 `failed`；课程留在 `playable` 的，只把它卡住的那些行置 `failed`，不能连累已经生成好的页。
+
+三种情况都要写 `generation_error`，这是用户唯一能看到「为什么没做完」的地方。V1 不支持断点续传，也不支持重试，中断或带洞的生成只能回首页重新发起；停在 `playable` 的课还能继续看已经生成好的部分。
 
 `status` 这类枚举列一律用 `varchar + CHECK` 而不是 PostgreSQL 原生 ENUM，后续增加状态时迁移成本更低。
 
-### 5.2 场景内容与讲解状态
-
-`scenes` 将页面内容和老师讲解拆成两个独立状态。这样可以准确表达“页面已经生成，但讲解还在生成”的中间状态。
-
-#### `scenes.content_status`
+### 5.2 场景状态 `scenes.status`
 
 | 状态 | 含义 |
 |---|---|
-| `pending` | 已有大纲，等待生成页面 JSON |
-| `generating` | 正在生成页面 JSON |
-| `ready` | 页面 JSON 已生成，可供前端渲染 |
-| `failed` | 生成失败，可重试 |
+| `pending` | 已有大纲，等待生成 |
+| `generating` | 正在生成页面 JSON 或讲解段落 |
+| `ready` | 页面 JSON 与全部讲解段落均已生成，可完整播放 |
+| `failed` | 生成失败；跳过该场景、继续生成后面的，这一页不会再补齐 |
 
-#### `scenes.narration_status`
+只有一个状态，不拆「页面内容」和「老师讲解」两个。曾经拆过，理由是「页面已经生成，但讲解还在生成」是个用户能感知的中间态；实际上进门条件本来就是**文本和音频都齐**，用户不会在文本齐了音频没齐时被放进去，这个中间态没有任何消费方——前端 `data/scenes.ts` 也一直只有一个 `SceneStatus` 字段。所以 `ready` 的含义定为「页面 JSON 与它全部讲解段落都已就绪」，两关合一关。
 
-| 状态 | 含义 |
-|---|---|
-| `pending` | 页面 JSON 已生成，等待生成讲解段落 |
-| `generating` | 正在生成老师讲解段落 |
-| `ready` | 所有讲解段落均已生成 |
-| `failed` | 讲解生成失败，可重试 |
+讲解段落各自的进度在 `scene_segments.status`（§4.5）。`scenes.status` 是这些段落的**汇总**：页面 JSON 生成完只算走了一半，必须等本场景下每个段落都 `ready`，本场景才置 `ready`。只要还有一个段落不是 `ready`，场景就不是 `ready`。两个状态不会打架，因为汇总只有一个方向：段落先动，场景跟着动。
 
-场景是否可以正常播放由两个状态共同决定：
-
-```text
-content_status = ready
-AND narration_status = ready
-→ 场景可完整播放
-```
+**任何一页 `failed` 都会让整门课永远到不了 `ready`。** V1 没有单页重试（§5.1），这些洞不会被补上。生成流程跑到终点时，课程停在 `playable` 并把原因写进 `classrooms.generation_error`（§4.2），前端据此显示「后面几页没能生成出来」，而不是一直转「正在生成」。
 
 `complete` 不再作为场景状态；课程完成页仍通过 `scenes.type = complete` 表示。
 
@@ -527,17 +437,16 @@ AND narration_status = ready
 | 子表/字段 | 父表 | 删除动作 |
 |---|---|---|
 | `classrooms.folder_id` | `folders.id` | `SET NULL` |
-| 删除 `classrooms` | 课程从属数据 | `CASCADE` 删除场景、课程角色、课程记忆，以及工作台会话及其下消息 |
 | `scenes.classroom_id` | `classrooms.id` | `CASCADE` |
-| `classroom_memories.classroom_id` | `classrooms.id` | `CASCADE` |
-| `workbench_sessions.classroom_id` | `classrooms.id` | `CASCADE` |
-| `workbench_messages.session_id` | `workbench_sessions.id` | `CASCADE` |
+| `scene_segments.scene_id` | `scenes.id` | `CASCADE` |
+| `classroom_agents.classroom_id` | `classrooms.id` | `CASCADE` |
+| 删除 `classrooms` | 以上全部从属数据 | `CASCADE`，沿上述外键逐级传递 |
 
-课程删除立即级联删除场景、课程角色、课程记忆，以及工作台会话及其下全部数据。工作台会话不允许脱离课程存在，因此 `workbench_sessions.classroom_id` 采用 `CASCADE` 而非 `SET NULL`。
+**注意 `scene_segments` 是二级级联，不是直接挂在课程上的。** 它只有 `scene_id` 一个外键，删除课程时靠 `scenes.classroom_id` 先把场景删掉，再由 `scene_segments.scene_id` 把讲解段落带走——`CASCADE` 会沿着外键链自己传下去，应用层不用手写两次删除，但两个外键都必须是 `CASCADE`，中间断一环就会剩下孤儿行（或者直接删不掉课程）。
 
-**V1 一律硬删除，没有软删除。** 用户单独删除一个会话时直接删 `workbench_sessions` 那一行，其下消息由 `workbench_messages.session_id` 的 `CASCADE` 一并删除——这条外键就是这个用途；课程被删除时，它同样负责把整门课的会话与消息一起清掉。
+课程删除立即级联删除场景及其讲解段落、课程角色。**V1 一律硬删除，没有软删除**，因此没有任何表的删除需要应用层先清理下级。
 
-素材上传、解析、向量化与 RAG 检索由**其他模块**负责，不在本数据库设计中建表。本设计只提供 `workbench_sessions` 作为素材归属的锚点：素材模块的表通过 `session_id` 外键指向 `workbench_sessions.id`，其自身的删除规则由该模块决定。
+素材上传、解析、向量化与 RAG 检索由**其他模块**负责，不在本数据库设计中建表。**素材归属的锚点是 `classrooms.id`**：素材模块的表通过 `classroom_id` 外键指向 `classrooms.id`，其自身的删除规则由该模块决定。V1 没有工作台会话，素材不可能挂在会话上（§9.5）。
 
 课程封面不单独保存图片路径，前端使用该课程 `sort_order = 0` 的首个场景 JSON 渲染封面。
 
@@ -550,37 +459,38 @@ AND narration_status = ready
 | `folders` | `(created_at DESC)` | 文件夹列表 |
 | `classrooms` | `(folder_id, updated_at DESC)` | 文件夹内课程列表 |
 | `classrooms` | `(updated_at DESC)` | 最近课程 |
-| `scenes` | `UNIQUE(classroom_id, sort_order)` | 场景顺序与读取 |
-| `scene_segments` | `UNIQUE(scene_id, sort_order)` | 按播放顺序取某场景的全部讲解段落 |
+| `scenes` | `UNIQUE(classroom_id, sort_order)` | 场景顺序与读取（§4.4） |
+| `scene_segments` | `UNIQUE(scene_id, sort_order)` | 按播放顺序取某场景的全部讲解段落（§4.5） |
 | `scene_segments` | `UNIQUE(scene_id, content_key)` | 同一场景内一个内容块只对应一个段落 |
 | `classroom_agents` | `UNIQUE(classroom_id, sort_order)` | 某课程的全部角色（生成与回放） |
-| `classroom_memories` | `(classroom_id)` | 拼上下文时取某门课的长期记忆（`ORDER BY id DESC LIMIT 50`，§4.8） |
-| `workbench_sessions` | `(classroom_id, updated_at DESC)` | 某课程下的历史会话列表 |
-| `workbench_messages` | `UNIQUE(session_id, sequence)` | 会话顺序读取 |
+| `classroom_agents` | `UNIQUE(classroom_id, agent_key)` | 同一预设角色在课内唯一，同时保证教师只有一行（§4.3） |
 
-V1 暂不对大段文本建全文索引；当工作台历史搜索成为真实需求后，再为 `workbench_messages.content` 加 PostgreSQL FTS。素材解析、向量化和 RAG 检索由其他模块单独设计。
+`classroom_agents` 的两条唯一约束都以 `classroom_id` 打头，查某门课的全部角色走得到索引，不再单独建；`scenes`、`scene_segments` 同理，各自的外键列都被唯一约束覆盖，级联删除也不会全表扫。
+
+V1 暂不对大段文本建全文索引，也没有需要全文检索的表（工作台推迟到 V2，§9.5）。素材解析、向量化和 RAG 检索由其他模块单独设计。
 
 ---
 
 ## 8. 建表迁移顺序
 
-第一批迁移（课程主链路）：
+**V1 只有一批迁移，五张表，按下面的顺序建**（顺序由外键依赖决定，不能打乱）：
 
-1. 创建通用 `updated_at` 触发器（若采用触发器方案）。
+1. 创建通用 `updated_at` 触发器函数 `set_updated_at()`。
 2. 创建 `folders`。
-3. 创建 `classrooms`。
-4. 创建 `scenes`。
-5. 创建 `scene_segments`。
+3. 创建 `classrooms`（依赖 `folders`）。
+4. 创建 `classroom_agents`（依赖 `classrooms`）。
+5. 创建 `scenes`（依赖 `classrooms`）。
+6. 创建 `scene_segments`（依赖 `scenes`）。
 
-第二批迁移（工作台与 Agent）：
+**必须用 SQL 迁移脚本，不能用 `AutoMigrate`。** 这套设计里有三样东西 GORM 的 tag 表达不了，`AutoMigrate` 一个都建不出来：
 
-1. 创建 `workbench_sessions`。
-2. 创建 `workbench_messages`。
-3. 创建 `classroom_memories`。
+- **`CHECK` 约束**：状态值合法性、`sort_order >= 0`、`status <> 'ready' OR audio_path IS NOT NULL`。没有它们，写错的枚举值会安静落库，前端查不到、页面一直转圈。
+- **`updated_at` 触发器**：函数和 trigger 都不在 `AutoMigrate` 的职责里。而启动清理僵尸状态走的是直接 UPDATE，GORM 钩子拦不住，`updated_at` 不会更新。
+- **外键**：本项目配了 `DisableForeignKeyConstraintWhenMigrating: true`，`AutoMigrate` 根本不建外键，§6 那张级联删除规则表会全部落空。
 
-工作台消息和课程记忆写入 PostgreSQL 成功后，再更新 Redis 缓存；Redis 写入失败不能回滚已经提交的数据库记录。
+另外 `AutoMigrate` 只加不减（不删字段对应的列），本来也不适合当迁移工具。实体（`internal/model/entity/`）只负责读写，建表以迁移脚本为准。
 
-这样能先完成“创建课程 → 大纲 → 场景 → 课程播放”的闭环，再接入工作台与 MCP。
+工作台相关的三张表不在本批迁移里（§9.5）。
 
 ---
 
@@ -588,7 +498,7 @@ V1 暂不对大段文本建全文索引；当工作台历史搜索成为真实�
 
 ### 9.1 增加用户体系
 
-后续创建 `users` 后，可在 `folders`、`classrooms`、`workbench_sessions` 添加可空 `owner_id`，完成历史数据迁移后再改为非空。V1 不应预先放一个无意义的 `user_id` 或固定“本地用户”。
+后续创建 `users` 后，可在 `folders`、`classrooms` 添加可空 `owner_id`，完成历史数据迁移后再改为非空。V1 不应预先放一个无意义的 `user_id` 或固定“本地用户”。
 
 代码侧的对应动作：启用 §1.1 中保留的 JWT 与鉴权中间件骨架，替换 `jwt.secret` 占位值，并把 `Auth()` 挂到需要保护的路由组上。因此本次迭代只需新增表和迁移，不必从零搭建鉴权基础设施。
 
@@ -604,38 +514,44 @@ V1 暂不对大段文本建全文索引；当工作台历史搜索成为真实�
 
 RAG 文档切片、embedding 模型版本及向量索引由知识管线模块单独设计。不要把它们混入本 V1 业务主库的第一批迁移。
 
+### 9.5 Pro 工作台（整体推迟到 V2）
+
+V1 不做 Pro 工作台，因此三张表一并推迟，**V1 不建、也不写对应迁移**：`workbench_sessions`（会话）、`workbench_messages`（消息）、`classroom_memories`（课程长期记忆）。
+
+设计没有丢，在模块文档 `docs/modules/agent-mcp-tools.md` 的「上下文记忆系统」一节；本文件里那三张表的字段设计已经删掉，真做工作台时按那份设计回来补。
+
+推迟带来的两个连带改动，已经落到正文：
+
+- **素材归属的锚点从会话改为课程**（§6）：素材本来挂在 `workbench_sessions` 上，没有会话了就挂 `classrooms.id`。
+- **「撤回课件修改」不再是 V1 要交代的事**：课件在生成之后没有任何入口可以改，不存在误改，也就不需要备份表（§10 第 5 项）。
+
 ---
 
 ## 10. 审核结论
 
-以下 12 项已全部确认，作为编写 SQL migration 与 GORM Model 的前提。
+以下各项已全部确认，作为编写 SQL migration 与 GORM Model 的前提。
 
 **数据库与范围**
 
 1. **PostgreSQL 为 V1 唯一关系型数据库。** Redis 只作缓存与实时状态，不作唯一存储（见 §1.1）；不引入第二种关系型数据库。
 2. **V1 无任何用户表、登录表和鉴权持久化表。** 不创建 `users`、`roles`、`permissions`、`api_keys` 等表；业务记录不依赖用户表。未来扩展路径见 §9.1。
-3. **素材上传、解析与 RAG 检索由其他模块负责。** 本设计只提供 `workbench_sessions.id` 作为素材归属锚点，不在本库建素材表，其删除规则由该模块决定（见 §6）。
+3. **素材上传、解析与 RAG 检索由其他模块负责。** 本设计只提供 `classrooms.id` 作为素材归属锚点，不在本库建素材表，其删除规则由该模块决定（见 §6）。
 4. **主键统一使用 `bigint` + `GENERATED ALWAYS AS IDENTITY`（Go 侧 `uint64`），不使用 UUID。** 因此也不需要 `pgcrypto`（见 §3、§8）。
+5. **V1 不做 Pro 工作台，也没有「撤回课件修改」。** 会话、消息、课程记忆三张表整体推迟到 V2（见 §9.5）。相应地，课件在生成之后没有任何入口可以修改，不存在误改，因此也没有 `scene_backups` 之类的备份表。
 
 **删除规则**
 
-5. **文件夹硬删除，下辖课程保留。** 删除文件夹只删除文件夹行本身；该文件夹下所有课程的 `classrooms.folder_id` 置为 `NULL`，课程变为未归档状态，**不会被删除**（见 §4.1、§6）。
-6. **课程硬删除，从属数据级联删除。** 删除课程时，其场景、课程角色、生成任务、工作台会话及会话下的消息与记忆一并级联删除（见 §6）。
-
-**工作台**
-
-7. **工作台会话必须归属课程。** `classroom_id` 非空、`CASCADE`，不存在任何无课程的会话；进入工作台先选课程，会话在发出第一条消息时才落库（见 §4.6、§6）。
-8. **V1 不做「撤回课件修改」。** 工作台的修改直接写入 `scenes`，不保留修改前的内容，因此没有 `scene_backups` 之类的备份表。将来要做撤回时再加：备份行可按「一次用户消息 = 一个撤销批次」组织，用触发修改的那条 `workbench_messages.id` 作为批次标识，一条 SQL 整批还原。
-9. **V1 工具调用只写结构化日志，不建 `tool_calls` 表**（见 §4.9）。
+6. **文件夹硬删除，下辖课程保留。** 删除文件夹只删除文件夹行本身；该文件夹下所有课程的 `classrooms.folder_id` 置为 `NULL`，课程变为未归档状态，**不会被删除**（见 §4.1、§6）。
+7. **课程硬删除，从属数据级联删除。** 删除课程时，其场景及其讲解段落、课程角色一并级联删除（见 §6）。
 
 **课程与角色**
 
-10. **课程实际角色统一写入 `classroom_agents`。** 包括教师、手动预设角色和自动模式最终选中的角色，并保存提示词、音色、头像、颜色快照（见 §4.3）。
+8. **课程实际角色统一写入 `classroom_agents`。** 包括教师、手动预设角色和自动模式最终选中的角色，并保存提示词、音色、头像、颜色快照（见 §4.3）。
+9. **V1 工具调用只写结构化日志，不建 `tool_calls` 表**（见 §4.6）。
 
 **实施节奏**
 
-11. **保留 JWT 与鉴权中间件骨架，但 V1 不启用。** `pkg/jwt/`、`internal/middleware/auth.go` 与 `configs` 中的 `jwt` 配置段保留，作为后续迭代的骨架；当前零调用、不挂路由（见 §1.1）。
-12. **工作台相关的三张表本轮只设计、不立即建表。** `workbench_sessions`、`workbench_messages`、`classroom_memories` 本轮只出设计，迁移脚本在后续迭代生成。
+10. **保留 JWT 与鉴权中间件骨架，但 V1 不启用。** `pkg/jwt/`、`internal/middleware/auth.go` 与 `configs` 中的 `jwt` 配置段保留，作为后续迭代的骨架；当前零调用、不挂路由（见 §1.1）。
 
 ---
 

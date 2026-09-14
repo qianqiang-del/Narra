@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"narra/internal/api"
+	"narra/internal/model/entity"
 	"narra/pkg/config"
 	"narra/pkg/database"
 	"narra/pkg/logger"
@@ -97,6 +98,18 @@ func (a *App) initDatabase() error {
 		return fmt.Errorf("PostgreSQL 初始化失败: %w", err)
 	}
 	a.postgresDB = postgresDB
+
+	// 建表；唯一约束 / CHECK / 外键 / 触发器由 migrations/0001_constraints.sql 补
+	if err := a.postgresDB.AutoMigrate(
+		&entity.Folder{},
+		&entity.Classroom{},
+		&entity.ClassroomAgent{},
+		&entity.Scene{},
+		&entity.SceneSegment{},
+	); err != nil {
+		return fmt.Errorf("数据库迁移失败: %w", err)
+	}
+	logger.Info("数据库表结构迁移完成")
 
 	// 初始化 Redis（可选，失败不影响核心功能）
 	rs, err := database.InitRedis(&a.cfg.Database.Redis)
