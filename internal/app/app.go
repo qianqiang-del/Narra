@@ -100,9 +100,13 @@ func (a *App) initDatabase() error {
 	a.postgresDB = postgresDB
 
 	// 建表；唯一约束 / CHECK / 外键 / 触发器由 migrations/0001_constraints.sql 补
+	//
+	// PresetAgent 必须排在自己的关联表 ClassroomAgent 之前：0001 里有
+	// classroom_agents.agent_id -> preset_agents.id 的外键，表得先存在。
 	if err := a.postgresDB.AutoMigrate(
 		&entity.Folder{},
 		&entity.Classroom{},
+		&entity.PresetAgent{},
 		&entity.ClassroomAgent{},
 		&entity.Scene{},
 		&entity.SceneSegment{},
