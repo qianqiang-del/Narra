@@ -10,7 +10,10 @@ import "time"
 // 注意：tag 中的 autoIncrement 仅供 AutoMigrate 参考，PostgreSQL 侧实际生成的是 bigserial。
 // 本项目按 §8 用 SQL migration 建表，主键 DDL 以迁移脚本为准。
 //
-// scene_backups 不嵌入本结构：它的主键是 scene_id 而非自增 id（§4.10）。
+// 若某个实体的主键不是自增 id（例如以别的表的主键兼作本表主键），就不能嵌入本结构，
+// 而且必须显式写 autoIncrement:false —— GORM 只要发现主键是整数类型、tag 里又没出现
+// autoIncrement 这个 key，就会无条件把它当成自增（schema.go 的 PrioritizedPrimaryField
+// 分支），迁移时给这个列建出一个多余的序列。
 type BaseModel struct {
 	ID        uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"id"`                // 主键
 	CreatedAt time.Time `gorm:"column:created_at;not null;autoCreateTime" json:"created_at"` // 创建时间
