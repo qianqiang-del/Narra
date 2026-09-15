@@ -15,6 +15,8 @@ import (
 	"gorm.io/gorm"
 	"narra/internal/api"
 	"narra/internal/model/entity"
+	"narra/internal/repository"
+	"narra/internal/service"
 	"narra/pkg/config"
 	"narra/pkg/database"
 	"narra/pkg/logger"
@@ -126,13 +128,18 @@ func (a *App) initDatabase() error {
 }
 
 // initDependencies 初始化依赖注入
+//
+// 顺序是 db → repository → service → router，每一层只拿到它下面那一层。
+// 数据库连接在 initDatabase 里已经建好，这里只往下传。
 func (a *App) initDependencies() {
 	// ========== 创建 Repository ==========
+	roleRepo := repository.NewRoleRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
+	roleSvc := service.NewRoleService(roleRepo)
 
 	// ========== 创建 Router ==========
-	a.router = api.NewRouter()
+	a.router = api.NewRouter(roleSvc)
 }
 
 // initRouter 初始化路由
