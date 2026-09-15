@@ -10,8 +10,9 @@ package entity
 // 判断标准是「这个字段确定的东西，有没有固化进产物」：
 //
 //   - VoiceID 有。它决定了已经合成进 scene_segments.audio_path 的那个声音是谁，
-//     音频出来之后就改不回来了。所以它必须每堂课存一份，作为快照——之后角色池里
-//     改了默认音色，已经生成的课不该跟着变。
+//     音频出来之后就改不回来了。所以它必须每堂课存一份——之后角色池里改了默认音色，
+//     已经生成的课不该跟着变。值有两个来源：生成课堂时大模型挑，和用户事后在下拉框
+//     里手动更换（目录来自 GET /api/v1/voices）；**重新生成会整个覆盖**，手动修改不留。
 //   - 名称 / 定位 / 人设 / 头像 / 主题色没有。它们每次渲染都重新读 preset_agents，
 //     改了就是改了，不存在「讲稿里说 A、界面上显示 B」的不一致。
 //
@@ -38,7 +39,7 @@ type ClassroomAgent struct {
 	ClassroomID uint64 `gorm:"column:classroom_id;not null" json:"classroom_id"` // 所属课程；级联删除
 	AgentID     uint64 `gorm:"column:agent_id;not null" json:"agent_id"`         // 指向 preset_agents.id
 
-	VoiceID string `gorm:"column:voice_id;type:varchar(120);not null" json:"voice_id"` // 本课程为这个角色选定的音色；用户没改过就是角色池里的默认值，写入前须用 agent.IsValidVoiceID 校验
+	VoiceID string `gorm:"column:voice_id;type:varchar(120);not null" json:"voice_id"` // 本课程为这个角色选定的音色；来源见上面的说明，写入前须用 service.IsValidVoiceID 校验
 }
 
 // TableName 返回表名。

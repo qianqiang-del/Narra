@@ -13,6 +13,7 @@ type Config struct {
 	Database  DatabaseConfig  `mapstructure:"database"`
 	LLM       LLMConfig       `mapstructure:"llm"`
 	Embedding EmbeddingConfig `mapstructure:"embedding"`
+	TTS       TTSConfig       `mapstructure:"tts"`
 	JWT       JWTConfig       `mapstructure:"jwt"`
 	Log       LogConfig       `mapstructure:"log"`
 	CORS      CORSConfig      `mapstructure:"cors"`
@@ -101,6 +102,61 @@ func (c EmbeddingConfig) Validate() error {
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("embedding.timeout 必须大于 0")
+	}
+
+	return nil
+}
+
+// TTSProviderQwen 是 Qwen，走阿里云百炼；音色目录誊的就是它。
+const TTSProviderQwen = "qwen"
+
+// ttsSupportedProviders 是允许写进 tts.provider 的值。只有一个也照样做白名单。
+var ttsSupportedProviders = []string{TTSProviderQwen}
+
+// TTSConfig 是语音合成服务的配置。
+//
+// 与 EmbeddingConfig 一样先于调用方落地：V1 还没有合成客户端，enabled 默认 false，
+// 没有 tts 段的老配置文件也能正常加载。音色目录不在这里，见 internal/service/voice_service.go。
+// APIKey 可写在配置文件的 tts.api_key，也可由环境变量 TTS_API_KEY 注入，环境变量优先。
+type TTSConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`  // 是否启用语音合成
+	Provider string `mapstructure:"provider"` // 哪家 TTS，取值见 ttsSupportedProviders；启用时必填，故意不给默认值
+
+	APIKey  string        `mapstructure:"api_key"`  // 服务密钥；配置文件与环境变量均可，环境变量优先
+	BaseURL string        `mapstructure:"base_url"` // 服务根地址（不含各家自己的路径），启用时必填
+	Model   string        `mapstructure:"model"`    // 合成模型 ID，如 qwen3-tts-flash；有默认值，见 loader.go
+	Timeout time.Duration `mapstructure:"timeout"`  // 单次合成请求超时，启用时必须为正数
+}
+
+// Validate 校验语音合成配置，只在 enabled 为真时校验服务参数。
+func (c TTSConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+
+	provider := strings.TrimSpace(c.Provider)
+	supported := false
+	for _, p := range ttsSupportedProviders {
+		if provider == p {
+			supported = true
+			break
+		}
+	}
+	if !supported {
+		return fmt.Errorf("tts.provider 必须是 %s 之一", strings.Join(ttsSupportedProviders, "、"))
+	}
+
+	if strings.TrimSpace(c.Model) == "" {
+		return fmt.Errorf("tts.model 不能为空")
+	}
+
+	baseURL, err := url.Parse(strings.TrimSpace(c.BaseURL))
+	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" ||
+		(baseURL.Scheme != "http" && baseURL.Scheme != "https") {
+		return fmt.Errorf("tts.base_url 必须是有效的 http 或 https URL")
+	}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("tts.timeout 必须大于 0")
 	}
 
 	return nil

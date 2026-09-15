@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	dto "narra/internal/model/dto/response"
 	"narra/internal/repository"
 	"narra/pkg/errors"
 )
@@ -18,7 +19,7 @@ func NewRoleService(repo repository.RoleRepository) RoleService {
 }
 
 // List 查可挑选的角色，转成对外结构。
-func (s *roleService) List(ctx context.Context) ([]RoleItem, error) {
+func (s *roleService) List(ctx context.Context) ([]dto.RoleItem, error) {
 	agents, err := s.repo.ListEnabled(ctx)
 	if err != nil {
 		// 原始错误带进 BizError，让它能被日志捞到；对外的 Message 是给人看的。
@@ -27,9 +28,9 @@ func (s *roleService) List(ctx context.Context) ([]RoleItem, error) {
 
 	// 用 make 而不是 var：空结果要序列化成 [] 而不是 null，
 	// 否则前端 .map() 会炸在一个看起来像"没有数据"的 null 上。
-	items := make([]RoleItem, 0, len(agents))
+	items := make([]dto.RoleItem, 0, len(agents))
 	for _, a := range agents {
-		items = append(items, RoleItem{
+		items = append(items, dto.RoleItem{
 			AgentKey:  a.AgentKey,
 			Name:      a.Name,
 			Role:      a.Role,

@@ -33,6 +33,9 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("embedding.model", "BAAI/bge-m3")
 	v.SetDefault("embedding.dimensions", BGEM3Dimensions)
 	v.SetDefault("embedding.timeout", "30s")
+	// TTS 同理。provider 故意不给默认值：它决定客户端走哪种协议，写错了要到合成那一步才炸。
+	v.SetDefault("tts.model", "qwen3-tts-flash")
+	v.SetDefault("tts.timeout", "60s")
 
 	// 读取配置文件
 	if err := v.ReadInConfig(); err != nil {
@@ -61,9 +64,15 @@ func Load(configPath string) (*Config, error) {
 	if val := os.Getenv("EMBEDDING_API_KEY"); val != "" {
 		config.Embedding.APIKey = val
 	}
+	if val := os.Getenv("TTS_API_KEY"); val != "" {
+		config.TTS.APIKey = val
+	}
 
 	if err := config.Embedding.Validate(); err != nil {
 		return nil, fmt.Errorf("embedding 配置无效: %w", err)
+	}
+	if err := config.TTS.Validate(); err != nil {
+		return nil, fmt.Errorf("tts 配置无效: %w", err)
 	}
 
 	globalConfig = config

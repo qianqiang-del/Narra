@@ -74,6 +74,7 @@ export default {
     configure: 'Click to configure classroom roles',
     searchVoice: 'Search voices',
     tryVoice: 'Preview',
+    previewFailed: 'Preview failed',
   },
   toolbar: {
     depthInteractive: 'Interactive Mode',
