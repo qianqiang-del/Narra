@@ -27,7 +27,8 @@ const { teacher, selectable, loading, error, loaded } = storeToRefs(rolesStore)
 
 /** 与父级（HomeView）双向同步的配置，便于提交时读取 */
 const mode = defineModel<AgentBarMode>('mode', { default: 'preset' })
-const selectedIds = defineModel<string[]>('selectedIds', { default: () => ['assist', 'curious'] })
+/** 预设模式下的勾选结果。默认**一个都不选**——角色由用户自己点 */
+const selectedIds = defineModel<string[]>('selectedIds', { default: () => [] })
 const ttsEnabled = defineModel<boolean>('tts', { default: true })
 
 /**
@@ -47,8 +48,6 @@ const roleVoices = ref<Record<string, string>>({})
 const selectedRoles = computed(() => selectable.value.filter((r) => selectedIds.value.includes(r.id)))
 const visibleAvatars = computed(() => selectedRoles.value.slice(0, 4))
 const overflowCount = computed(() => Math.max(0, selectedRoles.value.length - 4))
-
-const autoPreviewAvatars = computed(() => selectable.value.slice(0, 3))
 
 // 回填默认音色。只填空值——用户已经改过的选择不能被覆盖
 watch(
@@ -119,28 +118,8 @@ defineExpose({ roleVoices })
             <div v-else class="size-full animate-pulse bg-muted" />
           </div>
 
-          <!-- auto：叠头像 + Shuffle -->
-          <template v-if="mode === 'auto'">
-            <div class="flex -space-x-2">
-              <template v-if="loaded">
-                <div
-                  v-for="r in autoPreviewAvatars"
-                  :key="r.id"
-                  class="size-6 overflow-hidden rounded-full ring-[1.5px] ring-background"
-                >
-                  <img :src="r.avatar" alt="" class="size-full object-cover" />
-                </div>
-              </template>
-              <template v-else>
-                <div
-                  v-for="i in 3"
-                  :key="i"
-                  class="size-6 animate-pulse rounded-full bg-muted ring-[1.5px] ring-background"
-                />
-              </template>
-            </div>
-            <Shuffle class="size-4 text-violet-400" />
-          </template>
+          <!-- auto：不预告角色。角色是在生成课件时才定下来的，这里只留个 Shuffle 表明当前模式 -->
+          <Shuffle v-if="mode === 'auto'" class="size-4 text-violet-400" />
 
           <!-- preset：已选头像 + 溢出计数 -->
           <template v-else>

@@ -42,34 +42,51 @@ CREATE TRIGGER trg_classrooms_updated_at
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 
--- classroom_agents
-ALTER TABLE classroom_agents DROP CONSTRAINT IF EXISTS classroom_agents_source_check;
-ALTER TABLE classroom_agents ADD CONSTRAINT classroom_agents_source_check
-    CHECK (source IN ('preset', 'auto'));
-
-ALTER TABLE classroom_agents DROP CONSTRAINT IF EXISTS classroom_agents_role_type_check;
-ALTER TABLE classroom_agents ADD CONSTRAINT classroom_agents_role_type_check
+-- preset_agents
+--
+-- 角色池。人工维护，两种进入课堂的方式（用户手选 / 大模型随机挑）都只从这里取。
+-- 这一段必须排在 classroom_agents 之前：那张表有指向本表的外键。
+ALTER TABLE preset_agents DROP CONSTRAINT IF EXISTS preset_agents_role_type_check;
+ALTER TABLE preset_agents ADD CONSTRAINT preset_agents_role_type_check
     CHECK (role_type IN ('teacher', 'assistant', 'student'));
 
-ALTER TABLE classroom_agents DROP CONSTRAINT IF EXISTS classroom_agents_agent_key_check;
-ALTER TABLE classroom_agents ADD CONSTRAINT classroom_agents_agent_key_check
-    CHECK (agent_key IN ('teacher', 'assist', 'clown', 'curious', 'note-taker', 'thinker'));
+ALTER TABLE preset_agents DROP CONSTRAINT IF EXISTS preset_agents_sort_order_check;
+ALTER TABLE preset_agents ADD CONSTRAINT preset_agents_sort_order_check
+    CHECK (sort_order >= 0);
 
-ALTER TABLE classroom_agents DROP CONSTRAINT IF EXISTS classroom_agents_sort_order_check;
-ALTER TABLE classroom_agents ADD CONSTRAINT classroom_agents_sort_order_check
-    CHECK (sort_order IS NULL OR sort_order >= 0);
+-- agent_key 与 sort_order 的唯一约束**不在这里**，由实体上的 unique tag 声明，
+-- AutoMigrate 建，名字是 GORM 的 uni_preset_agents_agent_key / uni_preset_agents_sort_order。
+--
+-- 别把它们加回来。同一个约束两边都声明的话，AutoMigrate 启动时会对账：库里唯一、实体上
+-- 没标 unique → 判定多余 → 去删，而它删的名字是自己算的 uni_*，跟我们建的 *_key 对不上，
+-- 于是 DROP 失败、AutoMigrate 返回 error、服务起不来。反过来若名字恰好撞上，它删成功，
+-- 约束就静默消失了，更糟。详见 migrations/README.md「谁拥有约束」。
 
-ALTER TABLE classroom_agents DROP CONSTRAINT IF EXISTS classroom_agents_classroom_id_sort_order_key;
-ALTER TABLE classroom_agents ADD CONSTRAINT classroom_agents_classroom_id_sort_order_key
-    UNIQUE (classroom_id, sort_order);
+DROP TRIGGER IF EXISTS trg_preset_agents_updated_at ON preset_agents;
+CREATE TRIGGER trg_preset_agents_updated_at
+    BEFORE UPDATE ON preset_agents
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
-ALTER TABLE classroom_agents DROP CONSTRAINT IF EXISTS classroom_agents_classroom_id_agent_key_key;
-ALTER TABLE classroom_agents ADD CONSTRAINT classroom_agents_classroom_id_agent_key_key
-    UNIQUE (classroom_id, agent_key);
+
+-- classroom_agents
+--
+-- 课堂与角色的关联表：哪堂课用了哪些角色、各自选了什么音色。
+-- 角色的名称 / 定位 / 人设 / 头像 / 主题色都不在这里，去 preset_agents 查。
+--
+-- 注意本表没有 role_type，所以「每堂课恰好一个教师」建不出数据库约束
+-- （跨表的部分唯一索引做不到），只能由应用层在生成课程时保证。
+ALTER TABLE classroom_agents DROP CONSTRAINT IF EXISTS classroom_agents_classroom_id_agent_id_key;
+ALTER TABLE classroom_agents ADD CONSTRAINT classroom_agents_classroom_id_agent_id_key
+    UNIQUE (classroom_id, agent_id);
 
 ALTER TABLE classroom_agents DROP CONSTRAINT IF EXISTS classroom_agents_classroom_id_fkey;
 ALTER TABLE classroom_agents ADD CONSTRAINT classroom_agents_classroom_id_fkey
     FOREIGN KEY (classroom_id) REFERENCES classrooms (id) ON DELETE CASCADE;
+
+-- RESTRICT：还被课程引用的角色删不掉。池子里下架角色应该用 preset_agents.enabled = false。
+ALTER TABLE classroom_agents DROP CONSTRAINT IF EXISTS classroom_agents_agent_id_fkey;
+ALTER TABLE classroom_agents ADD CONSTRAINT classroom_agents_agent_id_fkey
+    FOREIGN KEY (agent_id) REFERENCES preset_agents (id) ON DELETE RESTRICT;
 
 DROP TRIGGER IF EXISTS trg_classroom_agents_updated_at ON classroom_agents;
 CREATE TRIGGER trg_classroom_agents_updated_at
@@ -133,5 +150,19 @@ DROP TRIGGER IF EXISTS trg_scene_segments_updated_at ON scene_segments;
 CREATE TRIGGER trg_scene_segments_updated_at
     BEFORE UPDATE ON scene_segments
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- 外键索引
+--
+-- PostgreSQL 不会给外键自动建索引（MySQL 会，所以很容易误以为这里也有）。
+-- 缺索引的后果是每次删除父行都要全表扫子表：删 folders 一行扫一遍 classrooms，
+-- 删 preset_agents 一行扫一遍 classroom_agents。
+--
+-- 只补缺的两条。其余外键列已经被复合唯一约束的前缀覆盖，再单独建是重复索引：
+--   classroom_agents.classroom_id  ← UNIQUE (classroom_id, agent_id)
+--   scenes.classroom_id            ← UNIQUE (classroom_id, sort_order)
+--   scene_segments.scene_id        ← UNIQUE (scene_id, content_key)
+CREATE INDEX IF NOT EXISTS idx_classrooms_folder_id ON classrooms (folder_id);
+CREATE INDEX IF NOT EXISTS idx_classroom_agents_agent_id ON classroom_agents (agent_id);
 
 COMMIT;

@@ -44,7 +44,8 @@ const extractor = ref('mineru')
 const materials = ref<{ id: string; name: string; size: number }[]>([])
 
 const agentMode = ref<'preset' | 'auto'>('preset')
-const selectedRoleIds = ref<string[]>(['assist', 'curious'])
+/** 预设模式勾选的角色，默认一个都不选 */
+const selectedRoleIds = ref<string[]>([])
 const ttsEnabled = ref(true)
 /**
  * 教师音色。空串表示「还没定」，由 AgentBar 在角色池拉回来之后填该教师的默认音色。
