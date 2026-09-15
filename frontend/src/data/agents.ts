@@ -1,46 +1,20 @@
 /**
- * 课堂角色静态数据。
+ * 回放页专用的角色静态数据 —— **临时的，别再往这里加东西**。
  *
- * 原项目同样写死在前端（`lib/orchestration/registry/store.ts`），5 个预设角色 + 教师
- * 各自带 id / name / role / avatar / color / voice，外加一段 persona 系统提示词。
+ * 角色池已经搬到后端（`GET /api/v1/roles`），首页的 AgentBar 从那儿取，这里不再服务它。
  *
- * 这里**只保留展示元数据**，不含 persona —— persona 是提示词，属于后端（Go + Eino）
- * 的职责，按同一个 id 去索引。所以 `id` 是前后端之间的约定，改 id 要两边一起改。
+ * 现在这个文件只剩 `PlaybackChrome.vue` 一个消费者，因为回放页要的是「**这堂课**用了哪几个
+ * 角色、各自什么音色」——那是**课堂角色快照**，和全局角色池不是一回事，那个接口还没写。
+ * 拿 `/roles` 顶替是错的：它会显示整池角色，而不是这堂课实际选中的。
+ *
+ * 等课堂角色快照接口有了就把这个文件删掉。
+ *
+ * @deprecated 等课堂角色快照接口
  */
-export type AgentBarMode = 'preset' | 'auto'
+import type { Role } from '@/types/role'
 
-export interface AgentRole {
-  id: string
-  /** 角色显示名 */
-  name: string
-  /** 角色定位（列表右侧小字） */
-  role: string
-  /** 角色大类（信息卡徽章：教师 / 助教 / 学生） */
-  roleType: 'teacher' | 'assistant' | 'student'
-  avatar: string
-  /** 选中时的光环色 / 信息卡徽章底色 */
-  color: string
-  /** 默认音色 id */
-  voice: string
-  /**
-   * 人设简介（信息卡正文，**仅展示用文案**）。
-   * 完整的 system prompt（persona 提示词）属于后端（Go + Eino），按同一个 id 索引。
-   */
-  persona: string
-}
-
-export const TEACHER: AgentRole = {
-  id: 'teacher',
-  name: '陈老师',
-  role: '主讲',
-  roleType: 'teacher',
-  avatar: '/avatars/teacher-2.png',
-  color: '#722ed1',
-  voice: 'voxcpm-zh-female-warm',
-  persona: '主讲老师，负责整体讲解与节奏把控，会把零散知识点串成体系，并在讨论里引导方向、把握深浅。',
-}
-
-export const PRESET_ROLES: AgentRole[] = [
+/** 回放页圆桌的占位参与者。顺序即展示顺序 */
+export const PRESET_ROLES: Role[] = [
   {
     id: 'assist',
     name: '小助手',
@@ -69,7 +43,7 @@ export const PRESET_ROLES: AgentRole[] = [
     avatar: '/avatars/curious-2.png',
     color: '#52c41a',
     voice: 'voxcpm-zh-male-young',
-    persona: '永远在问"为什么"的那一个，喜欢追问概念的边界和例外情况，往往把讨论推向更深入。',
+    persona: '永远在问“为什么”的那一个，喜欢追问概念的边界和例外情况，往往把讨论推向更深入。',
   },
   {
     id: 'note-taker',
