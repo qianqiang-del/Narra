@@ -43,3 +43,7 @@ Thumbs.db
 # Build artifacts
 /build/
 /tmp/
+
+# Local BGE-M3 development environment and model cache
+embedding-service/.venv/
+embedding-service/model-cache/

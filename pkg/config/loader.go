@@ -28,6 +28,11 @@ func Load(configPath string) (*Config, error) {
 	v.SetEnvPrefix("NARRA")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	// Embedding defaults keep older configuration files valid while allowing
+	// the service to remain opt-in via embedding.enabled.
+	v.SetDefault("embedding.model", "BAAI/bge-m3")
+	v.SetDefault("embedding.dimensions", BGEM3Dimensions)
+	v.SetDefault("embedding.timeout", "30s")
 
 	// 读取配置文件
 	if err := v.ReadInConfig(); err != nil {
@@ -52,6 +57,13 @@ func Load(configPath string) (*Config, error) {
 	}
 	if val := os.Getenv("LLM_API_KEY"); val != "" {
 		config.LLM.APIKey = val
+	}
+	if val := os.Getenv("EMBEDDING_API_KEY"); val != "" {
+		config.Embedding.APIKey = val
+	}
+
+	if err := config.Embedding.Validate(); err != nil {
+		return nil, fmt.Errorf("embedding 配置无效: %w", err)
 	}
 
 	globalConfig = config
