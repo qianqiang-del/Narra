@@ -106,14 +106,7 @@ func (a *App) initDatabase() error {
 	//
 	// PresetAgent 必须排在自己的关联表 ClassroomAgent 之前：0001 里有
 	// classroom_agents.agent_id -> preset_agents.id 的外键，表得先存在。
-	if err := a.postgresDB.AutoMigrate(
-		&entity.Folder{},
-		&entity.Classroom{},
-		&entity.PresetAgent{},
-		&entity.ClassroomAgent{},
-		&entity.Scene{},
-		&entity.SceneSegment{},
-	); err != nil {
+	if err := a.postgresDB.AutoMigrate(databaseEntities()...); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
 	}
 	logger.Info("数据库表结构迁移完成")
@@ -126,6 +119,26 @@ func (a *App) initDatabase() error {
 	a.redis = rs
 
 	return nil
+}
+
+// databaseEntities 按外键依赖顺序返回需要建表的实体。
+func databaseEntities() []any {
+	return []any{
+		&entity.Folder{},
+		&entity.Classroom{},
+		&entity.PresetAgent{},
+		&entity.ClassroomAgent{},
+		&entity.Scene{},
+		&entity.SceneSegment{},
+		&entity.ClassroomConversation{},
+		&entity.ConversationMessage{},
+		&entity.ContextCompaction{},
+		&entity.OrchestrationRun{},
+		&entity.AgentTurn{},
+		&entity.SharedContextMemory{},
+		&entity.ConversationEvent{},
+		&entity.AgentTraceSpan{},
+	}
 }
 
 // initDependencies 初始化依赖注入
