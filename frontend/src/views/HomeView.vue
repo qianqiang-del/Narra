@@ -46,7 +46,11 @@ const materials = ref<{ id: string; name: string; size: number }[]>([])
 const agentMode = ref<'preset' | 'auto'>('preset')
 const selectedRoleIds = ref<string[]>(['assist', 'curious'])
 const ttsEnabled = ref(true)
-const teacherVoice = ref('voxcpm-zh-female-warm')
+/**
+ * 教师音色。空串表示「还没定」，由 AgentBar 在角色池拉回来之后填该教师的默认音色。
+ * 这里不能写死音色 ID——池子里那个教师的 voice_id 改了，前端要跟着变。
+ */
+const teacherVoice = ref('')
 
 const canSubmit = computed(() => requirement.value.trim().length > 0 && !generating.value)
 
