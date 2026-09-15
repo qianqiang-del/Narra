@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"narra/internal/api"
+	"narra/internal/model/entity"
 	"narra/pkg/config"
 	"narra/pkg/database"
 	"narra/pkg/logger"
@@ -98,6 +99,12 @@ func (a *App) initDatabase() error {
 	}
 	a.postgresDB = postgresDB
 
+	// 建表；唯一约束 / CHECK / 外键 / 触发器由 SQL 迁移脚本补充。
+	if err := a.postgresDB.AutoMigrate(databaseEntities()...); err != nil {
+		return fmt.Errorf("数据库迁移失败: %w", err)
+	}
+	logger.Info("数据库表结构迁移完成")
+
 	// 初始化 Redis（可选，失败不影响核心功能）
 	rs, err := database.InitRedis(&a.cfg.Database.Redis)
 	if err != nil {
@@ -106,6 +113,30 @@ func (a *App) initDatabase() error {
 	a.redis = rs
 
 	return nil
+}
+
+// databaseEntities 按外键依赖顺序返回需要建表的实体。
+func databaseEntities() []any {
+	return []any{
+		&entity.Folder{},
+		&entity.Classroom{},
+		&entity.ClassroomAgent{},
+		&entity.GenerationJob{},
+		&entity.Scene{},
+		&entity.SceneSegment{},
+		&entity.WorkbenchSession{},
+		&entity.WorkbenchMessage{},
+		&entity.SessionMemory{},
+		&entity.SceneBackup{},
+		&entity.ClassroomConversation{},
+		&entity.ConversationMessage{},
+		&entity.ContextCompaction{},
+		&entity.OrchestrationRun{},
+		&entity.AgentTurn{},
+		&entity.SharedContextMemory{},
+		&entity.ConversationEvent{},
+		&entity.AgentTraceSpan{},
+	}
 }
 
 // initDependencies 初始化依赖注入
