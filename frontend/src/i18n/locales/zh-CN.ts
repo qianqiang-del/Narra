@@ -72,6 +72,7 @@ export default {
     configure: '点击配置课堂角色',
     searchVoice: '搜索音色',
     tryVoice: '试听',
+    previewFailed: '试听失败',
   },
   toolbar: {
     depthInteractive: '深度交互',

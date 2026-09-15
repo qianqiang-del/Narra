@@ -70,7 +70,7 @@ type PresetAgent struct {
 
 	Avatar  string `gorm:"column:avatar;type:varchar(255);not null" json:"avatar"`     // 头像资源路径，指向 frontend/public/avatars 下的文件
 	Color   string `gorm:"column:color;type:varchar(16);not null" json:"color"`        // 界面主题色，如 #722ed1
-	VoiceID string `gorm:"column:voice_id;type:varchar(120);not null" json:"voice_id"` // 默认音色 ID，取值必须在 agent.IsValidVoiceID 的目录内
+	VoiceID string `gorm:"column:voice_id;type:varchar(120);not null" json:"voice_id"` // 默认音色 ID，取值必须在 service.IsValidVoiceID 的目录内
 
 	SortOrder int32 `gorm:"column:sort_order;not null;unique" json:"sort_order"` // 前端角色列表的展示顺序；唯一，否则顺序不确定
 	Enabled   bool  `gorm:"column:enabled;not null;default:true" json:"enabled"` // 是否可被挑中；下架用 false

@@ -2,6 +2,7 @@ package api
 
 import (
 	"narra/internal/api/v1/role"
+	"narra/internal/api/v1/voice"
 	"narra/internal/middleware"
 	"narra/internal/service"
 
@@ -10,13 +11,15 @@ import (
 
 // Router 路由
 type Router struct {
-	roleCtrl *role.Controller
+	roleCtrl  *role.Controller
+	voiceCtrl *voice.Controller
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService) *Router {
+func NewRouter(roleSvc service.RoleService, voiceSvc service.VoiceService) *Router {
 	return &Router{
-		roleCtrl: role.NewController(roleSvc),
+		roleCtrl:  role.NewController(roleSvc),
+		voiceCtrl: voice.NewController(voiceSvc),
 	}
 }
 
@@ -40,6 +43,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		})
 
 		role.RegisterRoutes(v1, r.roleCtrl)
+		voice.RegisterRoutes(v1, r.voiceCtrl)
 	}
 }
 

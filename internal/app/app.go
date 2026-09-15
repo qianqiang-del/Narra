@@ -20,6 +20,7 @@ import (
 	"narra/pkg/config"
 	"narra/pkg/database"
 	"narra/pkg/logger"
+	"narra/pkg/tts"
 )
 
 // App 应用结构体
@@ -138,8 +139,21 @@ func (a *App) initDependencies() {
 	// ========== 创建 Service ==========
 	roleSvc := service.NewRoleService(roleRepo)
 
+	// TTS 没启用或配置不全时客户端留 nil：音色列表照常可用，只有试听会返回一句明确的
+	// 错误。这里不 fail-fast，是因为试听是附加能力，不该拦住整个服务启动。
+	var ttsClient *tts.Client
+	if a.cfg.TTS.Enabled {
+		client, err := tts.NewClient(a.cfg.TTS)
+		if err != nil {
+			logger.Warn("语音合成客户端初始化失败，试听功能不可用", zap.Error(err))
+		} else {
+			ttsClient = client
+		}
+	}
+	voiceSvc := service.NewVoiceService(ttsClient)
+
 	// ========== 创建 Router ==========
-	a.router = api.NewRouter(roleSvc)
+	a.router = api.NewRouter(roleSvc, voiceSvc)
 }
 
 // initRouter 初始化路由
