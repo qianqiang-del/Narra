@@ -106,7 +106,7 @@ func (a *App) initDatabase() error {
 	//
 	// PresetAgent 必须排在自己的关联表 ClassroomAgent 之前：0001 里有
 	// classroom_agents.agent_id -> preset_agents.id 的外键，表得先存在。
-	if err := a.postgresDB.AutoMigrate(databaseEntities()...); err != nil {
+	if err := autoMigrateDatabase(a.postgresDB); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
 	}
 	logger.Info("数据库表结构迁移完成")
@@ -121,8 +121,30 @@ func (a *App) initDatabase() error {
 	return nil
 }
 
+func autoMigrateDatabase(db *gorm.DB) error {
+	if err := db.AutoMigrate(baseDatabaseEntities()...); err != nil {
+		return err
+	}
+
+	for _, entity := range memberCDatabaseEntities() {
+		if db.Migrator().HasTable(entity) {
+			continue
+		}
+		if err := db.AutoMigrate(entity); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // databaseEntities 按外键依赖顺序返回需要建表的实体。
 func databaseEntities() []any {
+	entities := append([]any{}, baseDatabaseEntities()...)
+	return append(entities, memberCDatabaseEntities()...)
+}
+
+func baseDatabaseEntities() []any {
 	return []any{
 		&entity.Folder{},
 		&entity.Classroom{},
@@ -130,6 +152,11 @@ func databaseEntities() []any {
 		&entity.ClassroomAgent{},
 		&entity.Scene{},
 		&entity.SceneSegment{},
+	}
+}
+
+func memberCDatabaseEntities() []any {
+	return []any{
 		&entity.ClassroomConversation{},
 		&entity.ConversationMessage{},
 		&entity.ContextCompaction{},

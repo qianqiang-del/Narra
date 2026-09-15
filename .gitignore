@@ -43,6 +43,7 @@ Thumbs.db
 # Build artifacts
 /build/
 /tmp/
+.gocache/
 
 # Local BGE-M3 development environment and model cache
 embedding-service/.venv/
