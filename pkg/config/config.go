@@ -18,6 +18,70 @@ type Config struct {
 	Log        LogConfig       `mapstructure:"log"`
 	CORS       CORSConfig      `mapstructure:"cors"`
 	ConfigPath string          `mapstructure:"-"`
+	MCP        MCPConfig       `mapstructure:"mcp"`
+}
+
+// TTSProviderQwen 是 Qwen，走阿里云百炼；音色目录誊的就是它。
+const TTSProviderQwen = "qwen"
+
+// ttsSupportedProviders 是允许写进 tts.provider 的值。只有一个也照样做白名单。
+var ttsSupportedProviders = []string{TTSProviderQwen}
+
+const MCPTransportStreamableHTTP = "streamable_http"
+
+type MCPConfig struct {
+	Enabled bool              `mapstructure:"enabled"`
+	Servers []MCPServerConfig `mapstructure:"servers"`
+}
+
+type MCPServerConfig struct {
+	ID               string        `mapstructure:"id"`
+	Enabled          bool          `mapstructure:"enabled"`
+	Required         bool          `mapstructure:"required"`
+	Transport        string        `mapstructure:"transport"`
+	Endpoint         string        `mapstructure:"endpoint"`
+	APIKey           string        `mapstructure:"api_key"`
+	AuthEnv          string        `mapstructure:"auth_env"`
+	StartupTimeout   time.Duration `mapstructure:"startup_timeout"`
+	DiscoveryTimeout time.Duration `mapstructure:"discovery_timeout"`
+	CallTimeout      time.Duration `mapstructure:"call_timeout"`
+}
+
+func (c MCPConfig) Validate(mode string) error {
+	if !c.Enabled {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(c.Servers))
+	for index := range c.Servers {
+		server := c.Servers[index]
+		if !server.Enabled {
+			continue
+		}
+		id := strings.TrimSpace(server.ID)
+		if id == "" {
+			return fmt.Errorf("mcp.servers[%d].id 不能为空", index)
+		}
+		for _, r := range id {
+			if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '-' && r != '_' {
+				return fmt.Errorf("mcp server id %q 只能包含小写字母、数字、- 和 _", id)
+			}
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("mcp server id %q 重复", id)
+		}
+		seen[id] = struct{}{}
+		if server.Transport != MCPTransportStreamableHTTP {
+			return fmt.Errorf("mcp server %q transport 必须为 %s", id, MCPTransportStreamableHTTP)
+		}
+		endpoint, err := url.Parse(strings.TrimSpace(server.Endpoint))
+		if err != nil || endpoint.Host == "" || (endpoint.Scheme != "https" && !(mode != "release" && endpoint.Scheme == "http")) {
+			return fmt.Errorf("mcp server %q endpoint 必须是有效的 HTTPS URL（非 release 模式允许 HTTP）", id)
+		}
+		if server.StartupTimeout <= 0 || server.DiscoveryTimeout <= 0 || server.CallTimeout <= 0 {
+			return fmt.Errorf("mcp server %q 的 timeout 必须大于 0", id)
+		}
+	}
+	return nil
 }
 
 // AppConfig 应用配置
@@ -55,12 +119,7 @@ type RedisConfig struct {
 }
 
 // LLMConfig 大模型配置，喂给 Eino 的 ChatModel。
-//
-// 平铺而不是 provider 列表，是因为 V1 只用一家：OpenAI、DeepSeek、通义走的都是
-// OpenAI 兼容协议，换一家只需改 BaseURL 和 Model。将来真要多厂商并存、按课程选模型时，
-// 再改成分组结构，并把选中的 provider 记进 classrooms.generation_config（§4.2）。
-//
-// APIKey 不要写进配置文件：走环境变量 LLM_API_KEY 覆盖（见 loader.go）。
+
 type LLMConfig struct {
 	APIKey  string        `mapstructure:"api_key"`  // 密钥
 	BaseURL string        `mapstructure:"base_url"` // 接口地址，如 https://api.openai.com/v1
@@ -69,9 +128,6 @@ type LLMConfig struct {
 }
 
 // EmbeddingConfig 是兼容 OpenAI 协议的向量化服务配置。
-//
-// 它与 LLMConfig 分开，避免聊天模型与 embedding 模型混用端点、密钥和超时。
-// APIKey 可保存在本地 YAML 配置文件中，并可由环境变量 EMBEDDING_API_KEY 覆盖。
 type EmbeddingConfig struct {
 	Enabled    bool          `mapstructure:"enabled"`    // 是否启用向量化能力
 	APIKey     string        `mapstructure:"api_key"`    // 服务密钥；本地服务可为空，环境变量优先级更高
@@ -105,17 +161,8 @@ func (c EmbeddingConfig) Validate() error {
 	return nil
 }
 
-// TTSProviderQwen 是 Qwen，走阿里云百炼；音色目录誊的就是它。
-const TTSProviderQwen = "qwen"
-
-// ttsSupportedProviders 是允许写进 tts.provider 的值。只有一个也照样做白名单。
-var ttsSupportedProviders = []string{TTSProviderQwen}
-
 // TTSConfig 是语音合成服务的配置。
-//
-// 与 EmbeddingConfig 一样先于调用方落地：V1 还没有合成客户端，enabled 默认 false，
-// 没有 tts 段的老配置文件也能正常加载。音色目录不在这里，见 internal/service/voice_service.go。
-// APIKey 可写在配置文件的 tts.api_key，也可由环境变量 TTS_API_KEY 注入，环境变量优先。
+
 type TTSConfig struct {
 	Enabled  bool   `mapstructure:"enabled"`  // 是否启用语音合成
 	Provider string `mapstructure:"provider"` // 哪家 TTS，取值见 ttsSupportedProviders；启用时必填，故意不给默认值
