@@ -4,18 +4,113 @@
  * 使用左侧导航组织设置项，便于后续扩展更多配置页面。
  */
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
-import { Database, Monitor, Moon, Palette, Sun, X } from 'lucide-vue-next'
-import { ref } from 'vue'
+import { Database, Monitor, Moon, Palette, Plug, Plus, Sun, Trash2, Wifi, X } from 'lucide-vue-next'
+import { reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { storeToRefs } from 'pinia'
 
 import { useTheme, type ThemeMode } from '@/composables/useTheme'
+import { useMcpStore } from '@/stores/mcp'
 import { cn } from '@/lib/utils'
 
 const open = defineModel<boolean>('open', { default: false })
 
 const { t } = useI18n()
 const { mode, setMode } = useTheme()
-const activeSection = ref<'theme' | 'embedding'>('theme')
+const activeSection = ref<'theme' | 'embedding' | 'mcp'>('theme')
+
+const mcpStore = useMcpStore()
+const { servers: mcpServers, loading: mcpLoading } = storeToRefs(mcpStore)
+
+const deleteConfirmId = ref<number | null>(null)
+const testingId = ref<number | null>(null)
+const testResult = ref<{ id: number; success: boolean; message: string; tools?: string[] } | null>(null)
+
+const mcpFormOpen = ref(false)
+const mcpFormSubmitting = ref(false)
+const mcpFormError = ref('')
+const mcpForm = reactive({
+  serverId: '',
+  name: '',
+  endpoint: '',
+  apiKey: '',
+  transport: 'streamable_http',
+  enabled: true,
+  required: false,
+  startupTimeout: '10s',
+  discoveryTimeout: '10s',
+  callTimeout: '30s',
+  sortOrder: 0,
+})
+
+function openAddForm() {
+  mcpFormOpen.value = true
+  mcpFormError.value = ''
+  Object.assign(mcpForm, {
+    serverId: '', name: '', endpoint: '', apiKey: '',
+    transport: 'streamable_http', enabled: true, required: false,
+    startupTimeout: '10s', discoveryTimeout: '10s', callTimeout: '30s', sortOrder: 0,
+  })
+}
+
+function closeAddForm() {
+  mcpFormOpen.value = false
+  mcpFormError.value = ''
+}
+
+async function submitMcpForm() {
+  mcpFormSubmitting.value = true
+  mcpFormError.value = ''
+  try {
+    await mcpStore.add({ ...mcpForm })
+    closeAddForm()
+  } catch (e) {
+    mcpFormError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    mcpFormSubmitting.value = false
+  }
+}
+
+function openMcp() {
+  activeSection.value = 'mcp'
+  mcpStore.load()
+}
+
+let testTimer: ReturnType<typeof setTimeout> | null = null
+
+async function runTest(id: number) {
+  testingId.value = id
+  testResult.value = null
+  if (testTimer) { clearTimeout(testTimer); testTimer = null }
+  try {
+    const result = await mcpStore.test(id)
+    testResult.value = { id, ...result }
+  } catch (e) {
+    testResult.value = { id, success: false, message: e instanceof Error ? e.message : String(e) }
+  } finally {
+    testingId.value = null
+    testTimer = setTimeout(() => { testResult.value = null }, 5000)
+  }
+}
+
+async function toggleEnabled(id: number, current: boolean) {
+  try {
+    await mcpStore.edit(id, { enabled: !current })
+  } catch { /* ignore */ }
+}
+
+async function confirmDelete(id: number) {
+  if (deleteConfirmId.value === id) {
+    try {
+      await mcpStore.remove(id)
+      deleteConfirmId.value = null
+      if (testResult.value?.id === id) testResult.value = null
+    } catch { /* ignore */ }
+  } else {
+    deleteConfirmId.value = id
+    setTimeout(() => { if (deleteConfirmId.value === id) deleteConfirmId.value = null }, 3000)
+  }
+}
 
 const themeOptions: { value: ThemeMode; labelKey: string; icon: typeof Sun }[] = [
   { value: 'light', labelKey: 'settings.light', icon: Sun },
@@ -170,6 +265,14 @@ function openEmbedding() {
               <Database class="size-4" />
               {{ t('settings.embedding') }}
             </button>
+            <button
+              type="button"
+              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'mcp' ? 'bg-violet-100 text-violet-800 dark:bg-violet-500/15 dark:text-violet-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
+              @click="openMcp"
+            >
+              <Plug class="size-4" />
+              {{ t('settings.mcpTools') }}
+            </button>
           </nav>
         </aside>
 
@@ -210,7 +313,7 @@ function openEmbedding() {
             </div>
           </section>
 
-          <section v-else class="space-y-5">
+          <section v-else-if="activeSection === 'embedding'" class="space-y-5">
             <div>
               <h2 class="text-lg font-semibold tracking-tight">{{ t('settings.embedding') }}</h2>
               <DialogDescription class="mt-1 text-[13px] text-muted-foreground">
@@ -300,6 +403,142 @@ function openEmbedding() {
                 </button>
               </div>
             </form>
+          </section>
+
+          <section v-else-if="activeSection === 'mcp'" class="space-y-5">
+            <div class="flex items-center justify-between">
+              <div>
+                <h2 class="text-lg font-semibold tracking-tight">{{ t('settings.mcpTools') }}</h2>
+                <DialogDescription class="mt-1 text-[13px] text-muted-foreground">
+                  {{ t('mcp.desc') }}
+                </DialogDescription>
+              </div>
+              <button
+                v-if="!mcpFormOpen"
+                type="button"
+                class="inline-flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-violet-700"
+                @click="openAddForm"
+              >
+                <Plus class="size-3.5" />
+                {{ t('mcp.add') }}
+              </button>
+            </div>
+
+            <!-- 新增表单 -->
+            <form v-if="mcpFormOpen" class="space-y-3 rounded-lg border border-border p-4" @submit.prevent="submitMcpForm">
+              <div class="grid gap-3 sm:grid-cols-2">
+                <label class="block text-sm font-medium">
+                  {{ t('mcp.form.serverId') }}
+                  <input v-model="mcpForm.serverId" required placeholder="tavily" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-200" />
+                </label>
+                <label class="block text-sm font-medium">
+                  {{ t('mcp.form.name') }}
+                  <input v-model="mcpForm.name" required placeholder="Tavily Search" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-200" />
+                </label>
+              </div>
+              <label class="block text-sm font-medium">
+                {{ t('mcp.form.endpoint') }}
+                <input v-model="mcpForm.endpoint" required type="url" placeholder="https://mcp.tavily.com/mcp" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-200" />
+              </label>
+              <label class="block text-sm font-medium">
+                {{ t('mcp.form.apiKey') }}
+                <input v-model="mcpForm.apiKey" type="password" autocomplete="new-password" placeholder="sk-..." class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-200" />
+              </label>
+              <p v-if="mcpFormError" class="text-sm text-destructive">{{ mcpFormError }}</p>
+              <div class="flex justify-end gap-2 border-t border-border pt-3">
+                <button type="button" class="rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted" @click="closeAddForm">
+                  {{ t('common.cancel') }}
+                </button>
+                <button type="submit" :disabled="mcpFormSubmitting" class="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-violet-700 disabled:opacity-50">
+                  {{ mcpFormSubmitting ? t('mcp.form.submitting') : t('mcp.form.submit') }}
+                </button>
+              </div>
+            </form>
+
+            <div v-else-if="mcpLoading" class="py-8 text-center text-sm text-muted-foreground">
+              {{ t('common.loading') }}
+            </div>
+
+            <div v-else-if="mcpServers.length === 0" class="py-8 text-center text-sm text-muted-foreground">
+              {{ t('mcp.empty') }}
+            </div>
+
+            <div v-else class="space-y-2">
+              <div
+                v-for="srv in mcpServers"
+                :key="srv.id"
+                class="flex items-center gap-3 rounded-lg border border-border px-4 py-3 transition-colors hover:bg-muted/50"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm font-medium">{{ srv.name }}</span>
+                    <span class="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                      {{ srv.serverId }}
+                    </span>
+                  </div>
+                  <p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">
+                    {{ srv.endpoint }}
+                  </p>
+                </div>
+
+                <!-- 测试连接 -->
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  :disabled="testingId === srv.id"
+                  @click="runTest(srv.id)"
+                >
+                  <Wifi class="size-3" />
+                  {{ testingId === srv.id ? t('mcp.testing') : t('mcp.test') }}
+                </button>
+
+                <!-- 启用开关 -->
+                <button
+                  type="button"
+                  :class="cn(
+                    'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors',
+                    srv.enabled ? 'bg-violet-600' : 'bg-muted'
+                  )"
+                  @click="toggleEnabled(srv.id, srv.enabled)"
+                >
+                  <span
+                    :class="cn(
+                      'inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform',
+                      srv.enabled ? 'translate-x-4' : 'translate-x-0.5'
+                    )"
+                    class="mt-0.5"
+                  />
+                </button>
+
+                <!-- 删除 -->
+                <button
+                  type="button"
+                  :class="cn(
+                    'rounded p-1 transition-colors',
+                    deleteConfirmId === srv.id
+                      ? 'bg-destructive text-destructive-foreground'
+                      : 'text-muted-foreground hover:bg-destructive/10 hover:text-destructive'
+                  )"
+                  @click="confirmDelete(srv.id)"
+                >
+                  <Trash2 class="size-3.5" />
+                </button>
+              </div>
+            </div>
+
+            <!-- 测试结果 -->
+            <div
+              v-if="testResult"
+              :class="cn(
+                'rounded-lg border px-4 py-3 text-sm',
+                testResult.success ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' : 'border-destructive/30 bg-destructive/5 text-destructive'
+              )"
+            >
+              <p class="font-medium">{{ testResult.message }}</p>
+              <p v-if="testResult.tools?.length" class="mt-1 text-xs opacity-80">
+                {{ t('mcp.tools') }}：{{ testResult.tools.join(', ') }}
+              </p>
+            </div>
           </section>
         </main>
       </DialogContent>

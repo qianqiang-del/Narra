@@ -33,7 +33,6 @@ func Load(configPath string) (*Config, error) {
 	// TTS 同理。provider 故意不给默认值：它决定客户端走哪种协议，写错了要到合成那一步才炸。
 	v.SetDefault("tts.model", "qwen3-tts-flash")
 	v.SetDefault("tts.timeout", "60s")
-	v.SetDefault("mcp.enabled", false)
 
 	// 读取配置文件
 	if err := v.ReadInConfig(); err != nil {
@@ -72,9 +71,6 @@ func Load(configPath string) (*Config, error) {
 	}
 	if err := config.TTS.Validate(); err != nil {
 		return nil, fmt.Errorf("tts 配置无效: %w", err)
-	}
-	if err := config.MCP.Validate(config.App.Mode); err != nil {
-		return nil, fmt.Errorf("mcp 配置无效: %w", err)
 	}
 
 	globalConfig = config
