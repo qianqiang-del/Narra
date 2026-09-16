@@ -77,7 +77,6 @@ function durationToSeconds(duration: string): number {
 function embeddingPayload() {
   return {
     ...embeddingForm.value,
-    enabled: true,
     timeout: `${embeddingForm.value.timeout}s`,
   }
 }

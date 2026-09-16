@@ -1,6 +1,7 @@
 package api
 
 import (
+	"narra/internal/api/v1/embedding"
 	"narra/internal/api/v1/role"
 	"narra/internal/api/v1/voice"
 	"narra/internal/middleware"
@@ -11,15 +12,17 @@ import (
 
 // Router 路由
 type Router struct {
-	roleCtrl  *role.Controller
-	voiceCtrl *voice.Controller
+	roleCtrl      *role.Controller
+	embeddingCtrl *embedding.Controller
+	voiceCtrl     *voice.Controller
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService, voiceSvc service.VoiceService) *Router {
+func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService) *Router {
 	return &Router{
-		roleCtrl:  role.NewController(roleSvc),
-		voiceCtrl: voice.NewController(voiceSvc),
+		roleCtrl:      role.NewController(roleSvc),
+		embeddingCtrl: embedding.NewController(embeddingSvc),
+		voiceCtrl:     voice.NewController(voiceSvc),
 	}
 }
 
@@ -41,9 +44,10 @@ func (r *Router) Setup(engine *gin.Engine) {
 				"message": "Narra API is running",
 			})
 		})
-
+		// API 路由组
 		role.RegisterRoutes(v1, r.roleCtrl)
 		voice.RegisterRoutes(v1, r.voiceCtrl)
+		embedding.RegisterRoutes(v1, r.embeddingCtrl)
 	}
 }
 

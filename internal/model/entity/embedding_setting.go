@@ -1,7 +1,6 @@
 package entity
 
 // EmbeddingSetting 是一个可保存的 OpenAI 兼容 Embedding 服务配置。
-//
 // 系统可保存多条配置，但业务层保证同一时间只有一条 IsActive 为 true，
 // 运行中的向量化请求只使用这条配置。
 type EmbeddingSetting struct {

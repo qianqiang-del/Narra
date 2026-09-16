@@ -40,6 +40,6 @@ func Logger() gin.HandlerFunc {
 			fields = append(fields, zap.String("errors", c.Errors.String()))
 		}
 
-		logger.Info("HTTP Request", fields...)
+		logger.Info("HTTP 请求", fields...)
 	}
 }

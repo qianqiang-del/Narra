@@ -8,8 +8,7 @@ const (
 	KnowledgeDocumentSourceAPI    = "api"
 )
 
-// 知识原文实体对应知识原文表，是全局知识库中的一篇完整文章。
-//
+// KnowledgeDocument 知识原文实体对应知识原文表，是全局知识库中的一篇完整文章。
 // 它不归属于课程。正文保存未经切分的原文，是编辑、审计和重新生成切片的唯一来源；
 // 停用后文章及其切片不会参与知识检索。更新原文后应替换其全部切片，关联向量会级联删除。
 type KnowledgeDocument struct {

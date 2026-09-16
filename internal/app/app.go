@@ -19,6 +19,7 @@ import (
 	"narra/internal/service"
 	"narra/pkg/config"
 	"narra/pkg/database"
+	"narra/pkg/embedding"
 	"narra/pkg/logger"
 	"narra/pkg/tts"
 )
@@ -55,7 +56,9 @@ func (a *App) Initialize(configPath string) error {
 	}
 
 	// 4. 初始化依赖
-	a.initDependencies()
+	if err := a.initDependencies(); err != nil {
+		return err
+	}
 
 	// 5. 初始化路由
 	a.initRouter()
@@ -172,12 +175,18 @@ func memberCDatabaseEntities() []any {
 //
 // 顺序是 db → repository → service → router，每一层只拿到它下面那一层。
 // 数据库连接在 initDatabase 里已经建好，这里只往下传。
-func (a *App) initDependencies() {
+func (a *App) initDependencies() error {
 	// ========== 创建 Repository ==========
 	roleRepo := repository.NewRoleRepository(a.postgresDB)
+	embeddingSettingRepo := repository.NewEmbeddingSettingRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
 	roleSvc := service.NewRoleService(roleRepo)
+	embeddingManager := embedding.NewManager(a.cfg.Embedding)
+	embeddingSettingSvc := service.NewEmbeddingSettingService(embeddingSettingRepo, embeddingManager, a.cfg.JWT.Secret)
+	if err := embeddingSettingSvc.LoadActive(context.Background()); err != nil {
+		return err
+	}
 
 	// TTS 没启用或配置不全时客户端留 nil：音色列表照常可用，只有试听会返回一句明确的
 	// 错误。这里不 fail-fast，是因为试听是附加能力，不该拦住整个服务启动。
@@ -193,7 +202,8 @@ func (a *App) initDependencies() {
 	voiceSvc := service.NewVoiceService(ttsClient)
 
 	// ========== 创建 Router ==========
-	a.router = api.NewRouter(roleSvc, voiceSvc)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc)
+	return nil
 }
 
 // initRouter 初始化路由

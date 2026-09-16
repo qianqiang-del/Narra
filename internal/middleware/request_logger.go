@@ -31,7 +31,7 @@ func RequestLogger() gin.HandlerFunc {
 					body = string(bodyBytes)
 				}
 			} else {
-				body = "[File Upload]"
+				body = "[文件上传]"
 			}
 		}
 
@@ -40,7 +40,7 @@ func RequestLogger() gin.HandlerFunc {
 		end := time.Now()
 		latency := end.Sub(start)
 
-		logger.Info("HTTP Request",
+		logger.Info("HTTP 请求",
 			zap.String("method", c.Request.Method),
 			zap.String("path", path),
 			zap.String("query", query),
