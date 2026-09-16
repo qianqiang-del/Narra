@@ -3,10 +3,13 @@ package entity
 // EmbeddingModel 向量模型实体对应向量模型表，记录一个可用于知识库的向量模型。
 // 向量维度是模型的固定输出长度；检索时只可比较同一模型生成的向量。
 // 默认标记为真的模型用于线上知识检索，数据库通过部分唯一索引保证最多一条。
+//
+// UNIQUE (name) 由 Name 上的 unique tag 声明；理由同 OrchestrationRun.TraceID——
+// 单列唯一约束归 AutoMigrate，不能写进 0002 的 SQL。
 type EmbeddingModel struct {
 	BaseModel
 
-	Name         string  `gorm:"column:name;type:varchar(160);not null" json:"name"`          // 模型名称或服务端模型 ID，如 text-embedding-3-small
+	Name         string  `gorm:"column:name;type:varchar(160);not null;unique" json:"name"`   // 模型名称或服务端模型 ID，如 text-embedding-3-small
 	Provider     string  `gorm:"column:provider;type:varchar(80);not null" json:"provider"`   // 模型服务提供方或协议类型，如 openai-compatible
 	BaseURL      *string `gorm:"column:base_url;type:text" json:"base_url"`                   // 该模型的服务根地址；为空时由应用的全局 embedding 配置提供
 	Dimensions   int32   `gorm:"column:dimensions;not null" json:"dimensions"`                // 模型固定输出的向量维度

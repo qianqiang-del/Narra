@@ -19,6 +19,9 @@ const (
 )
 
 // AgentTurn 是 Director 选择一个课堂角色后产生的一次 Agent 执行回合。
+//
+// UNIQUE (output_message_id) 由 OutputMessageID 上的 unique tag 声明；理由同
+// OrchestrationRun.TraceID——单列唯一约束归 AutoMigrate，不能写进 SQL。
 type AgentTurn struct {
 	BaseModel
 
@@ -26,7 +29,7 @@ type AgentTurn struct {
 	TurnNo           int16           `gorm:"column:turn_no;not null" json:"turn_no"`
 	ClassroomAgentID *uint64         `gorm:"column:classroom_agent_id" json:"classroom_agent_id"`
 	AgentSnapshot    json.RawMessage `gorm:"column:agent_snapshot;type:jsonb;not null;default:'{}'" json:"agent_snapshot"`
-	OutputMessageID  *uint64         `gorm:"column:output_message_id" json:"output_message_id"`
+	OutputMessageID  *uint64         `gorm:"column:output_message_id;unique" json:"output_message_id"`
 	Status           string          `gorm:"column:status;type:varchar(32);not null" json:"status"`
 	SelectionReason  *string         `gorm:"column:selection_reason;type:text" json:"selection_reason"`
 	NextAction       *string         `gorm:"column:next_action;type:varchar(32)" json:"next_action"`

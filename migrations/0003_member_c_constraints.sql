@@ -132,9 +132,9 @@ ALTER TABLE orchestration_runs DROP CONSTRAINT IF EXISTS orchestration_runs_trig
 ALTER TABLE orchestration_runs ADD CONSTRAINT orchestration_runs_trigger_attempt_key
     UNIQUE (trigger_message_id, attempt_no);
 
-ALTER TABLE orchestration_runs DROP CONSTRAINT IF EXISTS orchestration_runs_trace_id_key;
-ALTER TABLE orchestration_runs ADD CONSTRAINT orchestration_runs_trace_id_key
-    UNIQUE (trace_id);
+-- UNIQUE (trace_id) 由 OrchestrationRun.TraceID 上的 unique tag 声明，AutoMigrate 负责建。
+-- 单列唯一约束不能写在这里：AutoMigrate 每次启动都会对账，发现库里唯一而实体上没标 unique，
+-- 就按自己算的名字 uni_orchestration_runs_trace_id 去删，删不掉直接 panic。见 migrations/README.md。
 
 ALTER TABLE orchestration_runs DROP CONSTRAINT IF EXISTS orchestration_runs_conversation_id_fkey;
 ALTER TABLE orchestration_runs ADD CONSTRAINT orchestration_runs_conversation_id_fkey
@@ -173,9 +173,7 @@ ALTER TABLE agent_turns DROP CONSTRAINT IF EXISTS agent_turns_run_turn_key;
 ALTER TABLE agent_turns ADD CONSTRAINT agent_turns_run_turn_key
     UNIQUE (run_id, turn_no);
 
-ALTER TABLE agent_turns DROP CONSTRAINT IF EXISTS agent_turns_output_message_key;
-ALTER TABLE agent_turns ADD CONSTRAINT agent_turns_output_message_key
-    UNIQUE (output_message_id);
+-- UNIQUE (output_message_id) 由 AgentTurn.OutputMessageID 上的 unique tag 声明，同 trace_id。
 
 ALTER TABLE agent_turns DROP CONSTRAINT IF EXISTS agent_turns_run_id_fkey;
 ALTER TABLE agent_turns ADD CONSTRAINT agent_turns_run_id_fkey
