@@ -3,8 +3,11 @@
 ## 项目定位
 Narra —— 基于 **Go + CloudWeGo Eino** 的多智能体智能讲解平台，参考 OpenMAIC 理念，把提示词 + 学习资料转成结构化讲解内容。探索 LLM / Agent Loop / Tool Calling / RAG / Embedding / 向量库 / Multi-Agent 协作。
 
+## ⚠️ 环境迁移（2026-09-11）
+项目已迁到 **`C:\Users\23107\Desktop\Nannr`**（原 `D:\Narra`）；本机用户 `23107`。**`D:\node\node_global` 不存在、`agent-browser` 未安装**（下文 agent-browser 工作流是旧机器 LHK 的，本机需先 `npm i -g agent-browser && agent-browser install` 才能用）。OpenMAIC 参考源码在 `_openmaic_source/`。
+
 ## 前端现状（2026-09-10 起）
-- `D:\Narra\frontend` 已完成 **Vue 3 + Vite** 脚手架搭建（原 Next.js 15 + TS 项目已清空）。
+- `frontend/` 已完成 **Vue 3 + Vite** 脚手架搭建（原 Next.js 15 + TS 项目已清空）。
 - **技术栈**：Vue 3.5 / Vite 8（rolldown）/ TS 6 / Tailwind CSS v4 / Vue Router 4 / Pinia 4 / vue-i18n 11 / lucide-vue-next / motion-v / reka-ui / vue-sonner / @fontsource-variable/inter。
 - **保留**：`assets/`、`public/`、`src/styles/globals.css`、`docs/UI-还原文档.md`、`README.md`。
 - 原完整源码在 git commit `d65618d`（`git archive d65618d frontend/...` 可取回）。

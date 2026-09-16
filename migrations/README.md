@@ -33,6 +33,14 @@ psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0002_seed
 `0002` 也是幂等的（`ON CONFLICT DO NOTHING`），但它灌的是**初始值**，不是权威值：
 角色池以后由人工直接维护数据库，加角色、改角色不用回改这个文件。
 
+**第四步，补 Embedding 配置约束**：
+
+```bash
+psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0003_embedding_settings.sql
+```
+
+`embedding_settings` 允许保存多条 OpenAI 兼容服务配置，但数据库会限制同时只有一条当前启用配置。
+
 ## 谁拥有约束
 
 **GORM 表达得出的归 GORM，表达不出的归 SQL。同一条约束只能有一处声明。**
