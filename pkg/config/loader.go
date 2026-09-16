@@ -28,10 +28,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetEnvPrefix("NARRA")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	// Embedding defaults keep older configuration files valid while allowing
-	// the service to remain opt-in via embedding.enabled.
-	v.SetDefault("embedding.model", "BAAI/bge-m3")
-	v.SetDefault("embedding.dimensions", BGEM3Dimensions)
+	// Embedding 默认不启用。模型与向量维度因服务商而异，启用时必须显式配置。
 	v.SetDefault("embedding.timeout", "30s")
 	// TTS 同理。provider 故意不给默认值：它决定客户端走哪种协议，写错了要到合成那一步才炸。
 	v.SetDefault("tts.model", "qwen3-tts-flash")
@@ -47,6 +44,7 @@ func Load(configPath string) (*Config, error) {
 	if err := v.Unmarshal(config); err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
 	}
+	config.ConfigPath = v.ConfigFileUsed()
 
 	// 从环境变量覆盖敏感配置
 	if val := os.Getenv("POSTGRES_PASSWORD"); val != "" {
@@ -69,7 +67,7 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	if err := config.Embedding.Validate(); err != nil {
-		return nil, fmt.Errorf("embedding 配置无效: %w", err)
+		return nil, fmt.Errorf("向量服务配置无效: %w", err)
 	}
 	if err := config.TTS.Validate(); err != nil {
 		return nil, fmt.Errorf("tts 配置无效: %w", err)

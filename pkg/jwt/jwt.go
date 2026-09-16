@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	ErrTokenInvalid = errors.New("token 无效")
-	ErrTokenExpired = errors.New("token 已过期")
+	ErrTokenInvalid = errors.New("令牌无效")
+	ErrTokenExpired = errors.New("令牌已过期")
 )
 
 // GenerateToken 生成 JWT Token

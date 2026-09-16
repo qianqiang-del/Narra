@@ -59,7 +59,7 @@ func InitPostgres(cfg *config.PostgresConfig) (*gorm.DB, error) {
 	}
 
 	postgresDB = db
-	logger.Info("PostgreSQL connected",
+	logger.Info("PostgreSQL 连接成功",
 		zap.String("host", cfg.Host),
 		zap.Int("port", cfg.Port),
 		zap.String("database", cfg.Database),

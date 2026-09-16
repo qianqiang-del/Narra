@@ -19,7 +19,7 @@ func Recovery() gin.HandlerFunc {
 				stack := debug.Stack()
 
 				// 记录错误日志
-				logger.Error("Panic recovered",
+				logger.Error("已恢复异常",
 					zap.Any("error", err),
 					zap.String("stack", string(stack)),
 					zap.String("path", c.Request.URL.Path),
