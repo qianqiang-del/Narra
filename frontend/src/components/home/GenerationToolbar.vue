@@ -4,7 +4,7 @@
  *
  * 子项：模型选择器 | 分隔线 | 课程材料 | 联网搜索
  *
- * 模型/搜索/解析服务商数据当前为静态表（原项目从服务端配置接口拉取）。
+ * 模型/解析服务商数据当前为静态表（原项目从服务端配置接口拉取）。
  * 接入 Go 后端后替换为 `GET /api/providers`。
  *
  * 媒体生成：原版是 4 个 Tab 的弹层（Image / Video / TTS / ASR），本项目按需求全部删掉：
@@ -28,7 +28,6 @@ const { t } = useI18n()
 const providerId = defineModel<string>('providerId', { default: 'openai' })
 const modelId = defineModel<string>('modelId', { default: 'gpt-4o-mini' })
 const webSearch = defineModel<boolean>('webSearch', { default: false })
-const searchEngine = defineModel<string>('searchEngine', { default: 'tavily' })
 const extractor = defineModel<string>('extractor', { default: 'mineru' })
 const materials = defineModel<{ id: string; name: string; size: number }[]>('materials', {
   default: () => [],
@@ -37,7 +36,7 @@ const materials = defineModel<{ id: string; name: string; size: number }[]>('mat
 const { hasProvider } = defineProps<{ hasProvider?: boolean }>()
 
 const rootRef = ref<HTMLElement | null>(null)
-const openMenu = ref<'model' | 'material' | 'web' | null>(null)
+const openMenu = ref<'model' | 'material' | null>(null)
 const modelKeyword = ref('')
 const materialDragging = ref(false)
 
@@ -55,13 +54,6 @@ const filteredProviders = computed(() => {
 })
 
 const activeModels = computed(() => currentProvider.value?.models ?? [])
-
-const SEARCH_ENGINES = [
-  { id: 'tavily', name: 'Tavily' },
-  { id: 'bocha', name: '博查' },
-  { id: 'brave', name: 'Brave' },
-  { id: 'browser', name: 'Browser' },
-]
 
 const EXTRACTORS = [
   { id: 'mineru', name: 'MinerU' },
@@ -307,46 +299,16 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         </button>
       </UiTooltip>
 
-      <button v-else type="button" :class="webSearch ? pillActive : pillMuted" @click="toggle('web')">
+      <button
+        v-else
+        type="button"
+        :class="webSearch ? pillActive : pillMuted"
+        :aria-pressed="webSearch"
+        :title="webSearch ? t('toolbar.webSearchOn') : t('toolbar.webSearchOff')"
+        @click="webSearch = !webSearch"
+      >
         <Globe2 :class="cn('size-3.5', webSearch && 'animate-pulse')" />
       </button>
-
-      <div
-        v-if="openMenu === 'web'"
-        class="absolute bottom-full left-0 z-50 mb-2 w-64 space-y-3 rounded-xl border border-border bg-popover p-3 shadow-lg"
-      >
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-medium">{{ t('toolbar.webSearch') }}</span>
-          <button
-            type="button"
-            :class="
-              cn(
-                'relative h-5 w-9 rounded-full transition-colors',
-                webSearch ? 'bg-violet-500' : 'bg-muted',
-              )
-            "
-            @click="webSearch = !webSearch"
-          >
-            <span
-              :class="
-                cn(
-                  'absolute top-0.5 size-4 rounded-full bg-white shadow transition-all',
-                  webSearch ? 'left-4.5' : 'left-0.5',
-                )
-              "
-            />
-          </button>
-        </div>
-        <div class="space-y-1">
-          <span class="text-[11px] text-muted-foreground/60">{{ t('toolbar.searchEngine') }}</span>
-          <select
-            v-model="searchEngine"
-            class="h-7 w-full rounded-md border border-input bg-transparent px-1.5 text-xs outline-none"
-          >
-            <option v-for="s in SEARCH_ENGINES" :key="s.id" :value="s.id">{{ s.name }}</option>
-          </select>
-        </div>
-      </div>
     </div>
   </div>
 </template>

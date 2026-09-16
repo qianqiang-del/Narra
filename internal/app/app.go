@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"narra/internal/api"
+	internalmcp "narra/internal/mcp"
 	"narra/internal/model/entity"
 	"narra/internal/repository"
 	"narra/internal/service"
@@ -31,6 +32,7 @@ type App struct {
 	redis      *redis.Client
 	router     *api.Router
 	server     *http.Server
+	mcpManager *internalmcp.Manager
 }
 
 // NewApp 创建应用实例
@@ -151,6 +153,10 @@ func (a *App) initDatabase() error {
 // 顺序是 db → repository → service → router，每一层只拿到它下面那一层。
 // 数据库连接在 initDatabase 里已经建好，这里只往下传。
 func (a *App) initDependencies() error {
+	a.mcpManager = internalmcp.NewManager(a.cfg.App, a.cfg.MCP)
+	if err := a.mcpManager.Start(context.Background()); err != nil {
+		return fmt.Errorf("MCP 初始化失败: %w", err)
+	}
 	// ========== 创建 Repository ==========
 	roleRepo := repository.NewRoleRepository(a.postgresDB)
 	embeddingSettingRepo := repository.NewEmbeddingSettingRepository(a.postgresDB)
@@ -241,6 +247,12 @@ func (a *App) gracefulShutdown() {
 	if a.router != nil {
 		if err := a.router.Close(); err != nil {
 			logger.Error("关闭路由连接失败", zap.Error(err))
+		}
+	}
+
+	if a.mcpManager != nil {
+		if err := a.mcpManager.Close(ctx); err != nil {
+			logger.Error("关闭 MCP 连接失败", zap.Error(err))
 		}
 	}
 

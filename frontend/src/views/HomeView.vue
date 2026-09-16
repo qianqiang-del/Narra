@@ -39,7 +39,6 @@ const providerId = ref('openai')
 const modelId = ref('gpt-4o-mini')
 const hasProvider = ref(true)
 const webSearch = ref(false)
-const searchEngine = ref('tavily')
 const extractor = ref('mineru')
 const materials = ref<{ id: string; name: string; size: number }[]>([])
 
@@ -160,7 +159,6 @@ function openClassroom(id: string) {
               v-model:provider-id="providerId"
               v-model:model-id="modelId"
               v-model:web-search="webSearch"
-              v-model:search-engine="searchEngine"
               v-model:extractor="extractor"
               v-model:materials="materials"
               :has-provider="hasProvider"

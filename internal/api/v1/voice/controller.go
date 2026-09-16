@@ -33,13 +33,7 @@ func (c *Controller) List(ctx *gin.Context) {
 	response.Success(ctx, items)
 }
 
-// Preview 试听音色，合成一句固定的文案。
-//
-//	GET /api/v1/voices/:id/preview
-//
-// 音频 base64 之后塞进常规 JSON 信封，而不是返回裸字节流：整个后端只有一套信封，
-// 前端只有一个 request() 会解它。为一个接口破例，前端就得多一套 fetch + blob 处理
-// 和一整套错误分支。试听文案只有十来个字，base64 那 33% 的膨胀可以忽略。
+// GET /api/v1/voices/:id/preview
 func (c *Controller) Preview(ctx *gin.Context) {
 	voiceID := ctx.Param("id")
 
