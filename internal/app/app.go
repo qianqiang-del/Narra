@@ -109,7 +109,29 @@ func (a *App) initDatabase() error {
 	//
 	// PresetAgent 必须排在自己的关联表 ClassroomAgent 之前：0001 里有
 	// classroom_agents.agent_id -> preset_agents.id 的外键，表得先存在。
-	if err := autoMigrateDatabase(a.postgresDB); err != nil {
+	// 建表；唯一约束 / CHECK / 外键 / 触发器由 migrations SQL 补充。
+	logger.Info("开始数据库迁移...")
+	if err := a.postgresDB.AutoMigrate(
+		&entity.Folder{},
+		&entity.Classroom{},
+		&entity.PresetAgent{},
+		&entity.ClassroomAgent{},
+		&entity.Scene{},
+		&entity.SceneSegment{},
+		&entity.EmbeddingModel{},
+		&entity.EmbeddingSetting{},
+		&entity.KnowledgeDocument{},
+		&entity.KnowledgeChunk{},
+		&entity.KnowledgeEmbedding{},
+		&entity.ClassroomConversation{},
+		&entity.ConversationMessage{},
+		&entity.ContextCompaction{},
+		&entity.OrchestrationRun{},
+		&entity.AgentTurn{},
+		&entity.SharedContextMemory{},
+		&entity.ConversationEvent{},
+		&entity.AgentTraceSpan{},
+	); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
 	}
 	logger.Info("数据库表结构迁移完成")
@@ -122,53 +144,6 @@ func (a *App) initDatabase() error {
 	a.redis = rs
 
 	return nil
-}
-
-func autoMigrateDatabase(db *gorm.DB) error {
-	if err := db.AutoMigrate(baseDatabaseEntities()...); err != nil {
-		return err
-	}
-
-	for _, entity := range memberCDatabaseEntities() {
-		if db.Migrator().HasTable(entity) {
-			continue
-		}
-		if err := db.AutoMigrate(entity); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// databaseEntities 按外键依赖顺序返回需要建表的实体。
-func databaseEntities() []any {
-	entities := append([]any{}, baseDatabaseEntities()...)
-	return append(entities, memberCDatabaseEntities()...)
-}
-
-func baseDatabaseEntities() []any {
-	return []any{
-		&entity.Folder{},
-		&entity.Classroom{},
-		&entity.PresetAgent{},
-		&entity.ClassroomAgent{},
-		&entity.Scene{},
-		&entity.SceneSegment{},
-	}
-}
-
-func memberCDatabaseEntities() []any {
-	return []any{
-		&entity.ClassroomConversation{},
-		&entity.ConversationMessage{},
-		&entity.ContextCompaction{},
-		&entity.OrchestrationRun{},
-		&entity.AgentTurn{},
-		&entity.SharedContextMemory{},
-		&entity.ConversationEvent{},
-		&entity.AgentTraceSpan{},
-	}
 }
 
 // initDependencies 初始化依赖注入
