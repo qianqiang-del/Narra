@@ -46,18 +46,9 @@ type Manager struct {
 	connect  clientFactory
 }
 
-// NewManager 根据配置创建 MCP 管理器，仅注册 enabled 的 server。
-func NewManager(app config.AppConfig, cfg config.MCPConfig) *Manager {
-	manager := &Manager{app: app, servers: make(map[string]*serverState), connect: defaultClientFactory}
-	if !cfg.Enabled {
-		return manager
-	}
-	for _, server := range cfg.Servers {
-		if server.Enabled {
-			manager.servers[server.ID] = &serverState{config: server, status: StatusUnknown}
-		}
-	}
-	return manager
+// NewManager 创建空的 MCP 管理器，server 配置通过 LoadFromDB 从数据库加载。
+func NewManager(app config.AppConfig) *Manager {
+	return &Manager{app: app, servers: make(map[string]*serverState), connect: defaultClientFactory}
 }
 
 func defaultClientFactory(ctx context.Context, server config.MCPServerConfig, app config.AppConfig) (managedClient, error) {

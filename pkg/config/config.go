@@ -18,7 +18,6 @@ type Config struct {
 	Log        LogConfig       `mapstructure:"log"`
 	CORS       CORSConfig      `mapstructure:"cors"`
 	ConfigPath string          `mapstructure:"-"`
-	MCP        MCPConfig       `mapstructure:"mcp"`
 }
 
 // TTSProviderQwen 是 Qwen，走阿里云百炼；音色目录誊的就是它。
@@ -27,13 +26,7 @@ const TTSProviderQwen = "qwen"
 // ttsSupportedProviders 是允许写进 tts.provider 的值。只有一个也照样做白名单。
 var ttsSupportedProviders = []string{TTSProviderQwen}
 
-const MCPTransportStreamableHTTP = "streamable_http"
-
-type MCPConfig struct {
-	Enabled bool              `mapstructure:"enabled"`
-	Servers []MCPServerConfig `mapstructure:"servers"`
-}
-
+// MCPServerConfig 是 MCP 模块内部使用的单个 server 连接配置。
 type MCPServerConfig struct {
 	ID               string        `mapstructure:"id"`
 	Enabled          bool          `mapstructure:"enabled"`
@@ -45,43 +38,6 @@ type MCPServerConfig struct {
 	StartupTimeout   time.Duration `mapstructure:"startup_timeout"`
 	DiscoveryTimeout time.Duration `mapstructure:"discovery_timeout"`
 	CallTimeout      time.Duration `mapstructure:"call_timeout"`
-}
-
-func (c MCPConfig) Validate(mode string) error {
-	if !c.Enabled {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(c.Servers))
-	for index := range c.Servers {
-		server := c.Servers[index]
-		if !server.Enabled {
-			continue
-		}
-		id := strings.TrimSpace(server.ID)
-		if id == "" {
-			return fmt.Errorf("mcp.servers[%d].id 不能为空", index)
-		}
-		for _, r := range id {
-			if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '-' && r != '_' {
-				return fmt.Errorf("mcp server id %q 只能包含小写字母、数字、- 和 _", id)
-			}
-		}
-		if _, ok := seen[id]; ok {
-			return fmt.Errorf("mcp server id %q 重复", id)
-		}
-		seen[id] = struct{}{}
-		if server.Transport != MCPTransportStreamableHTTP {
-			return fmt.Errorf("mcp server %q transport 必须为 %s", id, MCPTransportStreamableHTTP)
-		}
-		endpoint, err := url.Parse(strings.TrimSpace(server.Endpoint))
-		if err != nil || endpoint.Host == "" || (endpoint.Scheme != "https" && !(mode != "release" && endpoint.Scheme == "http")) {
-			return fmt.Errorf("mcp server %q endpoint 必须是有效的 HTTPS URL（非 release 模式允许 HTTP）", id)
-		}
-		if server.StartupTimeout <= 0 || server.DiscoveryTimeout <= 0 || server.CallTimeout <= 0 {
-			return fmt.Errorf("mcp server %q 的 timeout 必须大于 0", id)
-		}
-	}
-	return nil
 }
 
 // AppConfig 应用配置
