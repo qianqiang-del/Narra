@@ -9,15 +9,16 @@ import (
 
 // Config 应用配置结构体
 type Config struct {
-	App        AppConfig       `mapstructure:"app"`
-	Database   DatabaseConfig  `mapstructure:"database"`
-	LLM        LLMConfig       `mapstructure:"llm"`
-	Embedding  EmbeddingConfig `mapstructure:"embedding"`
-	TTS        TTSConfig       `mapstructure:"tts"`
-	JWT        JWTConfig       `mapstructure:"jwt"`
-	Log        LogConfig       `mapstructure:"log"`
-	CORS       CORSConfig      `mapstructure:"cors"`
-	ConfigPath string          `mapstructure:"-"`
+	App            AppConfig            `mapstructure:"app"`
+	Database       DatabaseConfig       `mapstructure:"database"`
+	LLM            LLMConfig            `mapstructure:"llm"`
+	Embedding      EmbeddingConfig      `mapstructure:"embedding"`
+	TTS            TTSConfig            `mapstructure:"tts"`
+	DocumentParser DocumentParserConfig `mapstructure:"document_parser"`
+	JWT            JWTConfig            `mapstructure:"jwt"`
+	Log            LogConfig            `mapstructure:"log"`
+	CORS           CORSConfig           `mapstructure:"cors"`
+	ConfigPath     string               `mapstructure:"-"`
 }
 
 // TTSProviderQwen 是 Qwen，走阿里云百炼；音色目录誊的就是它。
@@ -158,6 +159,68 @@ func (c TTSConfig) Validate() error {
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("tts.timeout 必须大于 0")
+	}
+
+	return nil
+}
+
+// DocumentParserConfig 是文档解析器（本地 Python 子进程）的配置。
+//
+// 使用者机器上不需要预装 Python：解释器与依赖要么随发布包携带（runtime_dir），
+// 要么首次运行时用 uv 自动准备（env_dir），要么由使用者指定已有环境（python_path）。
+type DocumentParserConfig struct {
+	Enabled       bool          `mapstructure:"enabled"`        // 是否启用文档解析能力
+	PythonPath    string        `mapstructure:"python_path"`    // 已有解释器路径；留空则走三级自动解析
+	RuntimeDir    string        `mapstructure:"runtime_dir"`    // 随包携带的运行时目录；留空取 <程序目录>/python-runtime
+	EnvDir        string        `mapstructure:"env_dir"`        // uv 现建的环境目录；留空取 <用户缓存>/narra/documentparser-env
+	ScriptPath    string        `mapstructure:"script_path"`    // parse_document.py 路径；留空自动查找
+	Requirements  string        `mapstructure:"requirements"`   // 依赖清单；留空取脚本同目录的 requirements.txt
+	UVPath        string        `mapstructure:"uv_path"`        // uv 路径；留空按 随包目录 → 程序目录 → PATH 查找
+	PythonVersion string        `mapstructure:"python_version"` // uv 要准备的解释器版本，如 3.12
+	IndexURL      string        `mapstructure:"index_url"`      // PyPI 镜像；国内首次准备依赖时建议配置
+	Timeout       time.Duration `mapstructure:"timeout"`        // 单次解析超时
+	OCREngine     string        `mapstructure:"ocr_engine"`     // rapidocr（本地，默认）或 api（会把图片外发）
+	OCRAPIBaseURL string        `mapstructure:"ocr_api_base_url"`
+	OCRAPIKey     string        `mapstructure:"ocr_api_key"`
+	OCRAPIModel   string        `mapstructure:"ocr_api_model"`
+	WorkDir       string        `mapstructure:"work_dir"` // 图片导出根目录；留空用系统临时目录
+}
+
+// documentParserOCREngines 是允许写进 document_parser.ocr_engine 的值。只有一个也照样做白名单。
+var documentParserOCREngines = []string{"rapidocr", "api"}
+
+// Validate 校验文档解析器配置，只在 enabled 为真时校验具体参数。
+func (c DocumentParserConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+
+	engine := strings.TrimSpace(c.OCREngine)
+	supported := false
+	for _, candidate := range documentParserOCREngines {
+		if engine == candidate {
+			supported = true
+			break
+		}
+	}
+	if !supported {
+		return fmt.Errorf("document_parser.ocr_engine 必须是 %s 之一", strings.Join(documentParserOCREngines, "、"))
+	}
+
+	// 选 api 就意味着文档内容会离开本机，所以地址和模型必须显式填全，不给默认值兜底。
+	if engine == "api" {
+		apiURL, err := url.Parse(strings.TrimSpace(c.OCRAPIBaseURL))
+		if err != nil || apiURL.Scheme == "" || apiURL.Host == "" ||
+			(apiURL.Scheme != "http" && apiURL.Scheme != "https") {
+			return fmt.Errorf("document_parser.ocr_api_base_url 必须是有效的 http 或 https URL")
+		}
+		if strings.TrimSpace(c.OCRAPIModel) == "" {
+			return fmt.Errorf("document_parser.ocr_api_model 不能为空")
+		}
+	}
+
+	if c.Timeout <= 0 {
+		return fmt.Errorf("document_parser.timeout 必须大于 0")
 	}
 
 	return nil

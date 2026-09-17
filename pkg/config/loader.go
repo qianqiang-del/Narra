@@ -33,6 +33,11 @@ func Load(configPath string) (*Config, error) {
 	// TTS 同理。provider 故意不给默认值：它决定客户端走哪种协议，写错了要到合成那一步才炸。
 	v.SetDefault("tts.model", "qwen3-tts-flash")
 	v.SetDefault("tts.timeout", "60s")
+	// 文档解析：解释器与依赖由 Go 侧自动准备（见 pkg/documentparser）。脚本自身没有超时控制，
+	// 而 CPU 上跑版面模型是分钟级的，所以这里必须给足；OCR 默认走本地，不外发文档内容。
+	v.SetDefault("document_parser.timeout", "10m")
+	v.SetDefault("document_parser.python_version", "3.12")
+	v.SetDefault("document_parser.ocr_engine", "rapidocr")
 
 	// 读取配置文件
 	if err := v.ReadInConfig(); err != nil {
@@ -65,12 +70,18 @@ func Load(configPath string) (*Config, error) {
 	if val := os.Getenv("TTS_API_KEY"); val != "" {
 		config.TTS.APIKey = val
 	}
+	if val := os.Getenv("DOCUMENT_PARSER_OCR_API_KEY"); val != "" {
+		config.DocumentParser.OCRAPIKey = val
+	}
 
 	if err := config.Embedding.Validate(); err != nil {
 		return nil, fmt.Errorf("向量服务配置无效: %w", err)
 	}
 	if err := config.TTS.Validate(); err != nil {
 		return nil, fmt.Errorf("tts 配置无效: %w", err)
+	}
+	if err := config.DocumentParser.Validate(); err != nil {
+		return nil, fmt.Errorf("文档解析器配置无效: %w", err)
 	}
 
 	globalConfig = config
