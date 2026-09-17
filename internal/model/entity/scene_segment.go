@@ -33,23 +33,29 @@ const (
 // 音频时长不落库，前端从音频元素自身读（HTMLAudioElement.duration）。
 //
 // 约束（§4.5）：UNIQUE (scene_id, content_key)、UNIQUE (scene_id, sort_order)。
-// scene_id 同时参与这两个复合唯一约束，而 GORM 的 tag 在同一字段上无法声明两个复合索引
-// （ParseTagSetting 对重复 key 是覆盖而非追加），因此这两条约束写在 SQL migration 中。
+// scene_id 同时参与这两个复合唯一约束——GORM 的 tag 解析的是原始 tag 字符串
+// （schema/index.go parseFieldIndexes 按分号逐段处理），同一字段写两段同名的
+// uniqueIndex 是被支持的，两条约束都由 AutoMigrate 建。
 //
 // UNIQUE (scene_id, sort_order) 用普通 UNIQUE 即可，理由与 scenes 那条相同（V1 不重排，
 // 见 §4.4）。将来工作台落地时，两条要一起改成可延迟，讲解顺序会跟着页面重排一起挪位。
 type SceneSegment struct {
 	BaseModel
 
-	SceneID uint64 `gorm:"column:scene_id;not null" json:"scene_id"` // 所属场景；级联删除
+	SceneID uint64 `gorm:"column:scene_id;not null;uniqueIndex:scene_segments_scene_id_content_key_key;uniqueIndex:scene_segments_scene_id_sort_order_key" json:"scene_id"` // 所属场景；级联删除
 
-	ContentKey string `gorm:"column:content_key;type:varchar(120);not null" json:"content_key"` // 对应场景 JSON 内容块的稳定 key；由大模型产出，写入前须按字符截断到 120 以内
-	SortOrder  int32  `gorm:"column:sort_order;not null" json:"sort_order"`                     // 讲解播放顺序
-	Text       string `gorm:"column:text;type:text;not null" json:"text"`                       // 老师实际讲解的文本
-	Status     string `gorm:"column:status;type:varchar(32);not null" json:"status"`            // pending | generating | ready | failed；ready = 讲稿与音频都就绪，可播
+	ContentKey string `gorm:"column:content_key;type:varchar(120);not null;uniqueIndex:scene_segments_scene_id_content_key_key" json:"content_key"`                                  // 对应场景 JSON 内容块的稳定 key；由大模型产出，写入前须按字符截断到 120 以内
+	SortOrder  int32  `gorm:"column:sort_order;not null;uniqueIndex:scene_segments_scene_id_sort_order_key;check:scene_segments_sort_order_check,sort_order >= 0" json:"sort_order"` // 讲解播放顺序
+	Text       string `gorm:"column:text;type:text;not null" json:"text"`                                                                                                            // 老师实际讲解的文本
+	Status     string `gorm:"column:status;type:varchar(32);not null;check:scene_segments_status_check,status IN ('pending', 'generating', 'ready', 'failed')" json:"status"`        // pending | generating | ready | failed；ready = 讲稿与音频都就绪，可播
 
-	AudioPath    *string `gorm:"column:audio_path;type:text" json:"audio_path"`       // TTS 音频文件相对路径；ready 时必须非空
-	ErrorMessage *string `gorm:"column:error_message;type:text" json:"error_message"` // 讲稿或 TTS 失败摘要，禁止写入密钥
+	// Scene 仅供 AutoMigrate 建外键 scene_segments_scene_id_fkey（ON DELETE CASCADE）。
+	// 业务代码禁止给它赋值或 Preload。
+	Scene *Scene `gorm:"foreignKey:SceneID;constraint:scene_segments_scene_id_fkey,OnDelete:CASCADE" json:"-"`
+
+	// ready_has_audio 这条 CHECK 跨 status 与 audio_path 两列，挂在 AudioPath 上（每字段限一条 check tag）。
+	AudioPath    *string `gorm:"column:audio_path;type:text;check:scene_segments_ready_has_audio_check,status <> 'ready' OR audio_path IS NOT NULL" json:"audio_path"` // TTS 音频文件相对路径；ready 时必须非空
+	ErrorMessage *string `gorm:"column:error_message;type:text" json:"error_message"`                                                                                  // 讲稿或 TTS 失败摘要，禁止写入密钥
 }
 
 // TableName 返回表名。

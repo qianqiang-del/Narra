@@ -22,10 +22,12 @@ package entity
 //
 // # 约束
 //
-// UNIQUE (classroom_id, agent_id)：同一个角色在一堂课里只出现一次。
+// UNIQUE (classroom_id, agent_id)：同一个角色在一堂课里只出现一次。由两个字段上同名的
+// uniqueIndex tag 声明，AutoMigrate 建（唯一索引与唯一约束在 PostgreSQL 里等价）。
 //
 // agent_id 是 ON DELETE RESTRICT：想删一个还被课程引用的角色会被拦下，
-// 池子里下架角色应该用 preset_agents.enabled = false。
+// 池子里下架角色应该用 preset_agents.enabled = false。两条外键由下方关联字段上的
+// constraint tag 声明。
 //
 // 这里没有 role_type，所以「每堂课恰好一个教师」**建不出数据库约束**——跨表的
 // 部分唯一索引做不到。这条规则只能由应用层在生成课程时保证，也是本设计里
@@ -36,8 +38,13 @@ package entity
 type ClassroomAgent struct {
 	BaseModel
 
-	ClassroomID uint64 `gorm:"column:classroom_id;not null" json:"classroom_id"` // 所属课程；级联删除
-	AgentID     uint64 `gorm:"column:agent_id;not null" json:"agent_id"`         // 指向 preset_agents.id
+	ClassroomID uint64 `gorm:"column:classroom_id;not null;uniqueIndex:classroom_agents_classroom_id_agent_id_key" json:"classroom_id"`                             // 所属课程；级联删除
+	AgentID     uint64 `gorm:"column:agent_id;not null;uniqueIndex:classroom_agents_classroom_id_agent_id_key;index:idx_classroom_agents_agent_id" json:"agent_id"` // 指向 preset_agents.id
+
+	// Classroom / Agent 仅供 AutoMigrate 建外键（分别 ON DELETE CASCADE / RESTRICT）。
+	// 业务代码禁止给它们赋值或 Preload：赋了非空值再保存本行，GORM 会连带 upsert 目标表的行。
+	Classroom *Classroom   `gorm:"foreignKey:ClassroomID;constraint:classroom_agents_classroom_id_fkey,OnDelete:CASCADE" json:"-"`
+	Agent     *PresetAgent `gorm:"foreignKey:AgentID;constraint:classroom_agents_agent_id_fkey,OnDelete:RESTRICT" json:"-"`
 
 	VoiceID string `gorm:"column:voice_id;type:varchar(120);not null" json:"voice_id"` // 本课程为这个角色选定的音色；来源见上面的说明，写入前须用 service.IsValidVoiceID 校验
 }

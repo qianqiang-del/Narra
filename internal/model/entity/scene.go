@@ -31,8 +31,9 @@ const (
 // 讲解段落各自的状态在 SceneSegment.Status（§4.5），本表的 Status 是它的汇总——
 // 只要还有一个段落没就绪，本场景就不是 Ready。
 //
-// 约束（§4.4）：UNIQUE (classroom_id, sort_order)，以及 Type、Status 两个 CHECK，
-// 均写在 SQL migration 中。
+// 约束（§4.4）：UNIQUE (classroom_id, sort_order) 由两个字段上同名的 uniqueIndex tag 声明；
+// Type、Status、SortOrder 三条 CHECK 由字段上的 check tag 声明；外键
+// scenes_classroom_id_fkey 由下方 Classroom 关联字段声明。全部由 AutoMigrate 建。
 //
 // 那条唯一约束用普通 UNIQUE 即可：生成流程按顺序逐页插入，插完没有任何入口会调换顺序
 // （Pro 工作台整体推迟到 V2，设计文档 §9.5）。将来真做工作台时要改成 DEFERRABLE
@@ -41,12 +42,16 @@ const (
 type Scene struct {
 	BaseModel
 
-	ClassroomID uint64 `gorm:"column:classroom_id;not null" json:"classroom_id"`     // 所属课程；级联删除
-	SortOrder   int32  `gorm:"column:sort_order;not null" json:"sort_order"`         // 场景顺序，从 0 开始
-	Type        string `gorm:"column:type;type:varchar(32);not null" json:"type"`    // 场景分类标签，不参与渲染；slide | quiz | interactive | pbl | complete
-	Title       string `gorm:"column:title;type:varchar(200);not null" json:"title"` // 场景标题；由大模型产出，写入前须按字符截断到 200 以内
+	ClassroomID uint64 `gorm:"column:classroom_id;not null;uniqueIndex:scenes_classroom_id_sort_order_key" json:"classroom_id"`                                           // 所属课程；级联删除
+	SortOrder   int32  `gorm:"column:sort_order;not null;uniqueIndex:scenes_classroom_id_sort_order_key;check:scenes_sort_order_check,sort_order >= 0" json:"sort_order"` // 场景顺序，从 0 开始
+	Type        string `gorm:"column:type;type:varchar(32);not null;check:scenes_type_check,type IN ('slide', 'quiz', 'interactive', 'pbl', 'complete')" json:"type"`     // 场景分类标签，不参与渲染；slide | quiz | interactive | pbl | complete
+	Title       string `gorm:"column:title;type:varchar(200);not null" json:"title"`                                                                                      // 场景标题；由大模型产出，写入前须按字符截断到 200 以内
 
-	Status string `gorm:"column:status;type:varchar(32);not null" json:"status"` // 场景状态，见 §5.2；Ready = 页面 JSON 与全部讲解段落都已就绪
+	Status string `gorm:"column:status;type:varchar(32);not null;check:scenes_status_check,status IN ('pending', 'generating', 'ready', 'failed')" json:"status"` // 场景状态，见 §5.2；Ready = 页面 JSON 与全部讲解段落都已就绪
+
+	// Classroom 仅供 AutoMigrate 建外键 scenes_classroom_id_fkey（ON DELETE CASCADE）。
+	// 业务代码禁止给它赋值或 Preload。
+	Classroom *Classroom `gorm:"foreignKey:ClassroomID;constraint:scenes_classroom_id_fkey,OnDelete:CASCADE" json:"-"`
 
 	// Content 场景内容，无论场景 Type 是什么都统一为 {"blocks":[...]}，例如：
 	//   {"blocks":[{"key":"intro-variable","type":"paragraph","content":"..."}]}

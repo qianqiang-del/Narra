@@ -27,8 +27,10 @@ func InitPostgres(cfg *config.PostgresConfig) (*gorm.DB, error) {
 	)
 
 	gormConfig := &gorm.Config{
-		DisableForeignKeyConstraintWhenMigrating: true,
-		SkipDefaultTransaction:                   true,
+		// 外键约束由实体关联字段上的 constraint tag 声明、AutoMigrate 建（名字与既有库对象
+		// 逐字对齐，存量库 HasConstraint 命中后直接跳过）。不要把这个开关加回来：
+		// 加回来新环境就只剩表和列，外键全缺。
+		SkipDefaultTransaction: true,
 	}
 
 	if config.Get().App.Mode == "debug" {
