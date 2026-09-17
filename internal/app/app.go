@@ -162,12 +162,13 @@ func (a *App) initDependencies() error {
 	// ========== 创建 Repository ==========
 	roleRepo := repository.NewRoleRepository(a.postgresDB)
 	embeddingSettingRepo := repository.NewEmbeddingSettingRepository(a.postgresDB)
+	embeddingModelRepo := repository.NewEmbeddingModelRepository(a.postgresDB)
 	mcpServerRepo := repository.NewMCPServerRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
 	roleSvc := service.NewRoleService(roleRepo)
 	embeddingManager := embedding.NewManager(a.cfg.Embedding)
-	embeddingSettingSvc := service.NewEmbeddingSettingService(embeddingSettingRepo, embeddingManager, a.cfg.JWT.Secret)
+	embeddingSettingSvc := service.NewEmbeddingSettingService(embeddingSettingRepo, embeddingModelRepo, embeddingManager, a.cfg.JWT.Secret)
 	if err := embeddingSettingSvc.LoadActive(context.Background()); err != nil {
 		return err
 	}

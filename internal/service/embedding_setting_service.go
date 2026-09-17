@@ -18,24 +18,32 @@ import (
 	"narra/internal/repository"
 	"narra/pkg/config"
 	"narra/pkg/embedding"
+	"narra/pkg/logger"
 
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
+// embeddingModelProvider 是写入两张配置表 provider 列的固定值。
+// 当前只支持 OpenAI 兼容协议一种，所以两边共用同一个常量，避免改一处漏一处。
+const embeddingModelProvider = "openai-compatible"
+
 // embeddingSettingService 是 Embedding 配置管理的业务实现。
 //
-// 它维护的是两份配置的一致性：repo 里那份持久化、可跨重启恢复，
-// manager 里那份是进程内当前生效的。写路径两份一起改，读路径一律以 manager 为准。
+// 它维护的是三份记录的一致性：repo 里那份持久化、可跨重启恢复，
+// manager 里那份是进程内当前生效的，以及 modelRepo 里那份"这个模型是谁"
+// ——知识库向量的 model_id 外键指向后者。写路径三份一起改，读路径一律以 manager 为准。
 type embeddingSettingService struct {
-	repo    repository.EmbeddingSettingRepository
-	manager *embedding.Manager
-	secret  string
+	repo      repository.EmbeddingSettingRepository
+	modelRepo repository.EmbeddingModelRepository
+	manager   *embedding.Manager
+	secret    string
 }
 
 // NewEmbeddingSettingService 创建 Embedding 配置服务。
 // secret 用来派生加密密钥，APIKey 用它加密后才落库。
-func NewEmbeddingSettingService(repo repository.EmbeddingSettingRepository, manager *embedding.Manager, secret string) EmbeddingSettingService {
-	return &embeddingSettingService{repo: repo, manager: manager, secret: secret}
+func NewEmbeddingSettingService(repo repository.EmbeddingSettingRepository, modelRepo repository.EmbeddingModelRepository, manager *embedding.Manager, secret string) EmbeddingSettingService {
+	return &embeddingSettingService{repo: repo, modelRepo: modelRepo, manager: manager, secret: secret}
 }
 
 // Current 返回当前生效配置的对外结构。
@@ -60,6 +68,8 @@ func (s *embeddingSettingService) Current(ctx context.Context) (responsedto.Embe
 // Save 保存配置并让它立刻生效。
 // 顺序是先落库、再热更新 manager：落库失败时运行时配置原封不动，
 // 内存里那份要么还是旧的完整配置，要么已经换成新的完整配置，不会半新半旧。
+//
+// 登记模型行（ensureDefaultModel）夹在两者之间，且必须在 SaveActive 之前 —— 见该方法的注释。
 func (s *embeddingSettingService) Save(ctx context.Context, input requestdto.EmbeddingSetting) (responsedto.EmbeddingSetting, error) {
 	// 读当前记录有两个用途：请求没带密钥时沿用旧的，以及复用它的行做覆盖更新。
 	// 首次保存查不到记录不算错误。
@@ -74,6 +84,10 @@ func (s *embeddingSettingService) Save(ctx context.Context, input requestdto.Emb
 	}
 	cfg, err := configFromInput(input, apiKey)
 	if err != nil {
+		return responsedto.EmbeddingSetting{}, err
+	}
+
+	if err := s.ensureDefaultModel(ctx, cfg); err != nil {
 		return responsedto.EmbeddingSetting{}, err
 	}
 
@@ -113,13 +127,17 @@ func (s *embeddingSettingService) Test(ctx context.Context, input requestdto.Emb
 	return cfg.Dimensions, nil
 }
 
-// LoadActive 在启动时把持久化的配置灌进 manager。
+// LoadActive 在启动时把持久化的配置灌进 manager，并把模型登记对齐一遍。
 // 没有保存过记录时返回 nil 而不是报错：此时继续用配置文件里的默认配置，
 // 不该因为"用户还没配过"就让进程起不来。读到记录却还原失败（密钥解不开、
 // 参数校验不过）才返回错误，那是真的配置损坏，启动时就暴露比运行时才炸好。
 func (s *embeddingSettingService) LoadActive(ctx context.Context) error {
 	setting, err := s.repo.GetActive(ctx)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// 没保存过记录，生效的是配置文件里那份。它的模型也要登记：
+		// 只在 config.yaml 里配了 embedding、从没打开过设置页的部署，
+		// 知识库同样需要一个 model_id 才能写向量。
+		s.syncModelRow(ctx, s.manager.Config())
 		return nil
 	}
 	if err != nil {
@@ -129,7 +147,76 @@ func (s *embeddingSettingService) LoadActive(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return s.manager.Configure(cfg)
+	if err := s.manager.Configure(cfg); err != nil {
+		return err
+	}
+	s.syncModelRow(ctx, cfg)
+	return nil
+}
+
+// syncModelRow 是 LoadActive 用的"尽力而为"版本：失败只告警，不上抛。
+//
+// 上抛的后果是 app.go 会判定启动失败，而这里可能的失败几乎只有"维度与已有向量冲突"——
+// 那是用户在设置页里能改回来的问题，一旦启动被拦，用户连设置页都进不去，反而修不了。
+// 但也不能静默：告警让运维看得到，且下一次保存配置会以明确错误暴露给用户。
+//
+// 它存在是为了两类存量数据：本次改动之前只写过 embedding_settings、模型表还是空的库，
+// 以及只在 config.yaml 里配了 embedding 的部署 —— 两者都需要在启动时补上模型行。
+func (s *embeddingSettingService) syncModelRow(ctx context.Context, cfg config.EmbeddingConfig) {
+	if err := s.ensureDefaultModel(ctx, cfg); err != nil {
+		logger.Warn("启动时对齐向量模型登记失败，写入知识库向量前需先在设置页重新保存一次配置",
+			zap.String("model", cfg.Model),
+			zap.Error(err),
+		)
+	}
+}
+
+// ensureDefaultModel 把当前生效配置登记进 embedding_models，供知识库写入向量时引用。
+//
+// 两张表职责不同：embedding_settings 记"怎么连服务"（地址、密钥、超时），
+// embedding_models 记"这个模型是谁"（名称、维度）。knowledge_embeddings.model_id
+// 外键指向后者，所以知识库要写向量就必须先有 model_id —— 缺了这一层，
+// 上传、解析、切分全做完，最后一步会卡在"没有模型可指向"。
+//
+// 它必须在 repo.SaveActive 之前调用：反过来一旦这里因维度冲突被拒，配置已经改成新维度、
+// 模型行还停在旧维度，两边长期不一致而且没有任何提示。按现在的顺序失败，
+// 最坏只留下一行没被引用的模型记录，下次保存即修正。
+func (s *embeddingSettingService) ensureDefaultModel(ctx context.Context, cfg config.EmbeddingConfig) error {
+	// 未启用时不登记：这时 model / dimensions 允许为空，登记出来的行对知识库也没有意义。
+	if !cfg.Enabled {
+		return nil
+	}
+
+	_, err := s.modelRepo.EnsureDefault(ctx, entity.EmbeddingModel{
+		Name:       cfg.Model,
+		Provider:   embeddingModelProvider,
+		BaseURL:    optionalString(cfg.BaseURL),
+		Dimensions: int32(cfg.Dimensions),
+	})
+	if err == nil {
+		return nil
+	}
+
+	var mismatch *repository.DimensionsMismatchError
+	if errors.As(err, &mismatch) {
+		return fmt.Errorf(
+			"模型 %s 已按 %d 维登记，本次提交的是 %d 维，而该模型下已经有 %d 个切片向量。"+
+				"就地改维度会让新旧向量归到同一个 model_id 下，检索时维度不一致会直接失败。"+
+				"请改用另一个模型名（例如 %s-1024），或先删除该模型下的向量",
+			mismatch.ModelName, mismatch.Recorded, mismatch.Requested, mismatch.Vectors, mismatch.ModelName,
+		)
+	}
+	return fmt.Errorf("登记向量模型失败: %w", err)
+}
+
+// optionalString 把空串转成 nil。
+// embedding_models.base_url 为空表示"沿用应用的全局 embedding 配置"（见实体注释），
+// 所以用 NULL 表达"没写"，而不是存一个空字符串把它变成"明确配成了空地址"。
+func optionalString(value string) *string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return &value
 }
 
 // resolveAPIKey 决定这次保存该用哪个密钥，优先级依次是：
@@ -156,7 +243,7 @@ func (s *embeddingSettingService) settingFromConfig(current *entity.EmbeddingSet
 	}
 	setting := &entity.EmbeddingSetting{
 		Name:            "默认配置",
-		Provider:        "openai-compatible",
+		Provider:        embeddingModelProvider,
 		BaseURL:         cfg.BaseURL,
 		Model:           cfg.Model,
 		Dimensions:      int32(cfg.Dimensions),
