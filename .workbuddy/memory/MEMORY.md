@@ -98,3 +98,19 @@ Narra —— 基于 **Go + CloudWeGo Eino** 的多智能体智能讲解平台，
 - **改代码前必须先让用户检查**：发现问题只做 review + 定位 + 给出改法和位置，不要直接改用户代码。除非明确授权"你改吧"。
 - 用户喜欢自己掌控代码改动，删除/重构类操作前要先给清单等确认。
 
+## 课堂页产品决策（2026-09-11 起）
+- **引用课件（Quote / referencing）功能已移除**：`CanvasToolbar`/`CanvasArea`/`PlaybackChrome` 三处清理，`chat.referenceSlide` 删。全仓无 referencing 残留。
+- **麦克风/语音输入统一到右列单一入口**：`Roundtable` 右列麦克风按钮 → `toggle-recording`；`asrEnabled=false` 置灰显示 `MicOff`。⚠️ 同首页教训，**绝不在中栏再加第二个麦克风**。
+- **学员/教师信息卡用 reka-ui HoverCard**：openDelay 300 / closeDelay 100，必须 `HoverCardPortal` 到 body（`z-[200]`），否则会被圆桌 `overflow` 容器裁切。展示 头像+姓名+角色徽章(persona 底色)+人设正文。
+- **Roundtable 三栏结构（不可臆改）**：左教师列 `w-[90px]` + 中气泡区 + 右参与者列 `w-[140px]`（学员头像横滚 + 信息卡 + 麦克风/聊天按钮 + 用户头像）。学员头像滚动容器必须 外层 `overflow-x-auto` + 内层 `flex w-max`，否则整行撑破 140px 列溢出到 ChatArea。
+
+## 团队分工（2026-09-11 定稿，第一版 MVP）
+3 人开发，按技术支柱纵切，前端不单列专人（UI 按功能归属各后端 owner）。**用户本人 = 成员A**。
+- **成员A（用户本人）**：MCP 协议 + 工具调用（所有工具：联网搜索/语音/语音文字等）+ 课堂 Agent 生成课件（单 Agent）+ 工作台 Agent（单 Agent，文件修改）+ 工作台 Agent 的上下文记忆与上下文管理。亮点：MCP 可插拔工具平台 + 双单 Agent 编排 + Agent 记忆系统。
+- **成员B**：SSE 流式推送 token + 一整套 RAG + 上传文件 + 向量化数据库。亮点：RAG 全栈 + 流式服务。
+- **成员C**：多 Agent 编排 + 对话上下文管理 + 跨成员上下文记忆 + 链路追踪。（白板工具调用已移出 C，MVP 暂不做。）亮点：多 Agent 编排 + 跨成员记忆 + 追踪。
+- 前端 UI 归属：首页 + 工作台 UI → A；圆桌 UI → C；B 纯后端。
+- MCP 与多 Agent 编排的边界：A 拥有 MCP 宿主框架 + 各工具实现并注册进 MCP；C 的多 Agent 编排统一走 A 的 MCP 调工具，C 不另造宿主。
+- 记忆分两类（不合并）：工作台上下文/记忆归 A；课堂对话上下文/跨成员记忆归 C。
+- 状态：已定稿。
+

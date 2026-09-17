@@ -11,7 +11,6 @@ import (
 type Config struct {
 	App            AppConfig            `mapstructure:"app"`
 	Database       DatabaseConfig       `mapstructure:"database"`
-	LLM            LLMConfig            `mapstructure:"llm"`
 	Embedding      EmbeddingConfig      `mapstructure:"embedding"`
 	TTS            TTSConfig            `mapstructure:"tts"`
 	DocumentParser DocumentParserConfig `mapstructure:"document_parser"`
@@ -73,15 +72,6 @@ type RedisConfig struct {
 	Password string `mapstructure:"password"`
 	DB       int    `mapstructure:"db"`
 	PoolSize int    `mapstructure:"pool_size"`
-}
-
-// LLMConfig 大模型配置，喂给 Eino 的 ChatModel。
-
-type LLMConfig struct {
-	APIKey  string        `mapstructure:"api_key"`  // 密钥
-	BaseURL string        `mapstructure:"base_url"` // 接口地址，如 https://api.openai.com/v1
-	Model   string        `mapstructure:"model"`    // 模型 ID，如 gpt-4o-mini
-	Timeout time.Duration `mapstructure:"timeout"`  // 单次请求超时
 }
 
 // EmbeddingConfig 是兼容 OpenAI 协议的向量化服务配置。

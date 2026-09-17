@@ -2,6 +2,7 @@ package api
 
 import (
 	"narra/internal/api/v1/embedding"
+	"narra/internal/api/v1/llm"
 	mcpv1 "narra/internal/api/v1/mcp"
 	"narra/internal/api/v1/role"
 	"narra/internal/api/v1/voice"
@@ -17,15 +18,17 @@ type Router struct {
 	embeddingCtrl *embedding.Controller
 	voiceCtrl     *voice.Controller
 	mcpCtrl       *mcpv1.Controller
+	llmCtrl       *llm.Controller
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService) *Router {
+func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService) *Router {
 	return &Router{
 		roleCtrl:      role.NewController(roleSvc),
 		embeddingCtrl: embedding.NewController(embeddingSvc),
 		voiceCtrl:     voice.NewController(voiceSvc),
 		mcpCtrl:       mcpv1.NewController(mcpSvc),
+		llmCtrl:       llm.NewController(llmSvc),
 	}
 }
 
@@ -52,6 +55,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		voice.RegisterRoutes(v1, r.voiceCtrl)
 		embedding.RegisterRoutes(v1, r.embeddingCtrl)
 		mcpv1.RegisterRoutes(v1, r.mcpCtrl)
+		llm.RegisterRoutes(v1, r.llmCtrl)
 	}
 }
 

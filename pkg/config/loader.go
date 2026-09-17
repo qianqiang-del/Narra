@@ -61,9 +61,6 @@ func Load(configPath string) (*Config, error) {
 	if val := os.Getenv("JWT_SECRET"); val != "" {
 		config.JWT.Secret = val
 	}
-	if val := os.Getenv("LLM_API_KEY"); val != "" {
-		config.LLM.APIKey = val
-	}
 	if val := os.Getenv("EMBEDDING_API_KEY"); val != "" {
 		config.Embedding.APIKey = val
 	}

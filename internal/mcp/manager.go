@@ -51,6 +51,82 @@ func NewManager(app config.AppConfig) *Manager {
 	return &Manager{app: app, servers: make(map[string]*serverState), connect: defaultClientFactory}
 }
 
+// Load replaces the runtime server configuration without opening connections.
+// Call Start after Load during application startup.
+func (m *Manager) Load(servers []config.MCPServerConfig) error {
+	next := make(map[string]*serverState, len(servers))
+	for _, server := range servers {
+		if !server.Enabled {
+			continue
+		}
+		if server.ID == "" {
+			return fmt.Errorf("mcp server id 不能为空")
+		}
+		if _, exists := next[server.ID]; exists {
+			return fmt.Errorf("mcp server %q 重复", server.ID)
+		}
+		next[server.ID] = &serverState{config: server, status: StatusUnknown}
+	}
+
+	ids := m.serverIDs()
+	if err := m.closeServers(ids); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.servers = next
+	m.registry = nil
+	m.mu.Unlock()
+	return nil
+}
+
+// Upsert applies one server configuration and refreshes the runtime tool registry.
+func (m *Manager) Upsert(ctx context.Context, server config.MCPServerConfig) error {
+	if !server.Enabled {
+		return m.Remove(ctx, server.ID)
+	}
+	if server.ID == "" {
+		return fmt.Errorf("mcp server id 不能为空")
+	}
+
+	var previous managedClient
+	m.mu.Lock()
+	if state, ok := m.servers[server.ID]; ok {
+		previous = state.client
+	}
+	m.servers[server.ID] = &serverState{config: server, status: StatusUnknown}
+	m.registry = nil
+	m.mu.Unlock()
+	if previous != nil {
+		if err := previous.Close(); err != nil {
+			return err
+		}
+	}
+	if err := m.ensureConnected(ctx, server.ID); err != nil && server.Required {
+		return err
+	}
+	_, err := m.RefreshTools(ctx)
+	return err
+}
+
+// Remove disconnects and removes one server from the runtime configuration.
+func (m *Manager) Remove(ctx context.Context, id string) error {
+	var client managedClient
+	m.mu.Lock()
+	if state, ok := m.servers[id]; ok {
+		client = state.client
+		delete(m.servers, id)
+	}
+	m.registry = nil
+	m.mu.Unlock()
+	if client != nil {
+		if err := client.Close(); err != nil {
+			return err
+		}
+	}
+	_, err := m.RefreshTools(ctx)
+	return err
+}
+
 func defaultClientFactory(ctx context.Context, server config.MCPServerConfig, app config.AppConfig) (managedClient, error) {
 	return Connect(ctx, server, app)
 }

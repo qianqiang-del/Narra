@@ -19,37 +19,52 @@ import { useI18n } from 'vue-i18n'
 import { Bot, Check, ChevronDown, FileText, Globe2, Paperclip, Search, X } from 'lucide-vue-next'
 
 import UiTooltip from '@/components/ui/UiTooltip.vue'
-import { MODEL_PROVIDERS } from '@/data/providers'
+import { findProviderLogo } from '@/data/providers'
+import type { AvailableLlmModel } from '@/api/llm'
 import { cn } from '@/lib/utils'
 
 const { t } = useI18n()
 
 /** 与 HomeView 共享的生成配置 */
-const providerId = defineModel<string>('providerId', { default: 'openai' })
-const modelId = defineModel<string>('modelId', { default: 'gpt-4o-mini' })
+const providerId = defineModel<number | null>('providerId', { default: null })
+const modelId = defineModel<string>('modelId', { default: '' })
 const webSearch = defineModel<boolean>('webSearch', { default: false })
 const extractor = defineModel<string>('extractor', { default: 'mineru' })
 const materials = defineModel<{ id: string; name: string; size: number }[]>('materials', {
   default: () => [],
 })
 
-const { hasProvider } = defineProps<{ hasProvider?: boolean }>()
+const props = defineProps<{ availableModels: AvailableLlmModel[] }>()
+const emit = defineEmits<{ configure: [] }>()
 
 const rootRef = ref<HTMLElement | null>(null)
 const openMenu = ref<'model' | 'material' | null>(null)
 const modelKeyword = ref('')
 const materialDragging = ref(false)
 
-const providers = MODEL_PROVIDERS
+const providers = computed(() => {
+  const groups = new Map<number, { id: number; name: string; logo: string; models: { id: string }[] }>()
+  for (const row of props.availableModels) {
+    let group = groups.get(row.providerId)
+    if (!group) {
+      group = { id: row.providerId, name: row.providerName, logo: findProviderLogo(row.providerName), models: [] }
+      groups.set(row.providerId, group)
+    }
+    group.models.push({ id: row.modelId })
+  }
+  return [...groups.values()]
+})
 
-const currentProvider = computed(() => providers.find((p) => p.id === providerId.value))
+const hasProvider = computed(() => props.availableModels.length > 0)
+
+const currentProvider = computed(() => providers.value.find((p) => p.id === providerId.value))
 const currentModel = computed(() => currentProvider.value?.models.find((m) => m.id === modelId.value))
 
 const filteredProviders = computed(() => {
   const kw = modelKeyword.value.trim().toLowerCase()
-  if (!kw) return providers
-  return providers.filter(
-    (p) => p.name.toLowerCase().includes(kw) || p.id.toLowerCase().includes(kw),
+  if (!kw) return providers.value
+  return providers.value.filter(
+    (p) => p.name.toLowerCase().includes(kw) || String(p.id).includes(kw),
   )
 })
 
@@ -64,9 +79,9 @@ function toggle(menu: typeof openMenu.value) {
   openMenu.value = openMenu.value === menu ? null : menu
 }
 
-function pickProvider(id: string) {
+function pickProvider(id: number) {
   providerId.value = id
-  const p = providers.find((x) => x.id === id)
+  const p = providers.value.find((x) => x.id === id)
   if (p) modelId.value = p.models[0]?.id ?? ''
 }
 
@@ -127,7 +142,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         v-if="!hasProvider"
         type="button"
         :class="cn(pillCls, 'animate-pulse bg-amber-50 text-amber-600 hover:bg-amber-100')"
-        @click="toggle('model')"
+        @click="emit('configure')"
       >
         <Bot class="size-3.5" />
         {{ t('home.configureModel') }}
@@ -140,13 +155,13 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         @click="toggle('model')"
       >
         <img
-          v-if="currentProvider"
+          v-if="currentProvider?.logo"
           :src="currentProvider.logo"
           alt=""
           class="size-3.5 shrink-0 object-contain"
         />
         <Bot v-else class="size-3.5 shrink-0" />
-        <span class="min-w-0 truncate">{{ currentModel?.name ?? '选择模型' }}</span>
+        <span class="min-w-0 truncate">{{ currentModel?.id ?? '选择模型' }}</span>
         <ChevronDown class="size-3 shrink-0 opacity-60" />
       </button>
 
@@ -181,7 +196,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
                 "
                 @click="pickProvider(p.id)"
               >
-                <img :src="p.logo" alt="" class="size-3.5 shrink-0 object-contain" />
+                <img v-if="p.logo" :src="p.logo" alt="" class="size-3.5 shrink-0 object-contain" />
+                <Bot v-else class="size-3.5 shrink-0" />
                 <span class="min-w-0 truncate">{{ p.name }}</span>
               </button>
             </div>
