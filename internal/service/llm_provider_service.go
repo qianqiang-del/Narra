@@ -25,10 +25,12 @@ type llmProviderService struct {
 	encryptionKey []byte
 }
 
+// NewLLMProviderService 构造大模型配置服务，encryptionKey 用于 API Key 的加解密。
 func NewLLMProviderService(repo repository.LLMProviderRepository, encryptionKey []byte) LLMProviderService {
 	return &llmProviderService{repo: repo, encryptionKey: encryptionKey}
 }
 
+// List 返回全部配置，含未测试和已停用的，供设置页展示。
 func (s *llmProviderService) List(ctx context.Context) ([]responsedto.LLMProvider, error) {
 	items, err := s.repo.List(ctx)
 	if err != nil {
@@ -45,6 +47,7 @@ func (s *llmProviderService) List(ctx context.Context) ([]responsedto.LLMProvide
 	return out, nil
 }
 
+// AvailableModels 只返回已启用且测试通过的配置，供首页模型选择器用。
 func (s *llmProviderService) AvailableModels(ctx context.Context) ([]responsedto.AvailableLLMModel, error) {
 	items, err := s.repo.ListAvailable(ctx)
 	if err != nil {
@@ -65,6 +68,7 @@ func (s *llmProviderService) AvailableModels(ctx context.Context) ([]responsedto
 	return out, nil
 }
 
+// Create 新建配置，一律以「未测试、未启用」入库：测通了才能手动启用。
 func (s *llmProviderService) Create(ctx context.Context, input requestdto.LLMProvider) (*responsedto.LLMProvider, error) {
 	name, baseURL, timeout, models, err := validateLLMInput(input)
 	if err != nil {
@@ -91,6 +95,7 @@ func (s *llmProviderService) Create(ctx context.Context, input requestdto.LLMPro
 	return &dto, err
 }
 
+// Update 全量更新。地址、超时、模型、密钥任一变动，都把配置打回未测试并停用。
 func (s *llmProviderService) Update(ctx context.Context, id uint64, input requestdto.LLMProvider) (*responsedto.LLMProvider, error) {
 	item, err := s.find(ctx, id)
 	if err != nil {
@@ -132,6 +137,7 @@ func (s *llmProviderService) Update(ctx context.Context, id uint64, input reques
 	return &dto, err
 }
 
+// Delete 删除配置；不检查是否正在被引用，因为目前没有别的表指向它。
 func (s *llmProviderService) Delete(ctx context.Context, id uint64) error {
 	if _, err := s.find(ctx, id); err != nil {
 		return err
@@ -194,6 +200,7 @@ func (s *llmProviderService) Test(ctx context.Context, id uint64) (*responsedto.
 	}, nil
 }
 
+// SetEnabled 切换启用状态；没测通过的配置不许启用，否则首页会拿到必然失败的模型。
 func (s *llmProviderService) SetEnabled(ctx context.Context, id uint64, enabled bool) (*responsedto.LLMProvider, error) {
 	item, err := s.find(ctx, id)
 	if err != nil {
@@ -210,6 +217,7 @@ func (s *llmProviderService) SetEnabled(ctx context.Context, id uint64, enabled 
 	return &dto, err
 }
 
+// find 按 ID 取配置，取不到就是 404 语义。
 func (s *llmProviderService) find(ctx context.Context, id uint64) (*entity.LLMProvider, error) {
 	item, err := s.repo.FindByID(ctx, id)
 	if err != nil {
@@ -218,6 +226,7 @@ func (s *llmProviderService) find(ctx context.Context, id uint64) (*entity.LLMPr
 	return item, nil
 }
 
+// toResponse 实体转响应结构。密钥只透出「是否已配置」这个布尔值，密文本身不出这层。
 func (s *llmProviderService) toResponse(item entity.LLMProvider) (responsedto.LLMProvider, error) {
 	models, err := decodeModels(item.Models)
 	if err != nil {
@@ -233,6 +242,7 @@ func (s *llmProviderService) toResponse(item entity.LLMProvider) (responsedto.LL
 	}, nil
 }
 
+// validateLLMInput 校验并归一化名称、地址、超时和模型列表，返回可以直接落库的值。
 func validateLLMInput(input requestdto.LLMProvider) (string, string, time.Duration, []string, error) {
 	name := strings.TrimSpace(input.Name)
 	if name == "" || len([]rune(name)) > 120 {
@@ -282,6 +292,7 @@ func validateAPIKey(key string) error {
 	return nil
 }
 
+// decodeModels 解析 models 列里存的 JSON 数组。
 func decodeModels(raw json.RawMessage) ([]string, error) {
 	var models []string
 	if err := json.Unmarshal(raw, &models); err != nil {
@@ -290,6 +301,7 @@ func decodeModels(raw json.RawMessage) ([]string, error) {
 	return models, nil
 }
 
+// encrypt 加密 API Key；空值原样返回，不产生密文，也就不会有假的「已配置」。
 func (s *llmProviderService) encrypt(value string) (string, error) {
 	if value == "" {
 		return "", nil
@@ -297,6 +309,7 @@ func (s *llmProviderService) encrypt(value string) (string, error) {
 	return appcrypto.Encrypt(value, s.encryptionKey)
 }
 
+// decrypt 解密 API Key；空值原样返回，对应的就是没配密钥的服务。
 func (s *llmProviderService) decrypt(value string) (string, error) {
 	if value == "" {
 		return "", nil
@@ -304,10 +317,14 @@ func (s *llmProviderService) decrypt(value string) (string, error) {
 	return appcrypto.Decrypt(value, s.encryptionKey)
 }
 
+// testOpenAICompatible 打一次最小 chat completion 请求，只验证地址、密钥、模型三者可用。
+// 故意不带 temperature 和 max_tokens：o1/o3/o4-mini 这类推理模型会对它们直接返回 400
+// （temperature 只接受默认值、max_tokens 要换成 max_completion_tokens），
+// 于是好好的配置被判成测不通。只发三个必填字段，所有 OpenAI 兼容端点都收。
 func testOpenAICompatible(ctx context.Context, baseURL, apiKey, model string, timeout time.Duration) error {
 	body, _ := json.Marshal(map[string]any{
 		"model": model, "messages": []map[string]string{{"role": "user", "content": "Reply with OK only."}},
-		"temperature": 0, "max_tokens": 256, "stream": false,
+		"stream": false,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -345,6 +362,7 @@ func testOpenAICompatible(ctx context.Context, baseURL, apiKey, model string, ti
 	return nil
 }
 
+// safeUpstreamMessage 只从上游错误体里取 message 字段，不回显整个响应。
 func safeUpstreamMessage(raw []byte) string {
 	var body struct {
 		Error struct {
@@ -357,6 +375,7 @@ func safeUpstreamMessage(raw []byte) string {
 	return "请检查服务地址、API Key 和模型 ID"
 }
 
+// truncateText 按字符而不是字节截断，免得把汉字切坏。
 func truncateText(value string, max int) string {
 	runes := []rune(value)
 	if len(runes) <= max {
