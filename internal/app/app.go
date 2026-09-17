@@ -108,11 +108,19 @@ func (a *App) initDatabase() error {
 	}
 	a.postgresDB = postgresDB
 
-	// 建表；唯一约束 / CHECK / 外键 / 触发器由 migrations/0001_constraints.sql 补
+	// pgvector 扩展必须先于 AutoMigrate 建好：knowledge_embeddings.embedding 的列类型是
+	// vector，扩展不存在时建表直接失败（SQLSTATE 42704）、服务起不来。
+	// vector 是数据库级扩展，幂等，重复执行无代价。
+	if err := a.postgresDB.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
+		return fmt.Errorf("创建 vector 扩展失败: %w", err)
+	}
+
+	// 建表与全部约束（CHECK / 外键 / 唯一 / 索引，含带 WHERE 谓词的部分索引）都由
+	// AutoMigrate 完成，声明在实体字段的 tag 上；migrations/ 只剩种子数据一个文件，
+	// 见 migrations/README.md。
 	//
-	// PresetAgent 必须排在自己的关联表 ClassroomAgent 之前：0001 里有
-	// classroom_agents.agent_id -> preset_agents.id 的外键，表得先存在。
-	// 建表；唯一约束 / CHECK / 外键 / 触发器由 migrations SQL 补充。
+	// 下面的顺序保持被引用表在前（GORM 的 ReorderModels 也会再排一次，双保险）：
+	// 例如 PresetAgent 必须排在 ClassroomAgent 之前，前者的表先存在，后者的外键才建得出。
 	logger.Info("开始数据库迁移...")
 	if err := a.postgresDB.AutoMigrate(
 		&entity.Folder{},

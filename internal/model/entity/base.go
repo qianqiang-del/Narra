@@ -8,7 +8,7 @@ import "time"
 // 时间列统一为 timestamptz，存 UTC。
 //
 // 注意：tag 中的 autoIncrement 仅供 AutoMigrate 参考，PostgreSQL 侧实际生成的是 bigserial。
-// 本项目按 §8 用 SQL migration 建表，主键 DDL 以迁移脚本为准。
+// 表结构（含主键 DDL）全部由 AutoMigrate 从实体 tag 建出，migrations/ 不含结构 DDL。
 //
 // 若某个实体的主键不是自增 id（例如以别的表的主键兼作本表主键），就不能嵌入本结构，
 // 而且必须显式写 autoIncrement:false —— GORM 只要发现主键是整数类型、tag 里又没出现

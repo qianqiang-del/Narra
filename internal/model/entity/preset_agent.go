@@ -8,7 +8,7 @@ package entity
 // 它同时决定两件事：用哪一份角色层提示词（internal/agent/role.go），
 // 以及随机挑选时的名额约束（teacher 恰 1、assistant 至多 1、其余为学生）。
 //
-// 改这三个值时记得两边一起改：这里，和 migrations/0001_constraints.sql 的 CHECK。
+// 改这三个值时记得两边一起改：这里，和 RoleType 字段上的 check tag。
 const (
 	PresetAgentRoleTypeTeacher   = "teacher"
 	PresetAgentRoleTypeAssistant = "assistant"
@@ -48,10 +48,9 @@ const (
 //
 // # 约束
 //
-// UNIQUE (agent_key) 与 UNIQUE (sort_order) 由字段上的 unique tag 声明，AutoMigrate 负责建。
-// CHECK role_type 与 CHECK sort_order >= 0 GORM 表达不出来，写在 SQL migration 里。
-//
-// 分界是「GORM 表达得出的归 GORM，表达不出的归 SQL」。同一个约束**不能两边都声明**：
+// UNIQUE (agent_key) 与 UNIQUE (sort_order) 由字段上的 unique tag 声明；
+// CHECK role_type 与 CHECK sort_order >= 0 由字段上的 check tag 声明。
+// 全部归 AutoMigrate 建，同一个约束**不能**再在 SQL migration 里声明：
 // AutoMigrate 每次启动都会对账，发现库里唯一而实体上没标 unique，就判定这条约束是多余的
 // 并去删它——删除用的还是 GORM 自己算的名字，删不掉就直接 panic。见 migrations/README.md。
 //
@@ -62,9 +61,9 @@ type PresetAgent struct {
 
 	AgentKey string `gorm:"column:agent_key;type:varchar(80);not null;unique" json:"agent_key"` // 稳定标识，前后端契约，如 teacher、clown；改它等于换了一个角色
 
-	Name     string `gorm:"column:name;type:varchar(120);not null" json:"name"`          // 展示名，如「陈老师」
-	Role     string `gorm:"column:role;type:varchar(120);not null" json:"role"`          // 展示定位，如「主讲」「质疑」
-	RoleType string `gorm:"column:role_type;type:varchar(32);not null" json:"role_type"` // teacher | assistant | student；决定用哪份角色层提示词，也决定挑选名额
+	Name     string `gorm:"column:name;type:varchar(120);not null" json:"name"`                                                                                               // 展示名，如「陈老师」
+	Role     string `gorm:"column:role;type:varchar(120);not null" json:"role"`                                                                                               // 展示定位，如「主讲」「质疑」
+	RoleType string `gorm:"column:role_type;type:varchar(32);not null;check:preset_agents_role_type_check,role_type IN ('teacher', 'assistant', 'student')" json:"role_type"` // teacher | assistant | student；决定用哪份角色层提示词，也决定挑选名额
 
 	Persona string `gorm:"column:persona;type:varchar(1000);not null" json:"persona"` // 人设与说话风格；前端信息卡正文 + 提示词里的 {{persona}}
 
@@ -72,8 +71,8 @@ type PresetAgent struct {
 	Color   string `gorm:"column:color;type:varchar(16);not null" json:"color"`        // 界面主题色，如 #722ed1
 	VoiceID string `gorm:"column:voice_id;type:varchar(120);not null" json:"voice_id"` // 默认音色 ID，取值必须在 service.IsValidVoiceID 的目录内
 
-	SortOrder int32 `gorm:"column:sort_order;not null;unique" json:"sort_order"` // 前端角色列表的展示顺序；唯一，否则顺序不确定
-	Enabled   bool  `gorm:"column:enabled;not null;default:true" json:"enabled"` // 是否可被挑中；下架用 false
+	SortOrder int32 `gorm:"column:sort_order;not null;unique;check:preset_agents_sort_order_check,sort_order >= 0" json:"sort_order"` // 前端角色列表的展示顺序；唯一，否则顺序不确定
+	Enabled   bool  `gorm:"column:enabled;not null;default:true" json:"enabled"`                                                      // 是否可被挑中；下架用 false
 }
 
 // TableName 返回表名。

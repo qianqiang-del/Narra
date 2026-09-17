@@ -28,17 +28,22 @@ const (
 // 所以没有独立的生成任务表——「这门课生成到哪了」就是 Status，「为什么没做完」就是
 // GenerationError。将来若开放「对同一门课重新生成」，才会需要单独记录每一趟任务。
 //
-// 约束（§4.2）：CHECK (mode IN (...))、CHECK (status IN (...))，与 §5.1 一一对应；
-// 增减状态值时必须同时改两处。写在 SQL migration 中。
+// 约束（§4.2）：CHECK (mode IN (...))、CHECK (status IN (...)) 由字段上的 check tag 声明，
+// 与 §5.1 一一对应；增减状态值时必须同时改两处。外键 classrooms_folder_id_fkey 由下方
+// Folder 关联字段上的 constraint tag 声明，二者都由 AutoMigrate 建。
 type Classroom struct {
 	BaseModel
 
-	FolderID *uint64 `gorm:"column:folder_id" json:"folder_id"` // 所属文件夹，可空；删除文件夹时置 NULL
+	FolderID *uint64 `gorm:"column:folder_id;index:idx_classrooms_folder_id" json:"folder_id"` // 所属文件夹，可空；删除文件夹时置 NULL
 
-	Title       string `gorm:"column:title;type:varchar(200);not null" json:"title"`     // 课程名称
-	Requirement string `gorm:"column:requirement;type:text;not null" json:"requirement"` // 用户原始生成需求
-	Mode        string `gorm:"column:mode;type:varchar(32);not null" json:"mode"`        // vocational | interactive
-	Status      string `gorm:"column:status;type:varchar(32);not null" json:"status"`    // 课程当前状态，见 §5.1
+	// Folder 仅供 AutoMigrate 建立外键 classrooms_folder_id_fkey（ON DELETE SET NULL）。
+	// 业务代码禁止给它赋值或 Preload：赋了非空值再保存本课程，GORM 会连带 upsert folders 行。
+	Folder *Folder `gorm:"foreignKey:FolderID;constraint:classrooms_folder_id_fkey,OnDelete:SET NULL" json:"-"`
+
+	Title       string `gorm:"column:title;type:varchar(200);not null" json:"title"`                                                                                        // 课程名称
+	Requirement string `gorm:"column:requirement;type:text;not null" json:"requirement"`                                                                                    // 用户原始生成需求
+	Mode        string `gorm:"column:mode;type:varchar(32);not null;check:classrooms_mode_check,mode IN ('vocational', 'interactive')" json:"mode"`                         // vocational | interactive
+	Status      string `gorm:"column:status;type:varchar(32);not null;check:classrooms_status_check,status IN ('generating', 'playable', 'ready', 'failed')" json:"status"` // 课程当前状态，见 §5.1
 
 	// GenerationError 这次生成没能把课做完整的原因，给用户看的一句话；为空表示课程生成完整、
 	// 不必再等。换句话说：这一列有值 ⇔ 这门课不会再生成了。

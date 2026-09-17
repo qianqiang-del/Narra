@@ -5,7 +5,7 @@
 --
 -- 幂等：ON CONFLICT (agent_key) DO NOTHING。这是**初始值**，不是权威值——
 -- 角色池归人工维护，以后加角色、改角色直接改库，不用回改这里，重复跑也不会覆盖。
--- 所以它单独一个文件，跟结构迁移（0001）分开。
+-- 所以它单独一个文件，跟表结构完全分开（结构已全部归 AutoMigrate + 实体 tag）。
 --
 -- created_at / updated_at 要显式写 now()：这两列是 NOT NULL，平时由 GORM 的钩子自动填，
 -- 裸 SQL 绕过钩子，不写就报 not-null 违反。
