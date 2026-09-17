@@ -43,7 +43,8 @@ export interface CreateMcpServerInput {
   transport: string
   endpoint: string
   apiKey: string
-  authEnv: string
+  /** 可选：从该环境变量读 API Key，仅当 apiKey 为空时生效。表单未暴露此项，默认空。 */
+  authEnv?: string
   startupTimeout: string
   discoveryTimeout: string
   callTimeout: string
@@ -85,7 +86,7 @@ export async function createMcpServer(input: CreateMcpServerInput): Promise<McpS
     transport: input.transport,
     endpoint: input.endpoint,
     api_key: input.apiKey,
-    auth_env: input.authEnv,
+    auth_env: input.authEnv ?? '',
     startup_timeout: input.startupTimeout,
     discovery_timeout: input.discoveryTimeout,
     call_timeout: input.callTimeout,

@@ -135,6 +135,7 @@ func (a *App) initDatabase() error {
 		&entity.ConversationEvent{},
 		&entity.AgentTraceSpan{},
 		&entity.MCPServer{},
+		&entity.LLMProvider{},
 	); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
 	}
@@ -155,15 +156,12 @@ func (a *App) initDatabase() error {
 // 顺序是 db → repository → service → router，每一层只拿到它下面那一层。
 // 数据库连接在 initDatabase 里已经建好，这里只往下传。
 func (a *App) initDependencies() error {
-	a.mcpManager = internalmcp.NewManager(a.cfg.App)
-	if err := a.mcpManager.Start(context.Background()); err != nil {
-		return fmt.Errorf("MCP 初始化失败: %w", err)
-	}
 	// ========== 创建 Repository ==========
 	roleRepo := repository.NewRoleRepository(a.postgresDB)
 	embeddingSettingRepo := repository.NewEmbeddingSettingRepository(a.postgresDB)
 	embeddingModelRepo := repository.NewEmbeddingModelRepository(a.postgresDB)
 	mcpServerRepo := repository.NewMCPServerRepository(a.postgresDB)
+	llmProviderRepo := repository.NewLLMProviderRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
 	roleSvc := service.NewRoleService(roleRepo)
@@ -186,10 +184,15 @@ func (a *App) initDependencies() error {
 	}
 	voiceSvc := service.NewVoiceService(ttsClient)
 	encryptionKey := crypto.DeriveKey(a.cfg.JWT.Secret)
-	mcpServerSvc := service.NewMCPServerService(mcpServerRepo, a.cfg.App, encryptionKey)
+	a.mcpManager = internalmcp.NewManager(a.cfg.App)
+	mcpServerSvc := service.NewMCPServerService(mcpServerRepo, a.cfg.App, encryptionKey, a.mcpManager)
+	if err := mcpServerSvc.LoadRuntime(context.Background()); err != nil {
+		return fmt.Errorf("MCP 初始化失败: %w", err)
+	}
 
 	// ========== 创建 Router ==========
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc)
+	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc)
 	return nil
 }
 

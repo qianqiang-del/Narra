@@ -4,20 +4,23 @@
  * 使用左侧导航组织设置项，便于后续扩展更多配置页面。
  */
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
-import { Database, Monitor, Moon, Palette, Plug, Plus, Sun, Trash2, Wifi, X } from 'lucide-vue-next'
+import { Bot, Database, Monitor, Moon, Palette, Plug, Plus, Sun, Trash2, Wifi, X } from 'lucide-vue-next'
 import { reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'
 
 import { useTheme, type ThemeMode } from '@/composables/useTheme'
 import { useMcpStore } from '@/stores/mcp'
+import { useLlmStore } from '@/stores/llm'
+import LlmSettingsSection from '@/components/home/LlmSettingsSection.vue'
 import { cn } from '@/lib/utils'
 
 const open = defineModel<boolean>('open', { default: false })
+const activeSection = defineModel<'theme' | 'llm' | 'embedding' | 'mcp'>('section', { default: 'theme' })
 
 const { t } = useI18n()
 const { mode, setMode } = useTheme()
-const activeSection = ref<'theme' | 'embedding' | 'mcp'>('theme')
+const llmStore = useLlmStore()
 
 const mcpStore = useMcpStore()
 const { servers: mcpServers, loading: mcpLoading } = storeToRefs(mcpStore)
@@ -74,6 +77,11 @@ async function submitMcpForm() {
 function openMcp() {
   activeSection.value = 'mcp'
   mcpStore.load()
+}
+
+function openLlm() {
+  activeSection.value = 'llm'
+  void llmStore.loadProviders()
 }
 
 let testTimer: ReturnType<typeof setTimeout> | null = null
@@ -251,6 +259,14 @@ function openEmbedding() {
           <nav class="mt-3 space-y-1" :aria-label="t('settings.title')">
             <button
               type="button"
+              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'llm' ? 'bg-violet-100 text-violet-800 dark:bg-violet-500/15 dark:text-violet-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
+              @click="openLlm"
+            >
+              <Bot class="size-4" />
+              {{ t('settings.llm') }}
+            </button>
+            <button
+              type="button"
               :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'theme' ? 'bg-violet-100 text-violet-800 dark:bg-violet-500/15 dark:text-violet-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
               @click="activeSection = 'theme'"
             >
@@ -312,6 +328,8 @@ function openEmbedding() {
             </button>
             </div>
           </section>
+
+          <LlmSettingsSection v-else-if="activeSection === 'llm'" />
 
           <section v-else-if="activeSection === 'embedding'" class="space-y-5">
             <div>

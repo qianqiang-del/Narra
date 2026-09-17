@@ -20,11 +20,45 @@ type mcpServerService struct {
 	repo          repository.MCPServerRepository
 	app           config.AppConfig
 	encryptionKey []byte
+	runtime       mcpRuntime
+}
+
+type mcpRuntime interface {
+	Load([]config.MCPServerConfig) error
+	Start(context.Context) error
+	Upsert(context.Context, config.MCPServerConfig) error
+	Remove(context.Context, string) error
 }
 
 // NewMCPServerService 创建 MCP 服务配置业务服务。
-func NewMCPServerService(repo repository.MCPServerRepository, app config.AppConfig, encryptionKey []byte) MCPServerService {
-	return &mcpServerService{repo: repo, app: app, encryptionKey: encryptionKey}
+func NewMCPServerService(repo repository.MCPServerRepository, app config.AppConfig, encryptionKey []byte, runtime mcpRuntime) MCPServerService {
+	return &mcpServerService{repo: repo, app: app, encryptionKey: encryptionKey, runtime: runtime}
+}
+
+// LoadRuntime loads enabled persisted servers and starts their runtime connections.
+func (s *mcpServerService) LoadRuntime(ctx context.Context) error {
+	servers, err := s.repo.List(ctx)
+	if err != nil {
+		return errors.NewWithErr(errors.CodeInternalError, "查询 MCP 服务列表失败", err)
+	}
+	configs := make([]config.MCPServerConfig, 0, len(servers))
+	for index := range servers {
+		if !servers[index].Enabled {
+			continue
+		}
+		serverConfig, err := s.toServerConfig(&servers[index])
+		if err != nil {
+			return errors.NewWithErr(errors.CodeInternalError, "解密 MCP API Key 失败", err)
+		}
+		configs = append(configs, serverConfig)
+	}
+	if err := s.runtime.Load(configs); err != nil {
+		return errors.NewWithErr(errors.CodeInternalError, "加载 MCP 运行时配置失败", err)
+	}
+	if err := s.runtime.Start(ctx); err != nil {
+		return errors.NewWithErr(errors.CodeInternalError, "启动 MCP 运行时失败", err)
+	}
+	return nil
 }
 
 // List 查所有 MCP 服务配置，转成对外结构。
@@ -71,6 +105,9 @@ func (s *mcpServerService) Create(ctx context.Context, input request.MCPServer) 
 	if err := s.repo.Create(ctx, srv); err != nil {
 		return nil, errors.NewWithErr(errors.CodeInternalError, "创建 MCP 服务失败", err)
 	}
+	if err := s.syncRuntime(ctx, srv); err != nil {
+		return nil, err
+	}
 	item := s.toItem(srv)
 	return &item, nil
 }
@@ -87,17 +124,35 @@ func (s *mcpServerService) Update(ctx context.Context, id uint64, input request.
 	if err := s.repo.Update(ctx, srv); err != nil {
 		return nil, errors.NewWithErr(errors.CodeInternalError, "更新 MCP 服务失败", err)
 	}
+	if err := s.syncRuntime(ctx, srv); err != nil {
+		return nil, err
+	}
 	item := s.toItem(srv)
 	return &item, nil
 }
 
 // Delete 删除一条 MCP 服务配置。
 func (s *mcpServerService) Delete(ctx context.Context, id uint64) error {
-	if _, err := s.repo.FindByID(ctx, id); err != nil {
+	srv, err := s.repo.FindByID(ctx, id)
+	if err != nil {
 		return errors.NewWithErr(errors.CodeResourceNotFound, "MCP 服务不存在", err)
 	}
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return errors.NewWithErr(errors.CodeInternalError, "删除 MCP 服务失败", err)
+	}
+	if err := s.runtime.Remove(ctx, srv.ServerID); err != nil {
+		return errors.NewWithErr(errors.CodeInternalError, "移除 MCP 运行时配置失败", err)
+	}
+	return nil
+}
+
+func (s *mcpServerService) syncRuntime(ctx context.Context, srv *entity.MCPServer) error {
+	serverConfig, err := s.toServerConfig(srv)
+	if err != nil {
+		return errors.NewWithErr(errors.CodeInternalError, "解密 MCP API Key 失败", err)
+	}
+	if err := s.runtime.Upsert(ctx, serverConfig); err != nil {
+		return errors.NewWithErr(errors.CodeInternalError, "同步 MCP 运行时配置失败", err)
 	}
 	return nil
 }

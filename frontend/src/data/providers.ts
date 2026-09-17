@@ -1,85 +1,33 @@
 /**
- * 模型服务商静态数据（原项目从服务端配置接口拉取）。
- * 接入 Go 后端后改为 `GET /api/providers`。
- * logo 复用 public/logos/ 下已保留的资源。
+ * 服务商 logo 静态映射。
+ *
+ * 真实的可选模型来自后端 `GET /llm/models/available`，这里不再有任何模型目录。
+ * 剩下的只有「用户给这条配置起的名字 → 用哪张 logo」这一层展示信息：logo 是前端资源，
+ * 后端不认识它，用户也不会为了配个图标去改 Base URL。
+ *
+ * 按关键词做包含匹配，所以命名成「DeepSeek」「我的通义代理」都能命中；命不中就用通用图标兜底。
+ * 匹配顺序即优先级，具体的放前面。
  */
-export interface ModelItem {
-  id: string
-  /** 面向用户的短名（未设则展示 id） */
-  name?: string
-}
-
-export interface ModelProvider {
-  id: string
-  name: string
+export interface ProviderLogo {
+  keywords: string[]
   logo: string
-  models: ModelItem[]
 }
 
-export const MODEL_PROVIDERS: ModelProvider[] = [
-  {
-    id: 'openai',
-    name: 'OpenAI',
-    logo: '/logos/openai.svg',
-    models: [
-      { id: 'gpt-4o-mini' },
-      { id: 'gpt-4o' },
-      { id: 'gpt-4.1' },
-      { id: 'o4-mini' },
-    ],
-  },
-  {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    logo: '/logos/deepseek.svg',
-    models: [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }],
-  },
-  {
-    id: 'qwen',
-    name: '通义千问',
-    logo: '/logos/qwen.svg',
-    models: [{ id: 'qwen-max' }, { id: 'qwen-plus' }, { id: 'qwen-turbo' }],
-  },
-  {
-    id: 'glm',
-    name: '智谱 GLM',
-    logo: '/logos/glm.svg',
-    models: [{ id: 'glm-4-plus' }, { id: 'glm-4-air' }, { id: 'glm-4-flash' }],
-  },
-  {
-    id: 'claude',
-    name: 'Claude',
-    logo: '/logos/claude.svg',
-    models: [{ id: 'claude-sonnet-4' }, { id: 'claude-opus-4' }],
-  },
-  {
-    id: 'gemini',
-    name: 'Gemini',
-    logo: '/logos/gemini.svg',
-    models: [{ id: 'gemini-2.5-pro' }, { id: 'gemini-2.5-flash' }],
-  },
-  {
-    id: 'kimi',
-    name: 'Kimi',
-    logo: '/logos/kimi.png',
-    models: [{ id: 'moonshot-v1-128k' }],
-  },
-  {
-    id: 'doubao',
-    name: '豆包',
-    logo: '/logos/doubao.svg',
-    models: [{ id: 'doubao-pro-32k' }],
-  },
-  {
-    id: 'ollama',
-    name: 'Ollama',
-    logo: '/logos/ollama.svg',
-    models: [{ id: 'llama3.3' }, { id: 'qwen2.5' }],
-  },
-  {
-    id: 'openrouter',
-    name: 'OpenRouter',
-    logo: '/logos/openrouter.svg',
-    models: [{ id: 'auto' }],
-  },
+export const PROVIDER_LOGOS: ProviderLogo[] = [
+  { keywords: ['openrouter'], logo: '/logos/openrouter.svg' },
+  { keywords: ['openai', 'gpt'], logo: '/logos/openai.svg' },
+  { keywords: ['deepseek'], logo: '/logos/deepseek.svg' },
+  { keywords: ['qwen', '通义', '千问', 'bailian', '百炼'], logo: '/logos/qwen.svg' },
+  { keywords: ['glm', '智谱', 'zhipu'], logo: '/logos/glm.svg' },
+  { keywords: ['claude', 'anthropic'], logo: '/logos/claude.svg' },
+  { keywords: ['gemini', 'google'], logo: '/logos/gemini.svg' },
+  { keywords: ['kimi', 'moonshot'], logo: '/logos/kimi.png' },
+  { keywords: ['doubao', '豆包', 'volc'], logo: '/logos/doubao.svg' },
+  { keywords: ['ollama'], logo: '/logos/ollama.svg' },
 ]
+
+/** 按配置名称猜一张 logo；猜不中返回空串，由调用方决定用什么兜底图标。 */
+export function findProviderLogo(name: string): string {
+  const lower = name.toLowerCase()
+  return PROVIDER_LOGOS.find((p) => p.keywords.some((k) => lower.includes(k)))?.logo ?? ''
+}

@@ -7,7 +7,7 @@
  *          → Composer（GreetingBar + textarea + AgentBar + 工具栏 + 发送）
  *          → 最近学习折叠区 → 页脚。
  */
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ArrowUp, Atom, Check, Loader2, Mic } from 'lucide-vue-next'
@@ -22,11 +22,16 @@ import SettingsDialog from '@/components/home/SettingsDialog.vue'
 import TopPillToolbar from '@/components/home/TopPillToolbar.vue'
 import UiTooltip from '@/components/ui/UiTooltip.vue'
 import { cn } from '@/lib/utils'
+import { useLlmStore } from '@/stores/llm'
+import { storeToRefs } from 'pinia'
 
 const { t } = useI18n()
 const router = useRouter()
+const llmStore = useLlmStore()
+const { availableModels } = storeToRefs(llmStore)
 
 const settingsOpen = ref(false)
+const settingsSection = ref<'theme' | 'llm' | 'embedding' | 'mcp'>('theme')
 const requirement = ref('')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const generating = ref(false)
@@ -35,9 +40,8 @@ const generating = ref(false)
 const interactiveMode = ref(false)
 
 /** 生成配置（透传给 GenerationToolbar / AgentBar） */
-const providerId = ref('openai')
-const modelId = ref('gpt-4o-mini')
-const hasProvider = ref(true)
+const providerId = ref<number | null>(null)
+const modelId = ref('')
 const webSearch = ref(false)
 const extractor = ref('mineru')
 const materials = ref<{ id: string; name: string; size: number }[]>([])
@@ -52,7 +56,35 @@ const ttsEnabled = ref(true)
  */
 const teacherVoice = ref('')
 
-const canSubmit = computed(() => requirement.value.trim().length > 0 && !generating.value)
+const hasProvider = computed(() => availableModels.value.length > 0)
+const canSubmit = computed(() => requirement.value.trim().length > 0 && hasProvider.value && providerId.value !== null && modelId.value !== '' && !generating.value)
+
+function selectFirstAvailableModel() {
+  const currentStillExists = availableModels.value.some(
+    (item) => item.providerId === providerId.value && item.modelId === modelId.value,
+  )
+  if (currentStillExists) return
+  const first = availableModels.value[0]
+  providerId.value = first?.providerId ?? null
+  modelId.value = first?.modelId ?? ''
+}
+
+onMounted(async () => {
+  try { await llmStore.loadAvailableModels() } catch { /* 首页按无可用模型处理 */ }
+  selectFirstAvailableModel()
+})
+
+watch(availableModels, selectFirstAvailableModel)
+watch(settingsOpen, async (value, oldValue) => {
+  if (!value && oldValue) {
+    try { await llmStore.loadAvailableModels() } catch { /* 保留当前空状态 */ }
+  }
+})
+
+function openModelSettings() {
+  settingsSection.value = 'llm'
+  settingsOpen.value = true
+}
 
 /** textarea 自增高（140~300px） */
 function autoGrow() {
@@ -64,8 +96,20 @@ function autoGrow() {
 watch(requirement, () => nextTick(autoGrow))
 
 async function submit() {
+  if (!hasProvider.value) {
+    openModelSettings()
+    toast.error(t('home.modelRequired'))
+    return
+  }
   if (!canSubmit.value) return
   generating.value = true
+  sessionStorage.setItem('narra:generation-config', JSON.stringify({
+    requirement: requirement.value.trim(),
+    llm_provider_id: providerId.value,
+    llm_model_id: modelId.value,
+    web_search: webSearch.value,
+    extractor: extractor.value,
+  }))
   // 生成本身由课堂页承载，这里先落到预览页/课堂页
   const id = `c-${Date.now()}`
   await router.push({ name: 'generation-preview' })
@@ -161,7 +205,8 @@ function openClassroom(id: string) {
               v-model:web-search="webSearch"
               v-model:extractor="extractor"
               v-model:materials="materials"
-              :has-provider="hasProvider"
+              :available-models="availableModels"
+              @configure="openModelSettings"
             />
           </div>
 
@@ -228,6 +273,6 @@ function openClassroom(id: string) {
     </div>
 
     <!-- §5.10 设置弹窗 -->
-    <SettingsDialog v-model:open="settingsOpen" />
+    <SettingsDialog v-model:open="settingsOpen" v-model:section="settingsSection" />
   </div>
 </template>
