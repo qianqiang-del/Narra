@@ -68,7 +68,7 @@ func (s *llmProviderService) AvailableModels(ctx context.Context) ([]responsedto
 	return out, nil
 }
 
-// Create 新建配置，一律以「未测试、未启用」入库：测通了才能手动启用。
+// Create 新建配置，一律全部入库：测通了才能手动启用。
 func (s *llmProviderService) Create(ctx context.Context, input requestdto.LLMProvider) (*responsedto.LLMProvider, error) {
 	name, baseURL, timeout, models, err := validateLLMInput(input)
 	if err != nil {
