@@ -4,14 +4,15 @@
 
 将支持的文档转换为 Markdown 并输出 JSON:
 - .docx/.pptx/.xlsx 通过 Docling 转换,文档内图片导出为临时文件并以路径引用
-- .pdf 优先提取数字版文字层，仅在无可见文字时整份回退至 OCR
+- .pdf 优先提取数字版文字层；只有缺文字层的页才走 OCR —— 整份都没文字层的纯扫描件
+  整份 OCR，文字层与扫描页混排的混合型只对缺文字层的扫描页 OCR，再按页号合并
 - .jpg/.jpeg/.png/.bmp/.tiff/.tif 使用 RapidOCR 直接识别
 
 输出格式:JSON 对象,与 Go 侧 ingestion.ParseResult 字段一一对应:
 - markdown: 转换后的 Markdown 文本
 - picture_paths: 提取的图片临时文件路径列表(绝对路径,正斜杠)
-- pages: 页面信息列表(仅 PDF)
-- metadata: 文件元数据(文件类型、解析器)
+- pages: 页面信息列表(仅 PDF;OCR 失败的页带 failed=true,与"这页本来没字"区分开)
+- metadata: 文件元数据(文件类型、解析器;混合型 PDF 另有 mixed 与页数统计)
 
 错误协议:{"error_code": "...", "error_message": "..."}
 """
@@ -19,8 +20,10 @@
 import argparse
 import base64
 import json
+import os
 import re
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -39,7 +42,6 @@ except ImportError:
     from image_alt import build_image_markdown
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
-VISIBLE_TEXT_PATTERN = re.compile(r"[A-Za-z0-9\u3400-\u9fff]")
 
 
 @dataclass
@@ -100,31 +102,57 @@ def ocr_image(image: str | Path | Any) -> str:
     return backend(image)
 
 
-def ocr_pdf(path: Path) -> tuple[str, list[dict[str, Any]]]:
+def ocr_pdf(
+    path: Path, only_pages: list[int] | None = None
+) -> tuple[str, list[dict[str, Any]]]:
     """Call the optional RapidOCR backend only when a PDF is parsed."""
     try:
         from .rapid_ocr import ocr_pdf as backend
     except ImportError:
         from rapid_ocr import ocr_pdf as backend
-    return backend(path)
+    return backend(path, only_pages)
 
 
-def _extract_pdf_text(path: Path) -> tuple[str, list[dict[str, Any]]]:
-    """Extract a PDF text layer without invoking Docling or OCR."""
+def _extract_pdf_text(path: Path) -> tuple[str, list[dict[str, Any]], list[int]]:
+    """提取 PDF 文字层，不碰 Docling 也不碰 OCR。
+
+    除 markdown 与逐页文本外，还返回"没有文字层但含图片"的页号 —— 那才是真正需要
+    OCR 的扫描页。没有文字层也没有图片的页（章节分隔之类的空白页）不算在内：对它们
+    跑 OCR 只会白白加载一次 OCR 依赖，结果同样是空的。
+    """
     import fitz
 
     pdf = fitz.open(str(path))
     pages: list[dict[str, Any]] = []
     texts: list[str] = []
+    scanned_pages: list[int] = []
     try:
         for number, page in enumerate(pdf, start=1):
             text = page.get_text("text").strip()
             pages.append({"number": number, "text": text})
             if text:
                 texts.append(f"<!-- page:{number} -->\n{text}")
+            elif page.get_images(full=True):
+                scanned_pages.append(number)
     finally:
         pdf.close()
-    return "\n\n".join(texts).strip(), pages
+    return "\n\n".join(texts).strip(), pages, scanned_pages
+
+
+def _run_pdf_ocr(
+    path: Path,
+    ocr_engine: str,
+    api_base_url: str,
+    api_key: str,
+    api_model: str,
+    only_pages: list[int] | None = None,
+) -> tuple[str, list[dict[str, Any]], str]:
+    """按配置选 OCR 后端跑 PDF，返回 ``(markdown, pages, parser 名)``。"""
+    if ocr_engine == "api":
+        markdown, pages = ocr_pdf_api(path, api_base_url, api_key, api_model, only_pages)
+        return markdown, pages, "api_ocr"
+    markdown, pages = ocr_pdf(path, only_pages)
+    return markdown, pages, "rapidocr"
 
 
 def ocr_image_api(path: Path, base_url: str, api_key: str, model: str) -> str:
@@ -136,13 +164,19 @@ def ocr_image_api(path: Path, base_url: str, api_key: str, model: str) -> str:
     return backend(path, base_url, api_key, model)
 
 
-def ocr_pdf_api(path: Path, base_url: str, api_key: str, model: str) -> tuple[str, list[dict[str, Any]]]:
+def ocr_pdf_api(
+    path: Path,
+    base_url: str,
+    api_key: str,
+    model: str,
+    only_pages: list[int] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
     """Call the optional API OCR backend only when it is selected."""
     try:
         from .api_ocr import ocr_pdf_api as backend
     except ImportError:
         from api_ocr import ocr_pdf_api as backend
-    return backend(path, base_url, api_key, model)
+    return backend(path, base_url, api_key, model, only_pages)
 
 
 def _parse_data_uri(data_uri: str) -> tuple[bytes, str]:
@@ -164,12 +198,26 @@ def _build_picture_recognizer(
     return lambda path: ocr_image(path)
 
 
+def _resolve_images_dir(work_dir: str) -> Path:
+    """确定图片导出目录。
+
+    优先用调用方给的 --work-dir（Go 侧会指到一个临时目录，上传对象存储后由它清理）；
+    没给就每次解析新建一个系统临时目录 —— 绝不写回输入文件所在目录，避免污染上传目录。
+    """
+    if work_dir:
+        target = Path(work_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+    return Path(tempfile.mkdtemp(prefix="narra-parse-"))
+
+
 def _convert_with_docling(
     file_path: Path,
     result: ParseResult,
     recognizer: Callable[[Path], str] | None,
+    work_dir: str = "",
 ) -> str:
-    """使用 Docling 转换文档；Office 图片导出到输入文件同级 images/ 目录。
+    """使用 Docling 转换文档；Office 图片导出到 work_dir 下的 images/ 目录。
 
     导出路径以绝对路径(正斜杠)写入 markdown 引用并加入 picture_paths,
     由 Go 侧上传 MinIO 后回填 URL。单张图片导出失败降级为文本占位,不中断解析。
@@ -189,8 +237,8 @@ def _convert_with_docling(
     if not (hasattr(doc, "pictures") and doc.pictures):
         return markdown
 
-    images_dir = file_path.parent / "images"
-    images_dir.mkdir(exist_ok=True)
+    images_dir = _resolve_images_dir(work_dir) / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
     replacements: list[str] = []
     for index, pic in enumerate(doc.pictures):
         uri = str(pic.image.uri) if hasattr(pic, "image") and hasattr(pic.image, "uri") else ""
@@ -216,12 +264,6 @@ def _convert_with_docling(
     return markdown
 
 
-def has_visible_content(markdown: str) -> bool:
-    """Return whether Docling produced content beyond Markdown punctuation."""
-    without_markup = re.sub(r"[`#>*_\[\]()!|\-]", "", markdown or "")
-    return VISIBLE_TEXT_PATTERN.search(without_markup) is not None
-
-
 def _parse_pdf(
     path: Path,
     result: ParseResult,
@@ -230,30 +272,74 @@ def _parse_pdf(
     api_key: str,
     api_model: str,
 ) -> str:
-    """Use the PDF text layer first; OCR only when the PDF has no text."""
-    markdown, pages = _extract_pdf_text(path)
-    if has_visible_content(markdown):
+    """逐页决定走文字层还是 OCR。
+
+    按整份判定（"只要任一页有文字就整份用文字层"）会在混合型 PDF 上静默丢内容 ——
+    后面的扫描页根本不会出现在结果里，而 Markdown 看上去完全正常。这里改成按页判定：
+    文字层覆盖的页保留原文，只有缺文字层的扫描页才送去 OCR，最后按页号合并，
+    ``<!-- page:N -->`` 标记与页序都保持不变。
+    """
+    text_markdown, pages, scanned_pages = _extract_pdf_text(path)
+    text_pages = [page for page in pages if page["text"]]
+
+    # 整份都没有文字层：纯扫描件，走整份 OCR。这里刻意不看图片检测结果 ——
+    # 扫描件的图片嵌入方式五花八门，一旦漏检就会让整份文档静默变成空内容。
+    if not text_pages:
+        markdown, result.pages, parser = _run_pdf_ocr(
+            path, ocr_engine, api_base_url, api_key, api_model
+        )
+        print(
+            f"PDF 解析路径：扫描版 OCR（{parser}，原因：text_layer_empty）",
+            file=sys.stderr,
+        )
+        result.metadata.update(
+            {
+                "parser": parser,
+                "fallback": True,
+                "fallback_reason": "text_layer_empty",
+            }
+        )
+        return markdown
+
+    # 有文字层、且没有缺文字层的扫描页：纯文字层路径，完全不加载 OCR 依赖
+    # （夹在中间的空白页保持空白，不为它们付一次 OCR 引擎初始化的代价）
+    if not scanned_pages:
         result.pages = pages
         print("PDF 解析路径：数字版文字层提取（PyMuPDF）", file=sys.stderr)
         result.metadata.update({"parser": "pymupdf", "fallback": False})
-        return markdown
-    fallback_reason = "text_layer_empty"
+        return text_markdown
 
-    if ocr_engine == "api":
-        markdown, result.pages = ocr_pdf_api(path, api_base_url, api_key, api_model)
-        parser = "api_ocr"
-    else:
-        markdown, result.pages = ocr_pdf(path)
-        parser = "rapidocr"
-    print(f"PDF 解析路径：扫描版 OCR（{parser}，原因：{fallback_reason}）", file=sys.stderr)
+    # 混合型：文字层 + 只对扫描页做 OCR，再按页号合并回原始顺序
+    _, ocr_pages, parser = _run_pdf_ocr(
+        path, ocr_engine, api_base_url, api_key, api_model, scanned_pages
+    )
+    ocr_by_number = {page["number"]: page for page in ocr_pages}
+
+    merged_pages: list[dict[str, Any]] = []
+    blocks: list[str] = []
+    for page in pages:
+        merged = ocr_by_number.get(page["number"], page)
+        merged_pages.append(merged)
+        if merged["text"]:
+            blocks.append(f"<!-- page:{page['number']} -->\n{merged['text']}")
+
+    result.pages = merged_pages
+    print(
+        f"PDF 解析路径：混合型（文字层 {len(text_pages)} 页 + "
+        f"{parser} OCR {len(scanned_pages)} 页）",
+        file=sys.stderr,
+    )
     result.metadata.update(
         {
             "parser": parser,
             "fallback": True,
-            "fallback_reason": fallback_reason,
+            "fallback_reason": "text_layer_partial",
+            "mixed": True,
+            "text_layer_pages": len(text_pages),
+            "ocr_pages": len(scanned_pages),
         }
     )
-    return markdown
+    return "\n\n".join(blocks).strip()
 
 
 def parse_path(
@@ -262,6 +348,7 @@ def parse_path(
     api_base_url: str = "",
     api_key: str = "",
     api_model: str = "",
+    work_dir: str = "",
 ) -> ParseResult:
     """Parse one supported file without writing protocol output."""
     if not path.is_file():
@@ -278,7 +365,9 @@ def parse_path(
             picture_recognizer = _build_picture_recognizer(
                 ocr_engine, api_base_url, api_key, api_model
             )
-            result.markdown = _convert_with_docling(path, result, picture_recognizer)
+            result.markdown = _convert_with_docling(
+                path, result, picture_recognizer, work_dir
+            )
             result.metadata["parser"] = "docling"
         elif suffix == ".pdf":
             result.markdown = _parse_pdf(
@@ -312,8 +401,17 @@ def main() -> None:
         help="图片/PDF 使用的 OCR 引擎: rapidocr(本地,默认) 或 api(通用 OCR API)",
     )
     parser.add_argument("--ocr-api-url", default="", help="通用 OCR API 接口地址")
-    parser.add_argument("--ocr-api-key", default="", help="通用 OCR API 访问凭证")
+    parser.add_argument(
+        "--ocr-api-key",
+        default=os.environ.get("NARRA_OCR_API_KEY", ""),
+        help="通用 OCR API 访问凭证；默认读环境变量 NARRA_OCR_API_KEY，避免密钥出现在进程命令行里",
+    )
     parser.add_argument("--ocr-api-model", default="", help="通用 OCR API 模型名称")
+    parser.add_argument(
+        "--work-dir",
+        default="",
+        help="图片导出根目录；留空则新建系统临时目录（默认不写回输入文件所在目录）",
+    )
     args = parser.parse_args()
     try:
         result = parse_path(
@@ -322,6 +420,7 @@ def main() -> None:
             args.ocr_api_url,
             args.ocr_api_key,
             args.ocr_api_model,
+            args.work_dir,
         )
     except ParserError as exc:
         fail(exc.code, exc.message)
