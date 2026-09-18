@@ -33,17 +33,28 @@ const (
 	uploadTempPrefix = "narra-upload-"
 )
 
-// Controller 负责知识库文档接口。
+// Controller 是知识库文档的 HTTP 处理器。
+//
+// 它只管三件与传输有关的事：收文件并落盘、把请求参数翻成服务层输入、
+// 把服务层结果装进统一响应体。收录本身的编排在 service 与 rag 里。
 type Controller struct {
 	svc       service.KnowledgeService
-	uploadDir string
-	parser    documentparser.Parser
+	uploadDir string                // 上传根目录；每次上传在此新建一个单独的暂存子目录
+	parser    documentparser.Parser // 可以为 nil，表示文档解析能力未启用
 }
 
+// NewController 创建知识库处理器。
+//
+// uploadDir 要和服务层、worker 用的是同一个值：服务层靠它判断一条记录的
+// upload_path 是否可信（只清理自己目录下的），传错会让删除时的清理失效。
 func NewController(svc service.KnowledgeService, uploadDir string, parser documentparser.Parser) *Controller {
 	return &Controller{svc: svc, uploadDir: uploadDir, parser: parser}
 }
 
+// ParserStatus 返回文档解析能力的可用状态，供前端提示"当前能不能传 PDF"。
+//
+// parser 为 nil 是"配置上就没启用"的确定状态，直接答一个 ready = false；
+// 非 nil 时交给解析器自己探测（例如 Python 运行时和依赖是否就绪）。
 func (c *Controller) ParserStatus(ctx *gin.Context) {
 	if c.parser == nil {
 		response.Success(ctx, documentparser.Status{Ready: false, Reason: "document parser is disabled"})
@@ -74,8 +85,9 @@ func (c *Controller) Upload(ctx *gin.Context) {
 		response.InternalError(ctx, "创建上传临时目录失败: "+err.Error())
 		return
 	}
-	// 收录过程里的解析产物和这份上传文件都在这个目录下，一次清理干净。
-	// 解析器的产物目录由 service 负责删，这里只管自己建的这个。
+	// 这个暂存目录有三处清理出口，各管一段：收录失败时由下面的 defer 兜底删掉；
+	// 收录成功后归 rag.Worker（处理完就删整个目录）；解析器自己产出的中间文件
+	// 由 rag 在解析结束时调 Cleanup 清掉。这里只负责自己失败的那条路径。
 
 	// 落盘用的文件名不沿用用户给的名字：那个名字可能带 ../ 或盘符，
 	// 拼进路径等于把"往任意位置写文件"的能力交给了调用方。
@@ -154,6 +166,9 @@ func (c *Controller) Get(ctx *gin.Context) {
 	response.Success(ctx, document)
 }
 
+// Preview 返回单篇文档的解析正文，供前端"查看"按钮打开预览。
+//
+// 正文只在这一个接口出网：列表与详情刻意不带它（一篇文档可能几十万字）。
 func (c *Controller) Preview(ctx *gin.Context) {
 	id, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
 	if err != nil || id == 0 {
@@ -168,6 +183,10 @@ func (c *Controller) Preview(ctx *gin.Context) {
 	response.Success(ctx, document)
 }
 
+// Delete 删除一篇文档，连同它的切片与向量。
+//
+// 三张表的级联由外键 ON DELETE CASCADE 保证，这里只发一次删除请求；
+// 上传暂存目录的清理在服务层做（它要据此判断路径是否可信）。
 func (c *Controller) Delete(ctx *gin.Context) {
 	id, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
 	if err != nil || id == 0 {
