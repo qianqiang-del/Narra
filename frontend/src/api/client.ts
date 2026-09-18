@@ -36,9 +36,15 @@ const BASE = '/api/v1'
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
+    // FormData 的 Content-Type 必须由浏览器自己生成（它要往里塞 boundary），
+    // 这里写死 application/json 会让后端把 multipart 体整个解析不出来。
+    const isFormData = init?.body instanceof FormData
     res = await fetch(`${BASE}${path}`, {
       ...init,
-      headers: { 'Content-Type': 'application/json', ...init?.headers },
+      headers: {
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+        ...init?.headers,
+      },
     })
   } catch (cause) {
     // fetch 只在网络层失败时 reject。这里刻意不编造中文文案——报什么由调用方决定
