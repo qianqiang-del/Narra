@@ -38,6 +38,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("document_parser.timeout", "10m")
 	v.SetDefault("document_parser.python_version", "3.12")
 	v.SetDefault("document_parser.ocr_engine", "rapidocr")
+	v.SetDefault("storage.upload_dir", "data/uploads")
 
 	// 读取配置文件
 	if err := v.ReadInConfig(); err != nil {

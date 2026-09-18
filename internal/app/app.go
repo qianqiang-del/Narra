@@ -16,11 +16,13 @@ import (
 	"narra/internal/api"
 	internalmcp "narra/internal/mcp"
 	"narra/internal/model/entity"
+	"narra/internal/rag"
 	"narra/internal/repository"
 	"narra/internal/service"
 	"narra/pkg/config"
 	"narra/pkg/crypto"
 	"narra/pkg/database"
+	"narra/pkg/documentparser"
 	"narra/pkg/embedding"
 	"narra/pkg/logger"
 	"narra/pkg/tts"
@@ -28,12 +30,13 @@ import (
 
 // App 应用结构体
 type App struct {
-	cfg        *config.Config
-	postgresDB *gorm.DB
-	redis      *redis.Client
-	router     *api.Router
-	server     *http.Server
-	mcpManager *internalmcp.Manager
+	cfg             *config.Config
+	postgresDB      *gorm.DB
+	redis           *redis.Client
+	router          *api.Router
+	server          *http.Server
+	mcpManager      *internalmcp.Manager
+	knowledgeWorker *rag.Worker
 }
 
 // NewApp 创建应用实例
@@ -170,6 +173,7 @@ func (a *App) initDependencies() error {
 	embeddingModelRepo := repository.NewEmbeddingModelRepository(a.postgresDB)
 	mcpServerRepo := repository.NewMCPServerRepository(a.postgresDB)
 	llmProviderRepo := repository.NewLLMProviderRepository(a.postgresDB)
+	knowledgeDocumentRepo := repository.NewKnowledgeDocumentRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
 	roleSvc := service.NewRoleService(roleRepo)
@@ -199,9 +203,60 @@ func (a *App) initDependencies() error {
 	}
 
 	// ========== 创建 Router ==========
+	// 收录链路归 internal/rag，服务层只做 DTO 映射与文档查询。与 MCP 同一种装法：
+	// 运行时模块（rag.Ingester / mcp.Manager）在这里建好，再作为依赖注入服务层。
+	parser := newDocumentParser(a.cfg)
+	knowledgeIngester := rag.NewIngester(
+		knowledgeDocumentRepo, embeddingModelRepo, embeddingManager, parser)
+	uploadDir := a.cfg.Storage.UploadDir
+	if uploadDir == "" {
+		uploadDir = "data/uploads"
+	}
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		return fmt.Errorf("创建上传目录失败: %w", err)
+	}
+	a.knowledgeWorker = rag.NewWorker(knowledgeDocumentRepo, knowledgeIngester, uploadDir, 1)
+	a.knowledgeWorker.Start()
+	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeIngester, uploadDir)
 	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey)
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, knowledgeSvc, uploadDir, parser)
 	return nil
+}
+
+// newDocumentParser 按配置创建文档解析器；没启用时返回 nil。
+//
+// 这里刻意不 fail-fast。解析器负责的是 PDF / Office 这类"需要真解析"的格式，
+// 它起不来（脚本缺失、依赖没装好）时，md 与 txt 仍然可以正常导入，
+// 整个服务更不该因此启动失败 —— 启动被拦住的后果是用户连设置页都进不去，反而修不了。
+// 真需要它却拿不到时，用户会在上传那份 PDF 时收到一句明确说明。
+func newDocumentParser(cfg *config.Config) documentparser.Parser {
+	if !cfg.DocumentParser.Enabled {
+		return nil
+	}
+
+	parser, err := documentparser.NewPythonParser(documentparser.Config{
+		Enabled:       true,
+		PythonPath:    cfg.DocumentParser.PythonPath,
+		RuntimeDir:    cfg.DocumentParser.RuntimeDir,
+		EnvDir:        cfg.DocumentParser.EnvDir,
+		ScriptPath:    cfg.DocumentParser.ScriptPath,
+		Requirements:  cfg.DocumentParser.Requirements,
+		UVPath:        cfg.DocumentParser.UVPath,
+		PythonVersion: cfg.DocumentParser.PythonVersion,
+		IndexURL:      cfg.DocumentParser.IndexURL,
+		ParseTimeout:  cfg.DocumentParser.Timeout,
+		OCREngine:     cfg.DocumentParser.OCREngine,
+		OCRAPIBaseURL: cfg.DocumentParser.OCRAPIBaseURL,
+		OCRAPIKey:     cfg.DocumentParser.OCRAPIKey,
+		OCRAPIModel:   cfg.DocumentParser.OCRAPIModel,
+		WorkDir:       cfg.DocumentParser.WorkDir,
+	})
+	if err != nil {
+		logger.Warn("文档解析器初始化失败，PDF / Office 格式暂时无法收录；md 与 txt 不受影响",
+			zap.Error(err))
+		return nil
+	}
+	return parser
 }
 
 // initRouter 初始化路由
@@ -261,6 +316,12 @@ func (a *App) gracefulShutdown() {
 	}
 
 	// 关闭路由连接
+	if a.knowledgeWorker != nil {
+		if err := a.knowledgeWorker.Stop(ctx); err != nil {
+			logger.Error("知识库 worker 关闭失败", zap.Error(err))
+		}
+	}
+
 	if a.router != nil {
 		if err := a.router.Close(); err != nil {
 			logger.Error("关闭路由连接失败", zap.Error(err))

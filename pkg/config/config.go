@@ -14,10 +14,15 @@ type Config struct {
 	Embedding      EmbeddingConfig      `mapstructure:"embedding"`
 	TTS            TTSConfig            `mapstructure:"tts"`
 	DocumentParser DocumentParserConfig `mapstructure:"document_parser"`
+	Storage        StorageConfig        `mapstructure:"storage"`
 	JWT            JWTConfig            `mapstructure:"jwt"`
 	Log            LogConfig            `mapstructure:"log"`
 	CORS           CORSConfig           `mapstructure:"cors"`
 	ConfigPath     string               `mapstructure:"-"`
+}
+
+type StorageConfig struct {
+	UploadDir string `mapstructure:"upload_dir"`
 }
 
 // TTSProviderQwen 是 Qwen，走阿里云百炼；音色目录誊的就是它。

@@ -1,0 +1,609 @@
+package rag
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"go.uber.org/zap"
+	"gorm.io/gorm"
+
+	"narra/internal/model/entity"
+	"narra/pkg/documentparser"
+	"narra/pkg/embedding"
+	"narra/pkg/logger"
+	"narra/pkg/utils"
+)
+
+// DocumentStore 是收录链路对持久化的最小依赖面。
+//
+// 刻意比 repository.KnowledgeDocumentRepository 窄：收录真正用到的只有这五个方法，
+// 而列表分页、切片计数、删除是查询侧的事，收录不该看得见它们 ——
+// 接口窄了，测试替身也就小，写替身的时候不会被迫去实现一堆用不上的方法。
+// 仓储包实现它，注入在 internal/app 完成。
+type DocumentStore interface {
+	// Create 插入一篇文档，落库后回填 document.ID，后续切片与向量都挂在它下面。
+	Create(ctx context.Context, document *entity.KnowledgeDocument) error
+
+	// GetByID 按主键取文档。收录成功后要用它回读一次，拿到事务里更新过的 updated_at。
+	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error)
+
+	// MarkProcessing 把文档推进到 processing。
+	MarkProcessing(ctx context.Context, id uint64) error
+
+	// MarkFailed 把文档推进到 failed，并把失败现场写进 metadata。
+	MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage) error
+
+	// ReplaceChunks 用一个事务换掉这篇文档的全部切片与向量，并把它标记为可检索。
+	ReplaceChunks(ctx context.Context, id uint64, input entity.ChunkReplacement) error
+}
+
+// ModelRegistry 是收录链路对向量模型登记的最小依赖面。
+type ModelRegistry interface {
+	// GetDefault 取当前默认模型。库里没有默认模型时返回 gorm.ErrRecordNotFound。
+	GetDefault(ctx context.Context) (*entity.EmbeddingModel, error)
+
+	// EnsureDefault 把一份模型登记为唯一默认模型；同名且维度一致时复用已有行。
+	// 同名但维度不同、且该模型下已有向量时，实现方会拒绝并返回维度冲突错误。
+	EnsureDefault(ctx context.Context, model entity.EmbeddingModel) (*entity.EmbeddingModel, error)
+}
+
+// FileInput 是从磁盘收录一份文件所需的输入。
+//
+// 用本模块自己的类型而不是 HTTP 请求 DTO：收录将来要搬到后台任务里跑
+// （理由见 service.KnowledgeService 的注释），那时的调用方是 worker，
+// 不该被迫构造一个 HTTP 请求结构。HTTP DTO 到这里的那层映射归服务层。
+type FileInput struct {
+	Path       string // 磁盘上的文件路径，解析器按它的后缀选实现
+	Title      string // 调用方指定的标题；为空时依次回落到正文一级标题、文件名
+	SourceType string // manual / import / api；为空时按 import 处理
+	SourceURI  string // 用户看到的来源标识；为空时取 Path 的文件名部分
+}
+
+// TextInput 是直接收录一段正文所需的输入。
+type TextInput struct {
+	Title      string // 调用方指定的标题；为空时依次回落到正文一级标题、首行
+	Content    string // 待收录的正文，已经是 Markdown，不需要解析
+	SourceType string // manual / import / api；为空时按 manual 处理
+	SourceURI  string
+}
+
+// IngestResult 是一次收录的结果。
+//
+// Document 在失败时也是非 nil 的：失败的那份文档已经写进库里（status = failed，
+// 失败阶段与原因在 metadata），调用方需要它的 ID 才能说清是哪一次上传出了问题。
+// Chunks 是实际写入的切片数，失败时为 0。
+type IngestResult struct {
+	Document *entity.KnowledgeDocument
+	Chunks   int
+}
+
+// ingestMaxChunks 单篇文档的切片上限。
+//
+// 这道闸门是给"传错文件"准备的：把一个几百兆的日志当成知识文档传上来，
+// 会变成上千次向量化调用。宁可在这里明确失败，也不要把上游额度烧完。
+//
+// 异步化之后它已经不受 HTTP 写超时的约束（解析与向量化跑在 worker 的 ctx 里），
+// 但额度这条约束并没有消失：600 片相当于 38 个批次。要放宽应做成配置项，
+// 而不是直接删掉上限。
+const ingestMaxChunks = 600
+
+// maxTitleRunes 标题长度上限，与 knowledge_documents.title 的 varchar(300) 对齐。
+const maxTitleRunes = 300
+
+// Ingester 是收录链路的门面：把一份原文变成库里可检索的切片与向量。
+//
+// 它做四件事：解析（可选）→ 切分 → 向量化 → 一个事务落三张表。
+// 每一步失败都会把文档置为 failed 并把阶段写进 metadata，所以链路是自证的：
+// 库里任何一行的状态都能说明它走到了哪一步、为什么停在那里。
+//
+// 文件收录是**异步**的：SubmitFile 只建 pending 行、把文件路径写进 metadata，
+// 真正的解析与向量化由 Worker 在后台调 processExistingFile 完成（见 worker.go），
+// 状态按 pending → processing → ready / failed 推进。正文收录（IngestText）仍同步：
+// 没有解析这一步，切分与向量化是秒级的。IngestFile 是文件收录的同步版本，目前只有
+// 测试在用 —— 它与 processExistingFile 是同一段逻辑的两份拷贝，将来应收成
+// IngestFile = createDocument + processExistingFile。
+type Ingester struct {
+	store     DocumentStore
+	models    ModelRegistry
+	embedding *embedding.Manager
+	parser    documentparser.Parser
+
+	// newEmbedder 是这个包唯一的注入点，默认按当前生效配置现建 Client。
+	// 测试把它换成返回桩的工厂，整条链路就能在完全离线的条件下跑完。
+	newEmbedder embedderFactory
+}
+
+type FileTaskStore interface {
+	SetMetadata(context.Context, uint64, json.RawMessage) error
+	MarkFailed(context.Context, uint64, json.RawMessage) error
+	ListPending(context.Context, int) ([]entity.KnowledgeDocument, error)
+	Claim(context.Context, uint64) (bool, error)
+	ResetStale(context.Context, time.Time) error
+}
+
+// NewIngester 创建收录器。
+//
+// parser 可以是 nil —— 表示文档解析能力没启用，此时只有 md / txt 能收录，
+// 其它格式会收到一句明确的错误（见 documentparser.ParserFor）。这里不做 fail-fast，
+// 是因为"解析器没装好"不该拦住纯文本导入和整个服务的启动。
+func NewIngester(
+	store DocumentStore,
+	models ModelRegistry,
+	embeddingManager *embedding.Manager,
+	parser documentparser.Parser,
+) *Ingester {
+	ingester := &Ingester{
+		store:     store,
+		models:    models,
+		embedding: embeddingManager,
+		parser:    parser,
+	}
+	ingester.newEmbedder = func() (Embedder, error) {
+		client, err := embedding.NewClient(ingester.embedding.Config())
+		if err != nil {
+			return nil, fmt.Errorf("向量服务配置不可用: %w", err)
+		}
+		return client, nil
+	}
+	return ingester
+}
+
+// SubmitFile 创建待处理文档并持久化任务路径，实际处理由 Worker 完成。
+func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResult, error) {
+	path := strings.TrimSpace(input.Path)
+	if path == "" {
+		return IngestResult{}, fmt.Errorf("待收录的文件路径不能为空")
+	}
+	store, ok := i.store.(FileTaskStore)
+	if !ok {
+		return IngestResult{}, fmt.Errorf("知识库存储不支持异步文件任务")
+	}
+	sourceType, err := normalizeSourceType(input.SourceType, entity.KnowledgeDocumentSourceImport)
+	if err != nil {
+		return IngestResult{}, err
+	}
+	sourceURI := strings.TrimSpace(input.SourceURI)
+	if sourceURI == "" {
+		sourceURI = filepath.Base(path)
+	}
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		title = sourceURI
+	}
+	document, err := i.createDocument(ctx, title, sourceType, sourceURI)
+	if err != nil {
+		return IngestResult{}, err
+	}
+	metadata := map[string]any{
+		"upload_path":    path,
+		"explicit_title": strings.TrimSpace(input.Title) != "",
+	}
+	payload, _ := json.Marshal(metadata)
+	if err := store.SetMetadata(ctx, document.ID, payload); err != nil {
+		return IngestResult{}, err
+	}
+	return IngestResult{Document: document}, nil
+}
+
+// IngestFile 读一份文件并收录。
+//
+// 顺序是"先建文档行、再解析"：文档行是整条链路的主线，状态机挂在它上面。
+// 反过来先解析再建行的话，解析失败就没有任何记录可查 —— 用户只看到一句报错，
+// 不知道失败的是哪次上传。
+func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResult, error) {
+	path := strings.TrimSpace(input.Path)
+	if path == "" {
+		return IngestResult{}, fmt.Errorf("待收录的文件路径不能为空")
+	}
+
+	sourceType, err := normalizeSourceType(input.SourceType, entity.KnowledgeDocumentSourceImport)
+	if err != nil {
+		return IngestResult{}, err
+	}
+
+	// SourceURI 存用户看到的原始文件名，不存服务器上的临时路径：
+	// 后者对用户没有意义，还会把部署目录结构带进数据库。
+	sourceURI := strings.TrimSpace(input.SourceURI)
+	if sourceURI == "" {
+		sourceURI = filepath.Base(path)
+	}
+
+	explicitTitle := strings.TrimSpace(input.Title) != ""
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		// 回落到 SourceURI，而不是回落到入参里的路径：对 HTTP 上传来说，那个路径是
+		// 服务端自己起的临时文件名（controller 会规范成 upload.md），写进库里
+		// 用户根本认不出是自己传的哪一份；SourceURI 才是他看到的那个名字。
+		title = sourceURI
+	}
+
+	document, err := i.createDocument(ctx, title, sourceType, sourceURI)
+	if err != nil {
+		return IngestResult{}, err
+	}
+
+	parser, err := documentparser.ParserFor(path, i.parser)
+	if err != nil {
+		return i.failIngest(ctx, document, "select_parser", err)
+	}
+
+	started := time.Now().UTC()
+	result, err := parser.Parse(ctx, documentparser.Request{Path: path})
+	if err != nil {
+		return i.failIngest(ctx, document, "parse", err)
+	}
+	// 解析产物目录（导出的图片）归调用方清理。
+	// 已知短板：图片外链尚未接入对象存储，所以 Markdown 里指向本地图片的路径
+	// 在这一步之后会失效。等对象存储落地，改成"先上传图片、回填 URL、再删目录"。
+	defer func() { _ = result.Cleanup() }()
+
+	// 调用方没指定标题时，用正文的首个一级标题代替文件名：
+	// 文件名常带版本号和日期（"架构说明_2026-09-17_v3.md"），
+	// 而一级标题是作者给这篇文档起的正式名字，在列表页里可读得多。
+	if !explicitTitle {
+		title = preferHeadingTitle(title, result.Markdown)
+	}
+
+	metadata := map[string]any{
+		"parser":   parserName(result),
+		"parse_ms": time.Since(started).Milliseconds(),
+	}
+	return i.ingestMarkdown(ctx, document, title, result.Markdown, metadata)
+}
+
+func (i *Ingester) processExistingFile(ctx context.Context, document *entity.KnowledgeDocument, input FileInput) (IngestResult, error) {
+	parser, err := documentparser.ParserFor(input.Path, i.parser)
+	if err != nil {
+		return i.failIngest(ctx, document, "select_parser", err)
+	}
+	started := time.Now().UTC()
+	result, err := parser.Parse(ctx, documentparser.Request{Path: input.Path})
+	if err != nil {
+		return i.failIngest(ctx, document, "parse", err)
+	}
+	defer func() { _ = result.Cleanup() }()
+	title := document.Title
+	if strings.TrimSpace(input.Title) == "" {
+		title = preferHeadingTitle(title, result.Markdown)
+	}
+	metadata := map[string]any{"parser": parserName(result), "parse_ms": time.Since(started).Milliseconds()}
+	return i.ingestMarkdown(ctx, document, title, result.Markdown, metadata)
+}
+
+// IngestText 直接把正文收录为 Markdown。正文已经是目标格式，没有解析这一步。
+func (i *Ingester) IngestText(ctx context.Context, input TextInput) (IngestResult, error) {
+	content := strings.TrimSpace(input.Content)
+	if content == "" {
+		return IngestResult{}, fmt.Errorf("%w: 正文不能为空", ErrEmptyContent)
+	}
+
+	sourceType, err := normalizeSourceType(input.SourceType, entity.KnowledgeDocumentSourceManual)
+	if err != nil {
+		return IngestResult{}, err
+	}
+
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		title = preferHeadingTitle(firstLineTitle(content), content)
+	}
+
+	document, err := i.createDocument(ctx, title, sourceType, strings.TrimSpace(input.SourceURI))
+	if err != nil {
+		return IngestResult{}, err
+	}
+	return i.ingestMarkdown(ctx, document, title, content, map[string]any{"parser": "direct"})
+}
+
+// ingestMarkdown 是链路的公共后半段：切分 → 向量化 → 事务落库。
+// 文件收录与正文收录在这里合流，之后的处理完全一样。
+func (i *Ingester) ingestMarkdown(
+	ctx context.Context,
+	document *entity.KnowledgeDocument,
+	title string,
+	markdown string,
+	metadata map[string]any,
+) (IngestResult, error) {
+	if strings.TrimSpace(markdown) == "" {
+		return i.failIngest(ctx, document, "parse", fmt.Errorf("%w: 没有可入库的正文", ErrEmptyContent))
+	}
+	if err := i.store.MarkProcessing(ctx, document.ID); err != nil {
+		return i.failIngest(ctx, document, "status", fmt.Errorf("更新文档状态失败: %w", err))
+	}
+
+	chunkStarted := time.Now().UTC()
+	chunks := Split(markdown, ChunkOptions{})
+	if len(chunks) == 0 {
+		return i.failIngest(ctx, document, "chunk",
+			fmt.Errorf("%w: 切分没有产出任何切片，正文可能只有空白字符", ErrEmptyContent))
+	}
+	if len(chunks) > ingestMaxChunks {
+		return i.failIngest(ctx, document, "chunk", fmt.Errorf(
+			"%w：文档切出 %d 个切片，超过单篇上限 %d；请拆成多篇后再导入",
+			ErrTooManyChunks, len(chunks), ingestMaxChunks))
+	}
+	metadata["chunks"] = len(chunks)
+	metadata["chunk_ms"] = time.Since(chunkStarted).Milliseconds()
+
+	// 模型必须在向量化之前定下来：向量的 model_id 指向它，维度校验也以它为准。
+	model, err := i.resolveModel(ctx)
+	if err != nil {
+		return i.failIngest(ctx, document, "model", err)
+	}
+	metadata["model"] = model.Name
+	metadata["model_id"] = model.ID
+
+	embedder, err := i.newEmbedder()
+	if err != nil {
+		return i.failIngest(ctx, document, "model", err)
+	}
+
+	embedStarted := time.Now().UTC()
+	vectors, err := embedInBatches(ctx, embedder, chunks)
+	if err != nil {
+		return i.failIngest(ctx, document, "embed", err)
+	}
+	metadata["embed_ms"] = time.Since(embedStarted).Milliseconds()
+
+	replacement, err := buildReplacement(document.ID, title, markdown, metadata, chunks, vectors, model)
+	if err != nil {
+		return i.failIngest(ctx, document, "vector", err)
+	}
+
+	if err := i.store.ReplaceChunks(ctx, document.ID, replacement); err != nil {
+		return i.failIngest(ctx, document, "store", err)
+	}
+
+	// 回读一次再返回：内存里这份是创建文档时读到的，中间的状态推进和正文替换
+	// 都没有回写到它身上。直接拿它出响应会给出一个"刚创建就再没更新过"的
+	// updated_at，与实际入库时间对不上，而前端很可能拿这个字段做排序。
+	if refreshed, err := i.store.GetByID(ctx, document.ID); err == nil {
+		return IngestResult{Document: refreshed, Chunks: len(chunks)}, nil
+	}
+
+	// 回读失败不该让已经成功的收录变成失败，退回内存里那份并补上已知变化。
+	document.Title = title
+	document.Content = markdown
+	document.Status = entity.KnowledgeDocumentStatusReady
+	return IngestResult{Document: document, Chunks: len(chunks)}, nil
+}
+
+// resolveModel 确定新向量该挂在哪个模型下。
+func (i *Ingester) resolveModel(ctx context.Context) (*entity.EmbeddingModel, error) {
+	cfg := i.embedding.Config()
+	if !cfg.Enabled {
+		return nil, fmt.Errorf("%w：请先在设置页配置向量服务", ErrEmbeddingDisabled)
+	}
+
+	model, err := i.models.GetDefault(ctx)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("%w：请先在设置页保存一次向量服务配置", ErrNoEmbeddingModel)
+		}
+		return nil, fmt.Errorf("查询默认向量模型失败: %w", err)
+	}
+	if model.Name == cfg.Model && int(model.Dimensions) == cfg.Dimensions {
+		return model, nil
+	}
+
+	// 模型行与当前生效配置对不上。这时继续写会很隐蔽：向量挂在旧模型名下，
+	// 而检索按配置里的模型去查，一条也取不到。
+	// 以配置为准重新登记一次，让维度冲突在这里变成明确错误，而不是变成一份查不到的向量。
+	aligned, err := i.models.EnsureDefault(ctx, entity.EmbeddingModel{
+		Name:       cfg.Model,
+		Provider:   entity.EmbeddingProviderOpenAICompatible,
+		BaseURL:    utils.OptionalString(cfg.BaseURL),
+		Dimensions: int32(cfg.Dimensions),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("向量模型登记与当前配置不一致，重新对齐失败: %w", err)
+	}
+	return aligned, nil
+}
+
+// createDocument 建文档行，此时正文还是空的，状态是 pending。
+func (i *Ingester) createDocument(ctx context.Context, title, sourceType, sourceURI string) (*entity.KnowledgeDocument, error) {
+	document := &entity.KnowledgeDocument{
+		Title:      truncateTitle(title),
+		SourceType: sourceType,
+		Enabled:    true,
+		Status:     entity.KnowledgeDocumentStatusPending,
+		// metadata 是 NOT NULL 的 jsonb，必须写 '{}' 而不是留空：
+		// 留空在 GORM 里会变成 NULL，被列约束直接拒掉。
+		Metadata: json.RawMessage(`{}`),
+	}
+	if sourceURI != "" {
+		document.SourceURI = &sourceURI
+	}
+
+	if err := i.store.Create(ctx, document); err != nil {
+		return nil, fmt.Errorf("创建知识文档失败: %w", err)
+	}
+	return document, nil
+}
+
+// failIngest 记录失败现场，然后把原始错误交回调用方，同时带上那份已经置为 failed 的文档。
+//
+// 状态必须落 failed：文档行是解析之前就建好的，失败时如果不管它，
+// 库里会永远留着一篇 status = pending 的文档，看起来像"还在处理"，
+// 实际上那次上传早就结束了。
+func (i *Ingester) failIngest(
+	ctx context.Context,
+	document *entity.KnowledgeDocument,
+	stage string,
+	cause error,
+) (IngestResult, error) {
+	metadata, err := json.Marshal(map[string]any{
+		"stage":     stage,
+		"error":     cause.Error(),
+		"failed_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		metadata = json.RawMessage(`{"error":"记录失败原因时出错"}`)
+	}
+
+	if err := i.store.MarkFailed(ctx, document.ID, metadata); err != nil {
+		// 这一步失败不影响给用户的答复，但会让文档停在中间状态，必须留下日志。
+		logger.Error("知识文档标记失败状态时出错，文档可能停在中间状态",
+			zap.Uint64("document_id", document.ID),
+			zap.String("stage", stage),
+			zap.Error(err),
+		)
+	}
+
+	failed := *document
+	failed.Status = entity.KnowledgeDocumentStatusFailed
+	failed.Metadata = metadata
+	return IngestResult{Document: &failed}, cause
+}
+
+// buildReplacement 组装入库所需的三份数据。
+func buildReplacement(
+	documentID uint64,
+	title string,
+	markdown string,
+	metadata map[string]any,
+	chunks []Chunk,
+	vectors [][]float32,
+	model *entity.EmbeddingModel,
+) (entity.ChunkReplacement, error) {
+	if len(chunks) != len(vectors) {
+		return entity.ChunkReplacement{}, fmt.Errorf("切片与向量数量不一致: %d / %d", len(chunks), len(vectors))
+	}
+
+	rawMetadata, err := json.Marshal(metadata)
+	if err != nil {
+		rawMetadata = json.RawMessage(`{}`)
+	}
+
+	replacement := entity.ChunkReplacement{
+		Title:      truncateTitle(title),
+		Content:    markdown,
+		Checksum:   checksum(markdown),
+		Metadata:   rawMetadata,
+		Chunks:     make([]entity.KnowledgeChunk, len(chunks)),
+		Embeddings: make([]entity.KnowledgeEmbedding, len(chunks)),
+	}
+
+	// 同一批向量的生成时间取同一个时刻：它们本来就是同一次向量化调用的产物，
+	// 逐条取 time.Now() 只会让这一列出现毫无意义的毫秒差。
+	generatedAt := time.Now().UTC()
+
+	for index, chunk := range chunks {
+		literal, err := vectorLiteral(vectors[index])
+		if err != nil {
+			return entity.ChunkReplacement{}, fmt.Errorf("第 %d 个切片的向量无效: %w", index+1, err)
+		}
+
+		replacement.Chunks[index] = entity.KnowledgeChunk{
+			DocumentID: documentID,
+			ChunkIndex: int32(chunk.Index),
+			Content:    chunk.Content,
+			// character_count 的语义是字符数而不是字节数：PostgreSQL 的 char_length
+			// 按字符算，而 check 约束要求它大于 0。这里与数据库口径保持一致。
+			CharacterCount: int32(len([]rune(chunk.Content))),
+			Metadata:       json.RawMessage(`{}`),
+		}
+		if chunk.Heading != "" {
+			heading := chunk.Heading
+			replacement.Chunks[index].Heading = &heading
+		}
+
+		replacement.Embeddings[index] = entity.KnowledgeEmbedding{
+			ModelID: model.ID,
+			// 维度用向量的真实长度，而不是模型登记的维度：模型行的维度可能是刚被改过的，
+			// 两者一旦不一致，check 约束 vector_dims(embedding) = dimensions 会当场拒绝，
+			// 报出来的是一个看不出根因的约束错误。
+			Dimensions:  int32(len(vectors[index])),
+			Embedding:   literal,
+			GeneratedAt: generatedAt,
+		}
+	}
+	return replacement, nil
+}
+
+// normalizeSourceType 校验来源类型。
+//
+// 必须在这里挡一次：数据库上 source_type 的 CHECK 只接受 manual / import / api 三个值，
+// 直接透传会让用户收到一条 "violates check constraint" 的原始报错。
+func normalizeSourceType(value, fallback string) (string, error) {
+	sourceType := strings.TrimSpace(value)
+	if sourceType == "" {
+		return fallback, nil
+	}
+	switch sourceType {
+	case entity.KnowledgeDocumentSourceManual, entity.KnowledgeDocumentSourceImport, entity.KnowledgeDocumentSourceAPI:
+		return sourceType, nil
+	default:
+		return "", fmt.Errorf("来源类型 %q 无效，只能是 manual、import 或 api", sourceType)
+	}
+}
+
+// checksum 计算正文的 SHA-256。列类型是 char(64)，所以输出必须是 64 位十六进制。
+func checksum(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
+// truncateTitle 按字符截断标题，与 varchar(300) 的语义一致。
+// 文件名动辄上百个字符，不截断会让创建文档这一步直接撞列长度。
+func truncateTitle(title string) string {
+	title = strings.TrimSpace(title)
+	runes := []rune(title)
+	if len(runes) <= maxTitleRunes {
+		return title
+	}
+	return string(runes[:maxTitleRunes])
+}
+
+// preferHeadingTitle 在调用方没指定标题时，用正文里的首个一级标题代替文件名。
+func preferHeadingTitle(fallback, markdown string) string {
+	heading := firstHeading(markdown)
+	if heading == "" {
+		return truncateTitle(fallback)
+	}
+	return truncateTitle(heading)
+}
+
+// firstHeading 取正文的第一个一级标题。
+//
+// 只看第一行：一级标题本来就该出现在文档开头，往下找只会把正文里引用到的
+// 别处标题当成这篇文档的标题。
+func firstHeading(markdown string) string {
+	for _, line := range strings.Split(markdown, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "# ") {
+			return ""
+		}
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+	}
+	return ""
+}
+
+// firstLineTitle 取正文的第一行做标题，用于既没有标题也没有一级标题的正文。
+func firstLineTitle(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return truncateTitle(trimmed)
+		}
+	}
+	return "未命名文档"
+}
+
+// parserName 取本次解析用的解析器身份，取不到时给一个明确的占位值 ——
+// metadata 里出现空字符串，排查时反而要多想一步"是没记录还是真没有"。
+func parserName(result *documentparser.Result) string {
+	if name := result.ParserName(); name != "" {
+		return name
+	}
+	return "unknown"
+}

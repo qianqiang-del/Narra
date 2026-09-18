@@ -34,3 +34,16 @@ func TrimSpace(s string) string {
 func IsEmpty(s string) bool {
 	return TrimSpace(s) == ""
 }
+
+// OptionalString 把"空串"变成 nil，其余情况返回去掉首尾空格后的值。
+//
+// 用于写可空列：NULL 表示"没有这一项"，空串表示"明确写成了空"，
+// 两者在业务上不是一回事（例如 embedding_models.base_url 为空表示沿用全局配置）。
+// 判空用去空格后的值，免得一个只有空格的输入被存成一列看起来有内容的空白。
+func OptionalString(s string) *string {
+	trimmed := TrimSpace(s)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
