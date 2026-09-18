@@ -14,6 +14,10 @@ import (
 	"narra/pkg/config"
 )
 
+// maxErrorBodyLength 出错时最多回显多少字节的响应体。
+//
+// 上游的错误响应里常常带着真正的原因（额度用完、模型名写错、鉴权失败），
+// 丢掉它就只能看到一句"HTTP 400"；但也要防着它返回一整页 HTML 把日志撑爆。
 const maxErrorBodyLength = 4 << 10
 
 // Client 是已配置 OpenAI 兼容向量化服务的 HTTP 客户端。
@@ -25,15 +29,21 @@ type Client struct {
 	model         string
 }
 
+// embeddingsRequest 是 OpenAI 兼容的 /embeddings 请求体。
+// 整批文本放一次请求：逐条请求会把一篇文档的向量化变成几百次网络往返。
 type embeddingsRequest struct {
 	Input []string `json:"input"`
 	Model string   `json:"model"`
 }
 
+// embeddingsResponse 是 /embeddings 的响应体，只取用得到的 data 字段。
 type embeddingsResponse struct {
 	Data []embeddingData `json:"data"`
 }
 
+// embeddingData 是响应里的一条向量。Index 是上游给的归位依据，
+// 但并非所有实现都会正确填写（SiliconFlow 会把每一项都写成 0），
+// 所以它只作为参考，是否可用由 usableIndexes 判断。
 type embeddingData struct {
 	Embedding []float32 `json:"embedding"`
 	Index     int       `json:"index"`

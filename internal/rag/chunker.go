@@ -230,6 +230,7 @@ func splitSections(lines []string) []section {
 	return sections
 }
 
+// blockOf 构造一个块，text 统一去掉首尾空白 —— 否则后面的字符预算会把空行也算进去。
 func blockOf(text string, atomic bool) block {
 	return block{text: strings.TrimSpace(text), atomic: atomic}
 }
@@ -268,6 +269,9 @@ func fenceMarker(line string) string {
 	}
 }
 
+// isTableRow 判断一行是不是表格行。只看是否以 | 开头：
+// 严格的表格判定还要连着看表头分隔行，而这里只需要一个"别把表格从中间切开"的信号，
+// 放宽标准的代价（把以 | 开头的普通段落当成表格）只是让它不被拆开，不会出错。
 func isTableRow(line string) bool {
 	return strings.HasPrefix(line, "|")
 }
@@ -419,6 +423,9 @@ func splitSentences(text string) []string {
 	return sentences
 }
 
+// isSentenceEnd 判断一个字符能不能当句子边界，中英文标点都算，换行也算 ——
+// 硬折行的段落里行尾本来就是一个天然停顿。overlapSeed 也用它来把重叠的起点
+// 对齐到句首，所以这里的取值直接决定重叠前缀从哪儿开始。
 func isSentenceEnd(symbol rune) bool {
 	switch symbol {
 	case '。', '！', '？', '；', '…', '\n', '.', '!', '?', ';':

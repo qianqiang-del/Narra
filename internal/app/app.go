@@ -215,6 +215,9 @@ func (a *App) initDependencies() error {
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 		return fmt.Errorf("创建上传目录失败: %w", err)
 	}
+	// 文件收录跑在后台 worker 里：上传接口只建 pending 行，解析与向量化由它按秒轮询推进。
+	// 并发固定为 1 —— 收录同时吃 CPU 和上游额度，MVP 阶段串行跑更容易定位问题；
+	// uploadDir 必须和上面给 controller、service 的是同一个值，否则删除时的暂存清理会静默失效。
 	a.knowledgeWorker = rag.NewWorker(knowledgeDocumentRepo, knowledgeIngester, uploadDir, 1)
 	a.knowledgeWorker.Start()
 	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeIngester, uploadDir)

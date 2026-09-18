@@ -56,9 +56,9 @@ type ModelRegistry interface {
 
 // FileInput 是从磁盘收录一份文件所需的输入。
 //
-// 用本模块自己的类型而不是 HTTP 请求 DTO：收录将来要搬到后台任务里跑
-// （理由见 service.KnowledgeService 的注释），那时的调用方是 worker，
-// 不该被迫构造一个 HTTP 请求结构。HTTP DTO 到这里的那层映射归服务层。
+// 用本模块自己的类型而不是 HTTP 请求 DTO：文件收录跑在后台 worker 里
+// （见 worker.go），调用方是 worker 而不是 HTTP 处理器，不该被迫构造一个
+// HTTP 请求结构。HTTP DTO 到这里的那层映射归服务层。
 type FileInput struct {
 	Path       string // 磁盘上的文件路径，解析器按它的后缀选实现
 	Title      string // 调用方指定的标题；为空时依次回落到正文一级标题、文件名
@@ -78,7 +78,8 @@ type TextInput struct {
 //
 // Document 在失败时也是非 nil 的：失败的那份文档已经写进库里（status = failed，
 // 失败阶段与原因在 metadata），调用方需要它的 ID 才能说清是哪一次上传出了问题。
-// Chunks 是实际写入的切片数，失败时为 0。
+// Chunks 是实际写入的切片数，失败时为 0 —— 提交异步任务（SubmitFile）时也是 0，
+// 因为那一刻只有一条 pending 行，切片要等 worker 处理完才有。
 type IngestResult struct {
 	Document *entity.KnowledgeDocument
 	Chunks   int
@@ -106,8 +107,11 @@ const maxTitleRunes = 300
 // 文件收录是**异步**的：SubmitFile 只建 pending 行、把文件路径写进 metadata，
 // 真正的解析与向量化由 Worker 在后台调 processExistingFile 完成（见 worker.go），
 // 状态按 pending → processing → ready / failed 推进。正文收录（IngestText）仍同步：
-// 没有解析这一步，切分与向量化是秒级的。IngestFile 是文件收录的同步版本，目前只有
-// 测试在用 —— 它与 processExistingFile 是同一段逻辑的两份拷贝，将来应收成
+// 没有解析这一步，切分与向量化是秒级的。
+//
+// IngestFile 是文件收录的同步版本。HTTP 面已经不再走它（controller 调的是 SubmitFile），
+// 服务层接口上虽然还留着这个方法，但没有路由指向它，目前只剩测试在用。
+// 它与 processExistingFile 是同一段逻辑的两份拷贝，将来应收成
 // IngestFile = createDocument + processExistingFile。
 type Ingester struct {
 	store     DocumentStore
@@ -120,11 +124,27 @@ type Ingester struct {
 	newEmbedder embedderFactory
 }
 
+// FileTaskStore 是异步文件收录对任务队列的最小依赖面，由 Worker 使用。
+//
+// 队列就是 knowledge_documents 表本身，没有独立的任务表。它比 DocumentStore 多出的
+// 五个方法全部围绕"发任务、抢任务、收任务"：提交时写元数据，取任务时查 pending，
+// 抢任务时做条件更新，失败与僵尸回收各一个。之所以单独一个接口而不是并进
+// DocumentStore，是因为同步的 IngestText 用不到其中任何一个。
 type FileTaskStore interface {
+	// SetMetadata 覆盖文档的 metadata，用于记下上传的暂存路径与标题回落标记。
 	SetMetadata(context.Context, uint64, json.RawMessage) error
+
+	// MarkFailed 把文档推进到 failed 并写入失败现场。
 	MarkFailed(context.Context, uint64, json.RawMessage) error
+
+	// ListPending 按创建时间取最多 limit 条 pending 文档。
 	ListPending(context.Context, int) ([]entity.KnowledgeDocument, error)
+
+	// Claim 把一条 pending 文档抢成 processing；返回 false 表示这条已经被别的执行者抢走了。
 	Claim(context.Context, uint64) (bool, error)
+
+	// ResetStale 把 updated_at 早于 olderThan 的 processing 打回 pending，
+	// 用来回收上一个进程遗留的僵尸任务。
 	ResetStale(context.Context, time.Time) error
 }
 
@@ -156,6 +176,11 @@ func NewIngester(
 }
 
 // SubmitFile 创建待处理文档并持久化任务路径，实际处理由 Worker 完成。
+//
+// 返回时文档是 pending，正文与切片都还是空的，调用方拿 id 去轮询即可。
+// metadata 里给 worker 留两个键：upload_path 是磁盘上的暂存文件，
+// explicit_title 记录调用方有没有指定过标题 —— 后者决定 worker 要不要
+// 用正文的一级标题替换掉这个暂时代替标题的文件名。
 func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResult, error) {
 	path := strings.TrimSpace(input.Path)
 	if path == "" {
@@ -258,6 +283,15 @@ func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResul
 	return i.ingestMarkdown(ctx, document, title, result.Markdown, metadata)
 }
 
+// processExistingFile 处理一条已经建好行的文件收录任务，由 Worker 调用。
+//
+// 与 IngestFile 的差别只有两处：文档行是现成的（不再新建，状态也已经由
+// worker 抢任务时置为 processing），以及标题回落的判据来自任务元数据 ——
+// 调用方当初没指定标题时，worker 会传空标题进来，这里才走到"用正文一级标题替换"。
+//
+// 失败时和别处一样把文档置为 failed，而不是让它停在 processing：
+// 停在 processing 的行此后没有任何执行者会再碰它，只能等下一次进程启动时
+// 被 ResetStale 打回 pending 再跑一遍 —— 等于同一份坏文件被反复解析。
 func (i *Ingester) processExistingFile(ctx context.Context, document *entity.KnowledgeDocument, input FileInput) (IngestResult, error) {
 	parser, err := documentparser.ParserFor(input.Path, i.parser)
 	if err != nil {

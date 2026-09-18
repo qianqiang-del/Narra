@@ -24,10 +24,15 @@ type knowledgeDocumentRepository struct {
 	db *gorm.DB
 }
 
+// SetMetadata 整份覆盖 metadata，不做合并（合并规则是调用方的事）。
 func (r *knowledgeDocumentRepository) SetMetadata(ctx context.Context, id uint64, metadata json.RawMessage) error {
 	return r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).Where("id = ?", id).Update("metadata", metadata).Error
 }
 
+// ListPending 按创建时间正序取待处理文档（先进先出），只做查询、不改状态。
+//
+// 排序里带上 id 是因为同一批上传的 created_at 可能相同，只按时间排会让
+// 前后两次取到的顺序不一致，任务可能被反复取到或被跳过。
 func (r *knowledgeDocumentRepository) ListPending(ctx context.Context, limit int) ([]entity.KnowledgeDocument, error) {
 	var documents []entity.KnowledgeDocument
 	err := r.db.WithContext(ctx).Where("status = ?", entity.KnowledgeDocumentStatusPending).
@@ -35,6 +40,13 @@ func (r *knowledgeDocumentRepository) ListPending(ctx context.Context, limit int
 	return documents, err
 }
 
+// Claim 抢占一条待处理文档：带 status = 'pending' 条件的 UPDATE，抢到才返回 true。
+//
+// 条件写在 UPDATE 的 WHERE 里而不是"先查再改"，是为了让并发下的取舍由数据库
+// 一次性完成 —— 两个执行者同时来，只有一个能让 RowsAffected 为 1。
+//
+// 用 Updates 传 map 而不是 UpdateColumn：claimed_at 这个语义要靠 updated_at 承担
+// （ResetStale 按它判断僵尸任务），而 map 形式会触发 GORM 的 autoUpdateTime 自动带上它。
 func (r *knowledgeDocumentRepository) Claim(ctx context.Context, id uint64) (bool, error) {
 	result := r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).
 		Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusPending).
@@ -42,12 +54,21 @@ func (r *knowledgeDocumentRepository) Claim(ctx context.Context, id uint64) (boo
 	return result.RowsAffected == 1, result.Error
 }
 
+// ResetStale 把卡在 processing 超过时限的文档打回 pending，让它们重新入队。
+//
+// 判据用 updated_at 而不是新增一列"开始处理时间"：Claim 与 MarkProcessing 都是
+// 走 GORM 的 map 更新，会自动刷新 updated_at，所以它天然就是"最后一次有人动过"的时刻。
+// 代价是别处不能再用 UpdateColumn 之类的写法绕过 autoUpdateTime，否则这里会误判。
 func (r *knowledgeDocumentRepository) ResetStale(ctx context.Context, olderThan time.Time) error {
 	return r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).
 		Where("status = ? AND updated_at < ?", entity.KnowledgeDocumentStatusProcessing, olderThan).
 		Updates(map[string]any{"status": entity.KnowledgeDocumentStatusPending}).Error
 }
 
+// Delete 硬删除一篇文档，切片与向量由外键 ON DELETE CASCADE 带走。
+//
+// 走硬删除（实体没有 DeletedAt）而不是软删除，原因和 ReplaceChunks 里删旧切片一样：
+// 留着旧行会让 UNIQUE (document_id, chunk_index) 挡住同一篇文章的重新导入。
 func (r *knowledgeDocumentRepository) Delete(ctx context.Context, id uint64) error {
 	return r.db.WithContext(ctx).Where("id = ?", id).Delete(&entity.KnowledgeDocument{}).Error
 }
@@ -62,6 +83,9 @@ func (r *knowledgeDocumentRepository) Create(ctx context.Context, document *enti
 	return r.db.WithContext(ctx).Create(document).Error
 }
 
+// GetByID 按主键取一篇文档，查不到时把 gorm.ErrRecordNotFound 原样交给调用方，
+// 由服务层翻成"文档不存在"。不在这里翻译成业务错误，是因为"记录不存在"在
+// 收录链路（判断默认向量模型是否已登记）和 HTTP 面（404 语义）里的含义并不相同。
 func (r *knowledgeDocumentRepository) GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error) {
 	var document entity.KnowledgeDocument
 	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&document).Error; err != nil {

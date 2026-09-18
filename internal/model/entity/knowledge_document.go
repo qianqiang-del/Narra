@@ -5,10 +5,11 @@ import (
 	"time"
 )
 
+// 文档的来源类型，取值必须与 source_type 字段上那条 CHECK 约束保持一致。
 const (
-	KnowledgeDocumentSourceManual = "manual"
-	KnowledgeDocumentSourceImport = "import"
-	KnowledgeDocumentSourceAPI    = "api"
+	KnowledgeDocumentSourceManual = "manual" // 用户在编辑器里直接录入的正文
+	KnowledgeDocumentSourceImport = "import" // 由文件导入（上传的原件）
+	KnowledgeDocumentSourceAPI    = "api"    // 外部系统通过接口同步
 )
 
 // 文档的处理状态。上传后由后台异步推进（解析一份 PDF 可能几分钟），
