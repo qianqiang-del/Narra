@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,6 +114,13 @@ func (c *Controller) Upload(ctx *gin.Context) {
 	})
 	accepted = err == nil
 	if err != nil {
+		// 走到这里文件已经落盘了（收文件在提交之前），拒绝时由上面那个 defer
+		// 把整个暂存目录删掉。不额外做"先问再收"的预检：那要多一次往返、多一个
+		// TOCTOU 窗口，而前端在上传期间本来就锁着入口，撞上这条分支的只有并发调用方。
+		if errors.Is(err, service.ErrIngestBusy) {
+			response.Conflict(ctx, err.Error())
+			return
+		}
 		response.BadRequest(ctx, err.Error())
 		return
 	}
@@ -139,15 +147,29 @@ func (c *Controller) IngestText(ctx *gin.Context) {
 }
 
 // List 分页返回文档列表。
+//
+// 三个可选条件：status（可逗号分隔多个）、keyword、page / size；都不给就是
+// "全部文档的第一页"。筛选在服务端做而不是拉回来再过滤，是因为列表本身就是分页的 ——
+// 前端过滤只能看到已经拉下来的那几页，"第一页全是 failed、ready 排在第二页"
+// 时会显示成空列表。
 func (c *Controller) List(ctx *gin.Context) {
-	page, size := service.NormalizePage(queryInt(ctx, "page", 1), queryInt(ctx, "size", 20))
+	query, err := service.ParseDocumentListQuery(
+		queryInt(ctx, "page", 1),
+		queryInt(ctx, "size", 20),
+		ctx.Query("status"),
+		ctx.Query("keyword"),
+	)
+	if err != nil {
+		response.BadRequest(ctx, err.Error())
+		return
+	}
 
-	documents, total, err := c.svc.List(ctx.Request.Context(), page, size)
+	documents, total, err := c.svc.List(ctx.Request.Context(), query)
 	if err != nil {
 		response.InternalError(ctx, err.Error())
 		return
 	}
-	response.Success(ctx, response.NewPageResponse(documents, total, page, size))
+	response.Success(ctx, response.NewPageResponse(documents, total, query.Page, query.Size))
 }
 
 // Get 返回单篇文档。

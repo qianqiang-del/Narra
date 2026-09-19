@@ -336,7 +336,7 @@ func TestKnowledgeListAndCountChunks(t *testing.T) {
 	}
 
 	// 同一个事务里能看到自己写入的行，分页与排序也能正常走。
-	documents, total, err := repo.List(ctx, 0, 2)
+	documents, total, err := repo.List(ctx, entity.KnowledgeDocumentQuery{Offset: 0, Limit: 2})
 	if err != nil {
 		t.Fatalf("分页查询失败: %v", err)
 	}
@@ -345,5 +345,170 @@ func TestKnowledgeListAndCountChunks(t *testing.T) {
 	}
 	if len(documents) != 2 {
 		t.Errorf("本页返回 %d 条，期望 2", len(documents))
+	}
+}
+
+// 列表的两个筛选条件都要落到 SQL 上：状态与关键字各自单独用、以及叠加用。
+// 叠加那条是关键 —— 关键字条件里的 OR 没有被括号包住时，它会绕过状态约束，
+// 把别的状态的文档一起捞出来，而只测单一条件时看不出来。
+//
+// 关键字里还带一个 %：LIKE 模式必须转义用户输入的通配符，否则用户搜 "100%"
+// 会变成"匹配所有以 100 开头的东西"。
+func TestKnowledgeListFiltersByStatusAndKeyword(t *testing.T) {
+	tx := testTx(t)
+	repo := NewKnowledgeDocumentRepository(tx)
+	ctx := context.Background()
+
+	marker := uniqueName("kw")
+	// source_uri 也带上 marker：叠加条件的用例必须让"另一份文档"能通过关键字命中，
+	// 否则括号写错也照样是 0 条，测不出问题。
+	failedURI := marker + ".md"
+
+	percent := knowledgeTestDocument()
+	percent.Title = marker + "-100%手记"
+	if err := repo.Create(ctx, percent); err != nil {
+		t.Fatalf("创建文档失败: %v", err)
+	}
+	if err := repo.MarkProcessing(ctx, percent.ID); err != nil {
+		t.Fatalf("推进状态失败: %v", err)
+	}
+
+	letter := knowledgeTestDocument()
+	letter.Title = marker + "-100x手记"
+	if err := repo.Create(ctx, letter); err != nil {
+		t.Fatalf("创建文档失败: %v", err)
+	}
+	if err := repo.MarkProcessing(ctx, letter.ID); err != nil {
+		t.Fatalf("推进状态失败: %v", err)
+	}
+
+	failed := knowledgeTestDocument()
+	failed.Title = marker + "-另一份"
+	failed.SourceURI = &failedURI
+	if err := repo.Create(ctx, failed); err != nil {
+		t.Fatalf("创建文档失败: %v", err)
+	}
+	if err := repo.MarkFailed(ctx, failed.ID, json.RawMessage(`{"error":"测试失败"}`)); err != nil {
+		t.Fatalf("标记失败状态出错: %v", err)
+	}
+
+	// 状态单独用：两份 processing 都要出来，failed 那份不能混进来。
+	processing, total, err := repo.List(ctx, entity.KnowledgeDocumentQuery{
+		Statuses: []string{entity.KnowledgeDocumentStatusProcessing},
+		Keyword:  marker,
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if total != 2 || len(processing) != 2 {
+		t.Errorf("processing 命中 %d 条（本页 %d 条），期望 2", total, len(processing))
+	}
+
+	// 状态 + 关键字叠加：ready 一条都没有，而 failed 那份的 source_uri 含 marker。
+	// 少了括号这里会返回 1 条（failed 那份绕过 status 被捞出来）。
+	_, total, err = repo.List(ctx, entity.KnowledgeDocumentQuery{
+		Statuses: []string{entity.KnowledgeDocumentStatusReady},
+		Keyword:  marker,
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if total != 0 {
+		t.Errorf("ready + keyword 命中 %d 条，期望 0（状态约束不能被关键字里的 OR 绕过）", total)
+	}
+
+	// 只给关键字：三种状态都要出现。
+	_, total, err = repo.List(ctx, entity.KnowledgeDocumentQuery{Keyword: marker, Limit: 10})
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if total != 3 {
+		t.Errorf("只给关键字命中 %d 条，期望 3", total)
+	}
+
+	// ILIKE 的大小写不敏感：用大写 marker 再查一次，条数不变。
+	_, total, err = repo.List(ctx, entity.KnowledgeDocumentQuery{
+		Statuses: []string{entity.KnowledgeDocumentStatusProcessing},
+		Keyword:  strings.ToUpper(marker),
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("大写关键字命中 %d 条，期望 2（ILIKE 应当忽略大小写）", total)
+	}
+
+	// 通配符转义：搜 "…-100%" 只能命中标题里真的有 % 的那一份。
+	// 不转义时模式是 "%…-100%%"，两份标题都会命中。
+	matched, total, err := repo.List(ctx, entity.KnowledgeDocumentQuery{
+		Statuses: []string{entity.KnowledgeDocumentStatusProcessing},
+		Keyword:  marker + "-100%",
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if total != 1 || len(matched) != 1 || matched[0].ID != percent.ID {
+		t.Errorf("含 %% 的关键字命中 %d 条，期望只有标题里带 %% 的那一份（ID %d）", total, percent.ID)
+	}
+}
+
+// CountActive 是上传闸门的判据：pending 与 processing 都算忙，failed 与 ready 都不算。
+// 任何一个方向数错，结果都是"一份失败的上传把知识库永久锁住"或"闸门形同虚设"。
+//
+// 用增量而不是绝对值断言：开发库里可能有别的用例或历史数据留下的活跃行。
+func TestKnowledgeCountActiveExcludesFinished(t *testing.T) {
+	tx := testTx(t)
+	repo := NewKnowledgeDocumentRepository(tx)
+	ctx := context.Background()
+
+	base, err := repo.CountActive(ctx)
+	if err != nil {
+		t.Fatalf("统计活跃任务失败: %v", err)
+	}
+
+	pending := knowledgeTestDocument()
+	if err := repo.Create(ctx, pending); err != nil {
+		t.Fatalf("创建文档失败: %v", err)
+	}
+	afterPending, err := repo.CountActive(ctx)
+	if err != nil {
+		t.Fatalf("统计活跃任务失败: %v", err)
+	}
+	if afterPending != base+1 {
+		t.Errorf("新建 pending 后活跃数 = %d，期望 %d", afterPending, base+1)
+	}
+
+	failed := knowledgeTestDocument()
+	if err := repo.Create(ctx, failed); err != nil {
+		t.Fatalf("创建文档失败: %v", err)
+	}
+	if err := repo.MarkFailed(ctx, failed.ID, json.RawMessage(`{"error":"测试失败"}`)); err != nil {
+		t.Fatalf("标记失败状态出错: %v", err)
+	}
+	afterFailed, err := repo.CountActive(ctx)
+	if err != nil {
+		t.Fatalf("统计活跃任务失败: %v", err)
+	}
+	if afterFailed != afterPending {
+		t.Errorf("failed 不该算忙: %d → %d", afterPending, afterFailed)
+	}
+
+	processing := knowledgeTestDocument()
+	if err := repo.Create(ctx, processing); err != nil {
+		t.Fatalf("创建文档失败: %v", err)
+	}
+	if err := repo.MarkProcessing(ctx, processing.ID); err != nil {
+		t.Fatalf("推进状态失败: %v", err)
+	}
+	afterProcessing, err := repo.CountActive(ctx)
+	if err != nil {
+		t.Fatalf("统计活跃任务失败: %v", err)
+	}
+	if afterProcessing != afterFailed+1 {
+		t.Errorf("processing 应当算忙: %d → %d，期望 +1", afterFailed, afterProcessing)
 	}
 }

@@ -36,8 +36,11 @@ type KnowledgeService interface {
 	// IngestText 直接把一段正文收录为 Markdown，跳过解析。这条链路仍是同步的。
 	IngestText(ctx context.Context, input requestdto.KnowledgeIngestText) (responsedto.KnowledgeDocument, error)
 
-	// List 分页返回文档列表，同时给出总数。page 从 1 开始。
-	List(ctx context.Context, page, size int) ([]responsedto.KnowledgeDocument, int64, error)
+	// List 分页返回满足条件的文档，同时给出总数。
+	//
+	// 条件由 ParseDocumentListQuery 从查询参数解析而来（page / size 已钳位、
+	// status 已校验并拆成列表）。直接传零值等价于"第一页、默认页长、不限条件"。
+	List(ctx context.Context, query requestdto.KnowledgeListQuery) ([]responsedto.KnowledgeDocument, int64, error)
 
 	// Get 返回单篇文档。文档不存在时返回带明确说明的错误。
 	Get(ctx context.Context, id uint64) (responsedto.KnowledgeDocument, error)
