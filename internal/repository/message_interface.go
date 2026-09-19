@@ -35,6 +35,12 @@ type MessageRepository interface {
 	// afterSequence 用于增量拉取（传 0 表示从头读），断线重连时传最后收到的序号即可。
 	ListByConversation(ctx context.Context, conversationID uint64, afterSequence int64, limit int) ([]entity.ConversationMessage, error)
 
+	// ListRecentByConversation 取该对话**最新的** limit 条消息，返回时按序号升序。
+	//
+	// 与 ListByConversation 的区别在"取哪一端"：那个是给 SSE 断线重连续传用的（从某个序号往后），
+	// 这个是给"要最近说过的话"的上下文用的（编排里每次发言都要带上一段历史）。
+	ListRecentByConversation(ctx context.Context, conversationID uint64, limit int) ([]entity.ConversationMessage, error)
+
 	// CountByConversation 统计对话内的消息条数，供上下文预算与分页判断使用。
 	CountByConversation(ctx context.Context, conversationID uint64) (int64, error)
 }
