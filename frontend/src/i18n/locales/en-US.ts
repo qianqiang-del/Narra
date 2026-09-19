@@ -316,23 +316,54 @@ export default {
     title: 'Knowledge Base',
     back: 'Back to home',
     refresh: 'Refresh',
+    search: {
+      placeholder: 'Search titles or original file names…',
+      clear: 'Clear',
+    },
+    toolbar: {
+      records: 'Upload records',
+      new: 'New knowledge base',
+    },
+    new: {
+      title: 'New knowledge base',
+      desc: 'Pick a file to ingest. Parsing and embedding run in the background; ready documents show up on the main page.',
+      dropBusy: 'Still processing “{title}” — you can upload the next one once it finishes',
+      note: 'One file at a time: the next upload unlocks when the current one finishes. You can close this window — processing continues in the background.',
+    },
+    last: {
+      title: 'Most recent upload',
+      processing: 'Parsing / embedding — the next upload unlocks when it finishes',
+      failedHint: 'Try a different file, or check the parser environment on the backend',
+      idle: 'Nothing in progress — you can upload.',
+    },
+    records: {
+      title: 'Upload records',
+      count: '{total} items',
+      hint: 'Only documents that have not been ingested yet (pending / processing / failed). Successful ones move to the main page.',
+      empty: 'No upload records yet',
+      removed: 'Record deleted',
+      remove: {
+        title: 'Delete upload record',
+        message: 'Delete the upload record “{title}”?',
+        note: 'This record points at a document that was never ingested. Deleting it also clears its temporary files; ingested knowledge bases are unaffected.',
+      },
+    },
     upload: {
-      title: 'Upload a document',
-      hint: 'Documents are chunked and embedded, then become available for retrieval and generation.',
       drop: 'Drop a file here, or click to choose ({formats})',
       titlePlaceholder: 'Title (falls back to the first heading in the document)',
       submit: 'Ingest',
       submitting: 'Ingesting…',
-      submittingHint: 'Parsing, chunking and embedding — please keep this page open.',
+      failed: 'Processing failed — see the reason under “Upload records”',
       success: 'Ingested “{title}” — {chunks} chunks.',
       unsupported: 'Only {formats} are supported; convert other formats to Markdown or PDF first.',
       tooLarge: 'The file exceeds the {limit} MB limit.',
       clear: 'Remove the selected file',
     },
     list: {
-      title: 'Ingested documents',
-      total: '{total} total',
-      empty: 'No documents yet — upload one to get started.',
+      empty: 'No knowledge base yet — upload one to get started.',
+      filteredEmpty: 'Nothing matches “{keyword}”',
+      shown: 'Showing {shown} of {total}',
+      pullRefresh: 'scroll to load more',
     },
     col: {
       chunks: 'Chunks',
@@ -350,11 +381,6 @@ export default {
       import: 'File import',
       api: 'API',
     },
-    page: {
-      prev: 'Previous',
-      next: 'Next',
-      indicator: 'Page {page} of {totalPage}',
-    },
     action: {
       view: 'View',
       delete: 'Delete',
@@ -365,7 +391,9 @@ export default {
       close: 'Close',
     },
     remove: {
-      confirm: 'Delete “{title}”? The document, its chunks and its vectors will all be removed.',
+      title: 'Delete knowledge base',
+      confirm: 'Delete “{title}”?',
+      note: 'The document, all of its chunks and its vectors will be deleted, and this cannot be undone.',
       success: 'Document deleted',
     },
     error: {
