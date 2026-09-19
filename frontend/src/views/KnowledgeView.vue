@@ -11,8 +11,8 @@
  * 重点不是进度条，而是把"还在处理""处理失败了、为什么"讲清楚 —— 失败原因
  * 由后端原样带回，直接展示，不加工。
  *
- * ⚠️ 两处依赖后端批次，见 `stores/knowledge.ts` 文件头的 TODO：
- * 搜索目前是前端过滤（批 ① 改成服务端筛选）；上传记录目前从文档里派生（批 ② 独立成表）。
+ * ⚠️ 一处依赖后端批次，见 `stores/knowledge.ts` 文件头的 TODO：
+ * 上传记录目前从文档列表里派生（批 ② 独立成表）。搜索与分页已经在服务端做（批 ①）。
  */
 import { ArrowLeft, Bell, Database, Loader2, Plus, RefreshCw, Search, X } from 'lucide-vue-next'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -33,15 +33,8 @@ const { t } = useI18n()
 const router = useRouter()
 const store = useKnowledgeStore()
 
-const {
-  loading,
-  keyword,
-  shownDocuments,
-  matchedDocuments,
-  readyDocuments,
-  uploadRecords,
-  hasMore,
-} = storeToRefs(store)
+const { loading, keyword, readyDocuments, readyTotal, uploadRecords, hasMore, isEmpty } =
+  storeToRefs(store)
 
 const newOpen = ref(false)
 const recordsOpen = ref(false)
@@ -129,10 +122,11 @@ async function watchSentinel() {
 /**
  * 监听整个列表而不只是它的长度。
  *
- * 只看长度的漏洞：列表内容换了但条数没变时（例如上传完成把 pending 换成 ready、
- * 总量仍是 visible 条），哨兵不会重新评估，而它此刻可能已经在视口里了。
+ * 只看长度的漏洞：列表内容换了但条数没变时（例如换了个关键字、命中数恰好相同、
+ * 或者上传完成把一份 pending 换成 ready），哨兵不会重新评估，
+ * 而它此刻可能已经在视口里了。
  */
-watch(shownDocuments, () => {
+watch(readyDocuments, () => {
   void watchSentinel()
 })
 
@@ -259,22 +253,23 @@ function goBack() {
     <main class="mx-auto flex w-full max-w-[900px] flex-1 flex-col px-4 py-5 md:px-8">
       <!-- 首次加载 -->
       <div
-        v-if="loading && shownDocuments.length === 0"
+        v-if="loading && readyDocuments.length === 0"
         class="flex items-center justify-center gap-2 py-16 text-[13px] text-zinc-600 dark:text-zinc-400"
       >
         <Loader2 class="size-4 animate-spin" />
         {{ t('common.loading') }}
       </div>
 
-      <!-- 空态：分成"一份都没有"和"被搜索过滤光了"两种，后者要让用户知道是搜索的问题 -->
-      <div
-        v-else-if="shownDocuments.length === 0"
-        class="flex flex-col items-center gap-2 py-20 text-center"
-      >
+      <!--
+        空态：分成"一份都没有"和"被搜索过滤光了"两种，后者要让用户知道是搜索的问题。
+        筛选在服务端，所以这里只能按"有没有在搜"分 —— 结果为空时无从判断
+        是库里本来就没有 ready，还是关键字把它们都滤掉了。
+      -->
+      <div v-else-if="isEmpty" class="flex flex-col items-center gap-2 py-20 text-center">
         <Database class="size-6 text-zinc-400" />
         <p class="text-[13px] text-zinc-600 dark:text-zinc-400">
           {{
-            searching && readyDocuments.length
+            searching
               ? t('knowledge.list.filteredEmpty', { keyword: keyword.trim() })
               : t('knowledge.list.empty')
           }}
@@ -284,7 +279,7 @@ function goBack() {
       <template v-else>
         <ul class="divide-y divide-border/60">
           <KnowledgeRow
-            v-for="document in shownDocuments"
+            v-for="document in readyDocuments"
             :key="document.id"
             :document="document"
           >
@@ -309,7 +304,7 @@ function goBack() {
 
         <!-- 已显示 X / Y · 下拉刷新（滚到底自动续接，这里只是把进度说清楚） -->
         <p class="mt-4 text-center text-xs text-zinc-600 dark:text-zinc-400">
-          {{ t('knowledge.list.shown', { shown: shownDocuments.length, total: matchedDocuments.length }) }}
+          {{ t('knowledge.list.shown', { shown: readyDocuments.length, total: readyTotal }) }}
           <template v-if="hasMore">
             <span class="mx-1.5 text-zinc-300 dark:text-zinc-700">·</span>{{ t('knowledge.list.pullRefresh') }}
           </template>

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 
 	"gorm.io/gorm"
 
@@ -31,8 +33,13 @@ const (
 // ⚠️ 删除是其中一处例外：Delete 还没有写进这个接口，实现里靠类型断言去取（见 Delete 的注释）。
 // 将来补进来，缺方法就能在编译期暴露，而不是等用户点了删除才报"存储不支持删除"。
 type documentQuerier interface {
-	// List 按创建时间倒序分页返回文档，同时给出总数。
-	List(ctx context.Context, offset, limit int) ([]entity.KnowledgeDocument, int64, error)
+	// List 按创建时间倒序分页返回满足条件的文档，同时给出总数。
+	// 条件为空时等价于"全部文档"，见 entity.KnowledgeDocumentQuery。
+	List(ctx context.Context, query entity.KnowledgeDocumentQuery) ([]entity.KnowledgeDocument, int64, error)
+
+	// CountActive 统计还在收录中的文档数（pending + processing），
+	// 供上传入口判断后台忙不忙。仓储实现里这个查询走 status 的部分索引。
+	CountActive(ctx context.Context) (int64, error)
 
 	// GetByID 按主键取文档。查不到返回 gorm.ErrRecordNotFound。
 	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error)
@@ -64,15 +71,40 @@ type asyncIngester interface {
 	SubmitFile(context.Context, rag.FileInput) (rag.IngestResult, error)
 }
 
+// ErrIngestBusy 表示知识库正在收录另一份文件，此刻不接受新的上传。
+//
+// 它是**可判定的**：接口层据此把"忙"翻译成 409，而不是和参数错误一起塞进 400 ——
+// 两者的处置方式不同（等一会儿重试 vs. 改参数再试），给用户的话也不该一样。
+var ErrIngestBusy = errors.New("已有文件正在收录，请等它处理完再上传")
+
 // SubmitFile 把一份文件交给后台收录，建好 pending 行就返回。
 //
 // 返回的文档是 pending、chunks 为 0：解析与向量化由 rag.Worker 接着做，
 // 调用方拿 id 轮询 Get 看进度。
+//
+// **一次只收一份**，两道闸门各挡一半：进程内的锁挡住"两个请求同时到达"（否则两边
+// 都会看到队列是空的，各建一条 pending 行）；库里的活跃行数挡住"已经在跑的任务"——
+// 锁只在提交期间持有，之后的请求只能靠文档状态判断忙不忙。正文收录（IngestText）
+// 不走这道闸门：它没有解析与排队，是秒级的同步链路。
 func (s *knowledgeService) SubmitFile(ctx context.Context, input requestdto.KnowledgeIngestFile) (responsedto.KnowledgeDocument, error) {
 	async, ok := s.ingester.(asyncIngester)
 	if !ok {
 		return responsedto.KnowledgeDocument{}, fmt.Errorf("知识库异步收录不可用")
 	}
+
+	if !s.ingestMu.TryLock() {
+		return responsedto.KnowledgeDocument{}, ErrIngestBusy
+	}
+	defer s.ingestMu.Unlock()
+
+	active, err := s.documents.CountActive(ctx)
+	if err != nil {
+		return responsedto.KnowledgeDocument{}, fmt.Errorf("检查收录队列失败: %w", err)
+	}
+	if active > 0 {
+		return responsedto.KnowledgeDocument{}, ErrIngestBusy
+	}
+
 	result, err := async.SubmitFile(ctx, rag.FileInput{Path: input.Path, Title: input.Title, SourceType: input.SourceType, SourceURI: input.SourceURI})
 	return toDocumentResponse(result.Document, result.Chunks), err
 }
@@ -86,6 +118,11 @@ type knowledgeService struct {
 	documents documentQuerier
 	ingester  ingester
 	uploadDir string
+
+	// ingestMu 让"查活跃任务 + 建 pending 行"在单个进程内是原子的。
+	// 它只在提交期间持有，不覆盖真正的收录（那跑在 rag.Worker 里、可能几分钟）——
+	// 任务是否还在跑靠库里的活跃行数判断，见 SubmitFile。
+	ingestMu sync.Mutex
 }
 
 var _ KnowledgeService = (*knowledgeService)(nil)
@@ -153,11 +190,79 @@ func NormalizePage(page, size int) (int, int) {
 	return page, size
 }
 
-// List 分页返回文档，并补齐每篇的切片数。
-func (s *knowledgeService) List(ctx context.Context, page, size int) ([]responsedto.KnowledgeDocument, int64, error) {
+// ParseDocumentListQuery 把原始查询参数解析成列表条件。
+//
+// 归一化与校验都放服务层、接口层只负责把 query string 递进来，是为了让
+// "页从 1 起、每页最多 100 条"和"status 只认那四个值"这两条口径只有一处实现 ——
+// 与 NormalizePage 同一个理由。
+//
+// status 不合法时返回错误，而不是当作"不限"：静默忽略在界面上和"确实没有数据"
+// 长得一模一样，排查时会白绕一圈。
+func ParseDocumentListQuery(page, size int, status, keyword string) (requestdto.KnowledgeListQuery, error) {
 	page, size = NormalizePage(page, size)
+	statuses, err := parseDocumentStatuses(status)
+	if err != nil {
+		return requestdto.KnowledgeListQuery{}, err
+	}
+	return requestdto.KnowledgeListQuery{
+		Page:     page,
+		Size:     size,
+		Statuses: statuses,
+		Keyword:  strings.TrimSpace(keyword),
+	}, nil
+}
 
-	documents, total, err := s.documents.List(ctx, (page-1)*size, size)
+// parseDocumentStatuses 解析 status 参数，支持逗号分隔的多个状态。
+//
+// 允许给多个，是为了让"上传记录"（pending / processing / failed）一次问出来。
+// 那是 documents 接口上的一个临时用法：批 ② 会把上传记录独立成自己的接口，
+// 之后这里只剩主列表的单个 ready。
+func parseDocumentStatuses(raw string) ([]string, error) {
+	statuses := make([]string, 0, 2)
+	for _, field := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(field)
+		if value == "" {
+			continue
+		}
+		if !isDocumentStatus(value) {
+			return nil, fmt.Errorf("状态 %q 无效，可选值：%s、%s、%s、%s",
+				value,
+				entity.KnowledgeDocumentStatusPending,
+				entity.KnowledgeDocumentStatusProcessing,
+				entity.KnowledgeDocumentStatusReady,
+				entity.KnowledgeDocumentStatusFailed)
+		}
+		if !slices.Contains(statuses, value) {
+			statuses = append(statuses, value)
+		}
+	}
+	return statuses, nil
+}
+
+// isDocumentStatus 判断一个取值是不是 knowledge_documents.status 的合法状态。
+// 取值与实体 Status 字段上那条 CHECK 约束同源，改一处要改两处。
+func isDocumentStatus(value string) bool {
+	switch value {
+	case entity.KnowledgeDocumentStatusPending,
+		entity.KnowledgeDocumentStatusProcessing,
+		entity.KnowledgeDocumentStatusReady,
+		entity.KnowledgeDocumentStatusFailed:
+		return true
+	}
+	return false
+}
+
+// List 分页返回满足条件的文档，并补齐每篇的切片数。
+func (s *knowledgeService) List(ctx context.Context, query requestdto.KnowledgeListQuery) ([]responsedto.KnowledgeDocument, int64, error) {
+	// page / size 再钳一次：List 是接口上的公开方法，调用方不一定走过 ParseDocumentListQuery。
+	page, size := NormalizePage(query.Page, query.Size)
+
+	documents, total, err := s.documents.List(ctx, entity.KnowledgeDocumentQuery{
+		Statuses: query.Statuses,
+		Keyword:  strings.TrimSpace(query.Keyword),
+		Offset:   (page - 1) * size,
+		Limit:    size,
+	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("查询知识文档失败: %w", err)
 	}

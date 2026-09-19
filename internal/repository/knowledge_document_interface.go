@@ -33,8 +33,15 @@ type KnowledgeDocumentRepository interface {
 	// GetByID 按主键取文档。查不到返回 gorm.ErrRecordNotFound。
 	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error)
 
-	// List 按创建时间倒序分页返回文档，同时给出总数。
-	List(ctx context.Context, offset, limit int) ([]entity.KnowledgeDocument, int64, error)
+	// List 按创建时间倒序分页返回满足条件的文档，同时给出总数。
+	// 条件为空时等价于"全部文档"，见 entity.KnowledgeDocumentQuery。
+	List(ctx context.Context, query entity.KnowledgeDocumentQuery) ([]entity.KnowledgeDocument, int64, error)
+
+	// CountActive 统计还在收录中的文档数（pending + processing）。
+	//
+	// 上传入口用它做"一次只收一份"的并发约束：大于 0 就说明后台还在忙。
+	// failed 与 ready 都不算 —— 一份失败的上传不该把知识库永久锁住。
+	CountActive(ctx context.Context) (int64, error)
 
 	// CountChunksByDocument 统计每篇文档的切片数，只返回入参里出现过的 ID。
 	// 列表页要靠它显示"这篇文档被切成了多少片"，而逐篇去 count 会变成 N+1 次查询。

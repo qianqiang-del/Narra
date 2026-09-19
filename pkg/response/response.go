@@ -83,6 +83,15 @@ func NotFound(c *gin.Context, message string) {
 	Error(c, errors.CodeNotFound, message)
 }
 
+// Conflict 409 错误：请求与资源当前状态冲突。
+//
+// 与 4xx 里其余几档不同，它是"等一等再试就有机会成功"的那一类
+// （例如同一个知识库上已经有一个收录任务在跑），所以单独一档而不是并进 400 ——
+// 前端据此可以提示"稍后再试"，而不是让用户去改参数。
+func Conflict(c *gin.Context, message string) {
+	Error(c, errors.CodeConflict, message)
+}
+
 // InternalError 500 错误
 func InternalError(c *gin.Context, message string) {
 	Error(c, errors.CodeInternalError, message)
