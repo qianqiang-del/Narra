@@ -39,17 +39,19 @@ type Runtime struct {
 //
 // 三条都不通时返回 CodeRuntimeUnavailable，错误信息里带修复动作。
 type Resolver struct {
-	cfg      Config
-	runner   commandRunner
-	lookPath func(string) (string, error)
+	cfg         Config
+	runner      commandRunner
+	lookPath    func(string) (string, error)
+	allowUserUV bool
 }
 
 // NewResolver 构造解析器；配置里的空值会先按默认布局补全。
 func NewResolver(cfg Config) *Resolver {
 	return &Resolver{
-		cfg:      cfg.WithDefaults(),
-		runner:   osRunner{},
-		lookPath: exec.LookPath,
+		cfg:         cfg.WithDefaults(),
+		runner:      osRunner{},
+		lookPath:    exec.LookPath,
+		allowUserUV: true,
 	}
 }
 
@@ -197,7 +199,7 @@ func (r *Resolver) run(ctx context.Context, name string, env []string, args ...s
 
 // findUV 依次在 配置 → 随包目录 → 程序目录 → PATH 里找 uv。
 func (r *Resolver) findUV() (string, error) {
-	candidates := make([]string, 0, 3)
+	candidates := make([]string, 0, 5)
 	if path := strings.TrimSpace(r.cfg.UVPath); path != "" {
 		candidates = append(candidates, path)
 	}
@@ -205,6 +207,14 @@ func (r *Resolver) findUV() (string, error) {
 		candidates = append(candidates, filepath.Join(r.cfg.RuntimeDir, uvBinaryName()))
 	}
 	candidates = append(candidates, filepath.Join(executableDir(), uvBinaryName()))
+	if r.allowUserUV {
+		if home, err := os.UserHomeDir(); err == nil {
+			candidates = append(candidates,
+				filepath.Join(home, ".local", "bin", uvBinaryName()),
+				filepath.Join(home, "AppData", "Local", "uv", "bin", uvBinaryName()),
+			)
+		}
+	}
 
 	for _, candidate := range candidates {
 		if isFile(candidate) {

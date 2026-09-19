@@ -2,12 +2,13 @@
 /**
  * 右上角悬浮胶囊工具栏 —— 文档 §5.1。
  *
- * 结构：语言切换 | 分隔线 | 主题三态 | 分隔线 | 设置
+ * 结构：语言切换 | 分隔线 | 主题三态 | 分隔线 | 知识库 | 分隔线 | 设置
  * 交互：mousedown 点击外部关闭主题下拉；打开语言下拉时先关主题下拉。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, ChevronDown, Monitor, Moon, Settings, Sun } from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
+import { Check, ChevronDown, Database, Monitor, Moon, Settings, Sun } from 'lucide-vue-next'
 
 import { useTheme, type ThemeMode } from '@/composables/useTheme'
 import { SUPPORTED_LOCALES, setLocale, type LocaleCode } from '@/i18n'
@@ -16,6 +17,7 @@ import { cn } from '@/lib/utils'
 const emit = defineEmits<{ (e: 'open-settings'): void }>()
 
 const { locale, t } = useI18n()
+const router = useRouter()
 const { mode, setMode } = useTheme()
 
 const toolbarRef = ref<HTMLElement | null>(null)
@@ -128,6 +130,18 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         </button>
       </div>
     </div>
+
+    <div class="h-4 w-[1px] bg-gray-200 dark:bg-gray-700" />
+
+    <!-- 知识库 -->
+    <button
+      type="button"
+      class="rounded-full p-2 text-gray-400 transition-all hover:bg-white hover:text-gray-800 hover:shadow-sm dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+      :title="t('knowledge.title')"
+      @click="router.push({ name: 'knowledge' })"
+    >
+      <Database class="size-4" />
+    </button>
 
     <div class="h-4 w-[1px] bg-gray-200 dark:bg-gray-700" />
 

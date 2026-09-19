@@ -53,6 +53,13 @@ Thumbs.db
 embedding-service/.venv/
 embedding-service/model-cache/
 
+# Runtime data: uploaded originals staged under data/uploads/<pending|failed>/<id>/
+# （文件名与目录名都是每次上传动态生成的，绝不该进仓库；失败原件保留也不该被提交）
+/data/
+
+# WorkBuddy workspace: 本地工作笔记、验证截图与临时文件，属于开发过程产物而非项目代码
+/.workbuddy/
+
 # 成员 C 的 AI 工作记录（会话记忆、工作日志、交接文档）
 # 是本地协作上下文，不属于项目产物：里面有本机路径、代理端口等环境信息，
 # 也有已被推翻的中间判断。放在仓库里方便和代码一起看，但不进版本库、不上传。

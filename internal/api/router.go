@@ -2,12 +2,14 @@ package api
 
 import (
 	"narra/internal/api/v1/embedding"
+	knowledgev1 "narra/internal/api/v1/knowledge"
 	"narra/internal/api/v1/llm"
 	mcpv1 "narra/internal/api/v1/mcp"
 	"narra/internal/api/v1/role"
 	"narra/internal/api/v1/voice"
 	"narra/internal/middleware"
 	"narra/internal/service"
+	"narra/pkg/documentparser"
 
 	"github.com/gin-gonic/gin"
 )
@@ -19,16 +21,18 @@ type Router struct {
 	voiceCtrl     *voice.Controller
 	mcpCtrl       *mcpv1.Controller
 	llmCtrl       *llm.Controller
+	knowledgeCtrl *knowledgev1.Controller
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService) *Router {
+func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, knowledgeSvc service.KnowledgeService, uploadDir string, parser documentparser.Parser) *Router {
 	return &Router{
 		roleCtrl:      role.NewController(roleSvc),
 		embeddingCtrl: embedding.NewController(embeddingSvc),
 		voiceCtrl:     voice.NewController(voiceSvc),
 		mcpCtrl:       mcpv1.NewController(mcpSvc),
 		llmCtrl:       llm.NewController(llmSvc),
+		knowledgeCtrl: knowledgev1.NewController(knowledgeSvc, uploadDir, parser),
 	}
 }
 
@@ -56,6 +60,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		embedding.RegisterRoutes(v1, r.embeddingCtrl)
 		mcpv1.RegisterRoutes(v1, r.mcpCtrl)
 		llm.RegisterRoutes(v1, r.llmCtrl)
+		knowledgev1.RegisterRoutes(v1, r.knowledgeCtrl)
 	}
 }
 

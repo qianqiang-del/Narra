@@ -1,5 +1,15 @@
 package entity
 
+// EmbeddingProviderOpenAICompatible 是写入 embedding_models.provider 与
+// embedding_settings.provider 两列的固定值。
+//
+// 两处都只有这一个取值 —— Narra 只对接 OpenAI 兼容协议的向量服务，
+// 表格设计上留了 provider 列是为了将来接原生协议的实现。
+//
+// 它放在 entity 而不是设置服务里，是因为它是**列取值**而不是某个服务的实现细节：
+// 收录链路（internal/rag）在登记默认模型时也要写这一列。
+const EmbeddingProviderOpenAICompatible = "openai-compatible"
+
 // EmbeddingModel 向量模型实体对应向量模型表，记录一个可用于知识库的向量模型。
 // 向量维度是模型的固定输出长度；检索时只可比较同一模型生成的向量。
 // 默认标记为真的模型用于线上知识检索，数据库通过部分唯一索引保证最多一条。

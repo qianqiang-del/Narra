@@ -8,7 +8,10 @@ import { createRouter, createWebHistory } from 'vue-router'
  *   app/generation-preview/page.tsx → /generation-preview
  *   app/workbench/new/page.tsx      → /workbench/new
  *
- * 页面组件一律懒加载，避免首屏把 4 个大页面全部打进主 chunk。
+ * /knowledge 是原版**没有**的新页面：原版把"传资料"放在工作台里当作生成课程的输入，
+ * 我们这边是全局知识库，所以不对应任何旧路径。
+ *
+ * 页面组件一律懒加载，避免首屏把所有大页面一起打进主 chunk。
  */
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -37,6 +40,12 @@ const router = createRouter({
       name: 'generation-preview',
       component: () => import('@/views/GenerationPreviewView.vue'),
       meta: { title: 'Generation Preview' },
+    },
+    {
+      path: '/knowledge',
+      name: 'knowledge',
+      component: () => import('@/views/KnowledgeView.vue'),
+      meta: { title: 'Knowledge Base' },
     },
     {
       path: '/:pathMatch(.*)*',

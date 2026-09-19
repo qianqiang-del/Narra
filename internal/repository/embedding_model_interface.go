@@ -16,6 +16,10 @@ import (
 //
 // 写入口只开了一个 EnsureDefault：模型行的字段全部由当前生效配置推导，
 // 没有"单独改某一列"的场景，所以不提供 Update，避免出现两处都能改同一行的局面。
+//
+// 另有一个只读的 GetDefault，给写入知识库向量的一方用：那条路径每次上传都要用
+// 模型 ID，走 EnsureDefault 相当于每传一份文档就写一次配置表（还会顺带挪动
+// "谁是默认模型"），读路径不该有写副作用。
 type EmbeddingModelRepository interface {
 	// EnsureDefault 保证 name 对应的模型行存在、字段与入参一致、并成为唯一默认模型。
 	// 返回落库后的模型（含 ID），供写入知识库向量时引用。
@@ -23,6 +27,11 @@ type EmbeddingModelRepository interface {
 	// 同名模型的维度发生变化且该模型下已有向量时，返回 *DimensionsMismatchError
 	// 而不是就地覆盖 —— 理由见该类型的注释。
 	EnsureDefault(ctx context.Context, model entity.EmbeddingModel) (*entity.EmbeddingModel, error)
+
+	// GetDefault 返回当前默认模型。一条都没有时返回 gorm.ErrRecordNotFound。
+	//
+	// 只读，不改任何状态：调用方拿到它只是为了知道"新向量该挂在哪个 model_id 下"。
+	GetDefault(ctx context.Context) (*entity.EmbeddingModel, error)
 }
 
 // DimensionsMismatchError 表示同名模型请求的维度与已登记值不一致。

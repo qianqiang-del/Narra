@@ -20,6 +20,27 @@ func NewEmbeddingModelRepository(db *gorm.DB) EmbeddingModelRepository {
 	return &embeddingModelRepository{db: db}
 }
 
+// GetDefault 返回当前唯一那个默认模型。
+//
+// 用 is_default = true 查而不是按名字查：写入知识库向量的一方手里只有"当前生效的
+// 配置"，它需要的是"该把这个向量挂在哪一行"，而这两件事在用户改过设置页之后
+// 可能指向不同的行 —— 以默认标记为准，检索才能用同一个模型把向量取出来。
+//
+// 查询带 Limit(1)：数据库上有部分唯一索引保证至多一条，但指纹库里那个索引不一定
+// 存在（只跑过 AutoMigrate、没执行过 migrations/0002 的库就没有），所以这里不依赖它。
+func (r *embeddingModelRepository) GetDefault(ctx context.Context) (*entity.EmbeddingModel, error) {
+	var model entity.EmbeddingModel
+	err := r.db.WithContext(ctx).
+		Where("is_default = ?", true).
+		Order("id DESC").
+		Limit(1).
+		First(&model).Error
+	if err != nil {
+		return nil, err
+	}
+	return &model, nil
+}
+
 // EnsureDefault 把 model 落成唯一默认模型。
 //
 // 整个过程在一个事务里，因为"让本行成为默认"和"让别的行退出默认"是两次写：

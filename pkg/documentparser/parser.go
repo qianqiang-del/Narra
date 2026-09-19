@@ -11,7 +11,8 @@ import (
 	"sync"
 )
 
-// 错误码。前 5 个与 python/parse_document.py 的 error_code 一一对应；后 2 个是 Go 侧新增的。
+// 错误码。前 5 个与 python/parse_document.py 的 error_code 一一对应；后 3 个是 Go 侧新增的
+// ——它们描述的是"还没到脚本那一步"就发生的事，脚本永远不会报这三个码。
 const (
 	CodeFileNotFound       = "PARSER_FILE_NOT_FOUND"
 	CodeUnsupportedType    = "PARSER_UNSUPPORTED_TYPE"
@@ -20,6 +21,7 @@ const (
 	CodeFailed             = "PARSER_FAILED"
 	CodeRuntimeUnavailable = "PARSER_RUNTIME_UNAVAILABLE"
 	CodeTimeout            = "PARSER_TIMEOUT"
+	CodeEncodingInvalid    = "PARSER_ENCODING_INVALID"
 )
 
 const (
@@ -142,10 +144,10 @@ type Request struct {
 
 // Status 描述解析能力的就绪状态。
 type Status struct {
-	Ready  bool
-	Source string
-	Python string
-	Reason string
+	Ready  bool   `json:"ready"`
+	Source string `json:"source,omitempty"`
+	Python string `json:"python,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // Parser 是文档解析能力的最小接口。
@@ -206,11 +208,11 @@ func (p *PythonParser) Prepare(ctx context.Context, onProgress func(string)) err
 
 // Status 返回就绪状态，供健康检查探活。
 func (p *PythonParser) Status(ctx context.Context) Status {
-	if err := p.Prepare(ctx, nil); err != nil {
-		return Status{Ready: false, Reason: err.Error()}
-	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.runtime == nil {
+		return Status{Ready: false, Source: "python", Reason: "运行环境尚未准备；首次解析时会自动准备"}
+	}
 	return Status{Ready: true, Source: p.runtime.Source, Python: p.runtime.Python}
 }
 

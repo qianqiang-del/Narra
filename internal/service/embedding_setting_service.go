@@ -19,14 +19,11 @@ import (
 	"narra/pkg/config"
 	"narra/pkg/embedding"
 	"narra/pkg/logger"
+	"narra/pkg/utils"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
-
-// embeddingModelProvider 是写入两张配置表 provider 列的固定值。
-// 当前只支持 OpenAI 兼容协议一种，所以两边共用同一个常量，避免改一处漏一处。
-const embeddingModelProvider = "openai-compatible"
 
 // embeddingSettingService 是 Embedding 配置管理的业务实现。
 //
@@ -188,9 +185,11 @@ func (s *embeddingSettingService) ensureDefaultModel(ctx context.Context, cfg co
 	}
 
 	_, err := s.modelRepo.EnsureDefault(ctx, entity.EmbeddingModel{
-		Name:       cfg.Model,
-		Provider:   embeddingModelProvider,
-		BaseURL:    optionalString(cfg.BaseURL),
+		Name:     cfg.Model,
+		Provider: entity.EmbeddingProviderOpenAICompatible,
+		// base_url 为空表示"沿用应用的全局 embedding 配置"（见实体注释），
+		// 所以用 NULL 表达"没写"，而不是存一个空字符串把它变成"明确配成了空地址"。
+		BaseURL:    utils.OptionalString(cfg.BaseURL),
 		Dimensions: int32(cfg.Dimensions),
 	})
 	if err == nil {
@@ -207,16 +206,6 @@ func (s *embeddingSettingService) ensureDefaultModel(ctx context.Context, cfg co
 		)
 	}
 	return fmt.Errorf("登记向量模型失败: %w", err)
-}
-
-// optionalString 把空串转成 nil。
-// embedding_models.base_url 为空表示"沿用应用的全局 embedding 配置"（见实体注释），
-// 所以用 NULL 表达"没写"，而不是存一个空字符串把它变成"明确配成了空地址"。
-func optionalString(value string) *string {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	return &value
 }
 
 // resolveAPIKey 决定这次保存该用哪个密钥，优先级依次是：
@@ -243,7 +232,7 @@ func (s *embeddingSettingService) settingFromConfig(current *entity.EmbeddingSet
 	}
 	setting := &entity.EmbeddingSetting{
 		Name:            "默认配置",
-		Provider:        embeddingModelProvider,
+		Provider:        entity.EmbeddingProviderOpenAICompatible,
 		BaseURL:         cfg.BaseURL,
 		Model:           cfg.Model,
 		Dimensions:      int32(cfg.Dimensions),
