@@ -34,61 +34,61 @@ import (
 //
 // 用例自己负责收尾：建出来的课程会在测试结束时按依赖顺序删掉，成员 C 的表随之清空。
 const (
-	integrationEnv      = "NARRA_INTEGRATION_TEST"
-	testOrchestratorVer = "test-orchestrator-v1"
+	memberCIntegrationEnv      = "NARRA_INTEGRATION_TEST"
+	memberCTestOrchestratorVer = "test-orchestrator-v1"
 )
 
 var (
-	testDBOnce sync.Once
-	testDB     *gorm.DB
-	testDBErr  error
+	memberCTestDBOnce sync.Once
+	memberCTestDB     *gorm.DB
+	memberCTestDBErr  error
 )
 
-// openTestDB 返回共享的测试数据库连接。
+// openMemberCTestDB 返回共享的测试数据库连接。
 //
 // 用 sync.Once 让整个包共用一个连接池：每个用例各建一份会在测试结束时留下若干
 // 没关闭的连接池，而 database 包只保留最后一次赋值的全局句柄，前面的无从关闭。
-func openTestDB(t *testing.T) *gorm.DB {
+func openMemberCTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
-	if os.Getenv(integrationEnv) == "" {
-		t.Skipf("跳过集成测试：设置 %s=1 后重跑（需要本机 PostgreSQL 可用）", integrationEnv)
+	if os.Getenv(memberCIntegrationEnv) == "" {
+		t.Skipf("跳过集成测试：设置 %s=1 后重跑（需要本机 PostgreSQL 可用）", memberCIntegrationEnv)
 	}
 
-	testDBOnce.Do(func() {
+	memberCTestDBOnce.Do(func() {
 		// go test 的工作目录是包目录，而配置里的日志路径是相对仓库根写的。
 		// 先切到仓库根再初始化，否则会在 internal/repository/ 下生成一个 logs/ 目录。
 		repoRoot, err := filepath.Abs("../..")
 		if err != nil {
-			testDBErr = fmt.Errorf("定位仓库根目录失败: %w", err)
+			memberCTestDBErr = fmt.Errorf("定位仓库根目录失败: %w", err)
 			return
 		}
 		configPath := filepath.Join(repoRoot, "configs", "config.yaml")
 		if err := os.Chdir(repoRoot); err != nil {
-			testDBErr = fmt.Errorf("切换工作目录失败: %w", err)
+			memberCTestDBErr = fmt.Errorf("切换工作目录失败: %w", err)
 			return
 		}
 
 		cfg, err := config.Load(configPath)
 		if err != nil {
-			testDBErr = fmt.Errorf("加载配置失败: %w", err)
+			memberCTestDBErr = fmt.Errorf("加载配置失败: %w", err)
 			return
 		}
 		// 连接层会写日志，logger 没初始化时全局变量是空指针。
 		if err := logger.Init(&cfg.Log); err != nil {
-			testDBErr = fmt.Errorf("初始化日志失败: %w", err)
+			memberCTestDBErr = fmt.Errorf("初始化日志失败: %w", err)
 			return
 		}
-		testDB, testDBErr = database.InitPostgres(&cfg.Database.Postgres)
+		memberCTestDB, memberCTestDBErr = database.InitPostgres(&cfg.Database.Postgres)
 	})
-	if testDBErr != nil {
-		t.Fatalf("%v", testDBErr)
+	if memberCTestDBErr != nil {
+		t.Fatalf("%v", memberCTestDBErr)
 	}
-	return testDB
+	return memberCTestDB
 }
 
-// testFixture 是一套测试数据的句柄与收尾动作。
-type testFixture struct {
+// memberCTestFixture 是一套测试数据的句柄与收尾动作。
+type memberCTestFixture struct {
 	classroom     *entity.Classroom
 	conversation  *entity.ClassroomConversation
 	conversations ConversationRepository
@@ -99,11 +99,11 @@ type testFixture struct {
 	cleanup       func()
 }
 
-// newTestFixture 造一条课程 + 对话，并登记好各仓储。
-func newTestFixture(t *testing.T) *testFixture {
+// newMemberCTestFixture 造一条课程 + 对话，并登记好各仓储。
+func newMemberCTestFixture(t *testing.T) *memberCTestFixture {
 	t.Helper()
 
-	db := openTestDB(t)
+	db := openMemberCTestDB(t)
 	ctx := context.Background()
 
 	classroom := &entity.Classroom{
@@ -118,7 +118,7 @@ func newTestFixture(t *testing.T) *testFixture {
 		t.Fatalf("建测试课程失败: %v", err)
 	}
 
-	f := &testFixture{
+	f := &memberCTestFixture{
 		classroom:     classroom,
 		conversations: NewConversationRepository(db),
 		messages:      NewMessageRepository(db),
@@ -161,7 +161,7 @@ func newTestFixture(t *testing.T) *testFixture {
 }
 
 // appendMessage 在事务里追加一条消息，返回分配到的序号。
-func (f *testFixture) appendMessage(t *testing.T, ctx context.Context, content string) int64 {
+func (f *memberCTestFixture) appendMessage(t *testing.T, ctx context.Context, content string) int64 {
 	t.Helper()
 
 	message := &entity.ConversationMessage{
@@ -180,8 +180,8 @@ func (f *testFixture) appendMessage(t *testing.T, ctx context.Context, content s
 	return message.SequenceNo
 }
 
-// randomTraceID 造一个 32 位十六进制 trace id，满足列宽与格式约定。
-func randomTraceID(t *testing.T) string {
+// memberCRandomTraceID 造一个 32 位十六进制 trace id，满足列宽与格式约定。
+func memberCRandomTraceID(t *testing.T) string {
 	t.Helper()
 
 	var buf [16]byte
@@ -192,16 +192,16 @@ func randomTraceID(t *testing.T) string {
 }
 
 // newRun 造一次运行，返回它和分配到的 attempt_no。
-func (f *testFixture) newRun(t *testing.T, ctx context.Context, triggerMessageID uint64) (*entity.OrchestrationRun, error) {
+func (f *memberCTestFixture) newRun(t *testing.T, ctx context.Context, triggerMessageID uint64) (*entity.OrchestrationRun, error) {
 	t.Helper()
 
 	run := &entity.OrchestrationRun{
 		ConversationID:      f.conversation.ID,
 		TriggerMessageID:    triggerMessageID,
-		TraceID:             randomTraceID(t),
+		TraceID:             memberCRandomTraceID(t),
 		Status:              entity.RunStatusQueued,
 		MaxTurns:            6,
-		OrchestratorVersion: testOrchestratorVer,
+		OrchestratorVersion: memberCTestOrchestratorVer,
 		ConfigSnapshot:      json.RawMessage("{}"),
 	}
 	err := f.tx.Run(ctx, func(ctx context.Context) error {
@@ -212,7 +212,7 @@ func (f *testFixture) newRun(t *testing.T, ctx context.Context, triggerMessageID
 
 // TestMemberCMessageSequenceIsSequential 验证序号从 1 开始严格递增。
 func TestMemberCMessageSequenceIsSequential(t *testing.T) {
-	f := newTestFixture(t)
+	f := newMemberCTestFixture(t)
 	defer f.cleanup()
 	ctx := context.Background()
 
@@ -248,7 +248,7 @@ func TestMemberCMessageSequenceIsSequential(t *testing.T) {
 // TestMemberCMessageSequenceSurvivesConcurrency 是这一层最关键的用例：
 // 多个 goroutine 同时往同一条对话里追加消息，序号必须是 1..N 的排列，不重不漏。
 func TestMemberCMessageSequenceSurvivesConcurrency(t *testing.T) {
-	f := newTestFixture(t)
+	f := newMemberCTestFixture(t)
 	defer f.cleanup()
 	ctx := context.Background()
 
@@ -317,7 +317,7 @@ func TestMemberCMessageSequenceSurvivesConcurrency(t *testing.T) {
 // TestMemberCRunAttemptNoAndTurnNo 验证运行的 attempt_no 按触发消息递增、
 // 回合的 turn_no 按运行递增，两条链路互不干扰。
 func TestMemberCRunAttemptNoAndTurnNo(t *testing.T) {
-	f := newTestFixture(t)
+	f := newMemberCTestFixture(t)
 	defer f.cleanup()
 	ctx := context.Background()
 
@@ -395,7 +395,7 @@ func TestMemberCRunAttemptNoAndTurnNo(t *testing.T) {
 // TestMemberCClosedConversationRejectsAppend 验证已结束的对话会被明确拒绝，
 // 而不是悄悄把消息插进一个不再有人看的话题里。
 func TestMemberCClosedConversationRejectsAppend(t *testing.T) {
-	f := newTestFixture(t)
+	f := newMemberCTestFixture(t)
 	defer f.cleanup()
 	ctx := context.Background()
 
