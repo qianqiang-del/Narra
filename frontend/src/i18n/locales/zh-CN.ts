@@ -312,23 +312,54 @@ export default {
     title: '知识库',
     back: '返回首页',
     refresh: '刷新',
+    search: {
+      placeholder: '搜索标题或原文件名…',
+      clear: '清空',
+    },
+    toolbar: {
+      records: '上传记录',
+      new: '新增知识库',
+    },
+    new: {
+      title: '新增知识库',
+      desc: '选一份文件开始收录；解析与向量化在后台进行，收录成功后出现在主页。',
+      dropBusy: '正在处理「{title}」，完成后才能上传下一个',
+      note: '一次只能上传一份：上一份处理完成后才能上传下一份。窗口可以直接关掉，处理在后台继续。',
+    },
+    last: {
+      title: '最近一次上传',
+      processing: '解析 / 向量化中，完成后即可上传下一份',
+      failedHint: '可以换个文件重新上传，或先检查后端的解析环境',
+      idle: '暂无进行中的任务，可以上传。',
+    },
+    records: {
+      title: '上传记录',
+      count: '{total} 条',
+      hint: '这里放的是还没收录成功的文档（等待中 / 处理中 / 失败）；收录成功的会移到主页。',
+      empty: '还没有上传记录',
+      removed: '已删除记录',
+      remove: {
+        title: '删除上传记录',
+        message: '确定删除「{title}」这条上传记录吗？',
+        note: '这条记录对应的是一份尚未收录成功的文档，删除会连同它的暂存文件一起清理；已收录的知识库不受影响。',
+      },
+    },
     upload: {
-      title: '上传文档',
-      hint: '文档会被切分并向量化，之后可用于检索与生成。',
       drop: '把文件拖到这里，或点击选择（支持 {formats}）',
       titlePlaceholder: '文档标题（留空则用正文里的首个标题）',
       submit: '开始收录',
       submitting: '收录中…',
-      submittingHint: '正在解析、切分并向量化，请勿关闭页面。',
+      failed: '处理失败，可在「上传记录」里看到原因',
       success: '已收录《{title}》，共 {chunks} 个切片。',
       unsupported: '只支持 {formats}；其它格式请先转成 Markdown 或 PDF 再上传。',
       tooLarge: '文件超过 {limit} MB 上限。',
       clear: '移除已选文件',
     },
     list: {
-      title: '已收录文档',
-      total: '共 {total} 篇',
-      empty: '还没有文档，先上传一份试试。',
+      empty: '还没有已收录的知识库，先上传一份试试。',
+      filteredEmpty: '没有匹配「{keyword}」的知识库',
+      shown: '已显示 {shown} / {total}',
+      pullRefresh: '下拉刷新',
     },
     col: {
       chunks: '切片',
@@ -346,11 +377,6 @@ export default {
       import: '文件导入',
       api: '接口写入',
     },
-    page: {
-      prev: '上一页',
-      next: '下一页',
-      indicator: '第 {page} / {totalPage} 页',
-    },
     action: {
       view: '查看',
       delete: '删除',
@@ -361,7 +387,9 @@ export default {
       close: '关闭',
     },
     remove: {
-      confirm: '确定删除“{title}”吗？文档、切片和向量都会一起删除。',
+      title: '删除知识库',
+      confirm: '确定删除「{title}」吗？',
+      note: '文档正文、全部切片与向量都会被删除，且无法恢复。',
       success: '文档已删除',
     },
     error: {
