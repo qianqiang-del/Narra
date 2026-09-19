@@ -25,20 +25,31 @@ const (
 
 // fakeDocumentQuerier 是 documentQuerier 的内存替身。
 //
-// 只有三个方法 —— 服务层已经看不见状态推进和切片替换了，替身也就不必实现它们。
+// 只有四个方法 —— 服务层已经看不见状态推进和切片替换了，替身也就不必实现它们。
 type fakeDocumentQuerier struct {
 	document *entity.KnowledgeDocument
 	total    int64
 	counts   map[uint64]int64
+
+	// active 是 CountActive 的返回值，用它模拟"库里还有没有没跑完的收录任务"。
+	active int64
+
+	// query 记录最近一次收到的查询条件，供断言筛选与分页换算是否透传。
+	query entity.KnowledgeDocumentQuery
 }
 
 var _ documentQuerier = (*fakeDocumentQuerier)(nil)
 
-func (q *fakeDocumentQuerier) List(ctx context.Context, offset, limit int) ([]entity.KnowledgeDocument, int64, error) {
+func (q *fakeDocumentQuerier) List(ctx context.Context, query entity.KnowledgeDocumentQuery) ([]entity.KnowledgeDocument, int64, error) {
+	q.query = query
 	if q.document == nil {
 		return nil, 0, nil
 	}
 	return []entity.KnowledgeDocument{*q.document}, q.total, nil
+}
+
+func (q *fakeDocumentQuerier) CountActive(ctx context.Context) (int64, error) {
+	return q.active, nil
 }
 
 func (q *fakeDocumentQuerier) GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error) {
@@ -60,14 +71,27 @@ func (q *fakeDocumentQuerier) CountChunksByDocument(ctx context.Context, ids []u
 }
 
 // fakeIngester 是 ingester 的替身：只记录收到的输入，不真的切分与向量化。
+// 它也实现了 asyncIngester（SubmitFile）—— 服务层的上传闸门正是走那条路。
 type fakeIngester struct {
 	fileInput rag.FileInput
 	textInput rag.TextInput
 	result    rag.IngestResult
 	err       error
+
+	// submitted 累计 SubmitFile 被调用的次数，用来断言"被拒时根本没提交任务"。
+	submitted int
 }
 
-var _ ingester = (*fakeIngester)(nil)
+var (
+	_ ingester      = (*fakeIngester)(nil)
+	_ asyncIngester = (*fakeIngester)(nil)
+)
+
+func (f *fakeIngester) SubmitFile(ctx context.Context, input rag.FileInput) (rag.IngestResult, error) {
+	f.submitted++
+	f.fileInput = input
+	return f.result, f.err
+}
 
 func (f *fakeIngester) IngestFile(ctx context.Context, input rag.FileInput) (rag.IngestResult, error) {
 	f.fileInput = input
@@ -224,7 +248,7 @@ func TestListReportsChunkCounts(t *testing.T) {
 	}
 	svc := newTestService(querier, &fakeIngester{})
 
-	documents, total, err := svc.List(context.Background(), 1, 20)
+	documents, total, err := svc.List(context.Background(), requestdto.KnowledgeListQuery{Page: 1, Size: 20})
 	if err != nil {
 		t.Fatalf("列表查询失败: %v", err)
 	}
@@ -248,5 +272,124 @@ func TestGetReportsMissingDocument(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "不存在") {
 		t.Errorf("错误信息应当说明文档不存在，实际: %v", err)
+	}
+}
+
+// 列表条件解析：分页钳到合法区间、关键字去首尾空白、status 按逗号拆开并去重。
+func TestParseDocumentListQueryNormalizes(t *testing.T) {
+	query, err := ParseDocumentListQuery(0, 5000, " pending , processing , pending ", "  设计  ")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if query.Page != 1 || query.Size != maxPageSize {
+		t.Errorf("分页 = (%d, %d)，期望 (1, %d)", query.Page, query.Size, maxPageSize)
+	}
+	if got := strings.Join(query.Statuses, ","); got != "pending,processing" {
+		t.Errorf("状态 = %q，期望 pending,processing（去重且保序）", got)
+	}
+	if query.Keyword != "设计" {
+		t.Errorf("关键字 = %q，期望去掉首尾空白", query.Keyword)
+	}
+
+	// 不传 status 就是不限状态，不能变成"只看某个默认值"。
+	empty, err := ParseDocumentListQuery(1, 20, "  ", "")
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if len(empty.Statuses) != 0 {
+		t.Errorf("空 status 应当解析成不限，实际 %v", empty.Statuses)
+	}
+}
+
+// 不合法状态必须报错，不能静默当成"不限" —— 后者在界面上和"确实没有数据"长得一样，
+// 排查时会白绕一圈。
+func TestParseDocumentListQueryRejectsUnknownStatus(t *testing.T) {
+	if _, err := ParseDocumentListQuery(1, 20, "pending,归档", ""); err == nil {
+		t.Fatal("非法状态必须报错")
+	} else if !strings.Contains(err.Error(), "无效") {
+		t.Errorf("错误信息应当说明状态无效，实际: %v", err)
+	}
+}
+
+// 查询条件要原样落到仓储上：分页窗口由 (page-1)*size 换算，关键字去掉空白。
+func TestListPassesQueryToRepository(t *testing.T) {
+	querier := &fakeDocumentQuerier{document: &entity.KnowledgeDocument{
+		BaseModel:  entity.BaseModel{ID: testDocumentID},
+		Title:      "示例",
+		SourceType: testDocumentSource,
+		Status:     entity.KnowledgeDocumentStatusReady,
+		Content:    "正文",
+		Metadata:   json.RawMessage(`{}`),
+	}, total: 1}
+	svc := newTestService(querier, &fakeIngester{})
+
+	if _, _, err := svc.List(context.Background(), requestdto.KnowledgeListQuery{
+		Page:     3,
+		Size:     20,
+		Statuses: []string{entity.KnowledgeDocumentStatusReady},
+		Keyword:  " 设计 ",
+	}); err != nil {
+		t.Fatalf("列表查询失败: %v", err)
+	}
+
+	if querier.query.Offset != 40 || querier.query.Limit != 20 {
+		t.Errorf("分页窗口 = (%d, %d)，期望 (40, 20)", querier.query.Offset, querier.query.Limit)
+	}
+	if querier.query.Keyword != "设计" {
+		t.Errorf("关键字 = %q，期望去掉空白", querier.query.Keyword)
+	}
+	if got := strings.Join(querier.query.Statuses, ","); got != entity.KnowledgeDocumentStatusReady {
+		t.Errorf("状态 = %q，期望 %q", got, entity.KnowledgeDocumentStatusReady)
+	}
+}
+
+// 一次只收一份：库里还有没跑完的行时直接拒绝，而且**不能**再往下建行。
+func TestSubmitFileRejectsWhileQueueBusy(t *testing.T) {
+	querier := &fakeDocumentQuerier{active: 1}
+	ingestion := &fakeIngester{}
+	svc := newTestService(querier, ingestion)
+
+	document, err := svc.SubmitFile(context.Background(), requestdto.KnowledgeIngestFile{Path: "/tmp/a.md"})
+	if !errors.Is(err, ErrIngestBusy) {
+		t.Fatalf("期望 ErrIngestBusy，实际 %v", err)
+	}
+	if document.ID != 0 {
+		t.Errorf("被拒时不该有文档返回，实际 %+v", document)
+	}
+	if ingestion.submitted != 0 {
+		t.Errorf("被拒时不该提交收录任务，实际提交了 %d 次", ingestion.submitted)
+	}
+}
+
+// 队列空时正常提交，并把输入原样透传（上传闸门不能改坏提交本身）。
+func TestSubmitFilePassesThroughWhenIdle(t *testing.T) {
+	querier := &fakeDocumentQuerier{}
+	ingestion := &fakeIngester{result: rag.IngestResult{Document: &entity.KnowledgeDocument{
+		BaseModel:  entity.BaseModel{ID: testDocumentID},
+		Title:      "设计文档",
+		SourceType: testDocumentSource,
+		Status:     entity.KnowledgeDocumentStatusPending,
+		Metadata:   json.RawMessage(`{}`),
+	}}}
+	svc := newTestService(querier, ingestion)
+
+	document, err := svc.SubmitFile(context.Background(), requestdto.KnowledgeIngestFile{
+		Path:       "/tmp/a.md",
+		Title:      "设计文档",
+		SourceType: testDocumentSource,
+		SourceURI:  "设计.md",
+	})
+	if err != nil {
+		t.Fatalf("提交失败: %v", err)
+	}
+	if ingestion.submitted != 1 {
+		t.Errorf("SubmitFile 调用次数 = %d，期望 1", ingestion.submitted)
+	}
+	want := rag.FileInput{Path: "/tmp/a.md", Title: "设计文档", SourceType: testDocumentSource, SourceURI: "设计.md"}
+	if ingestion.fileInput != want {
+		t.Errorf("收录输入 = %+v，期望 %+v", ingestion.fileInput, want)
+	}
+	if document.ID != testDocumentID || document.Status != entity.KnowledgeDocumentStatusPending {
+		t.Errorf("响应映射不对: %+v", document)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -94,22 +95,74 @@ func (r *knowledgeDocumentRepository) GetByID(ctx context.Context, id uint64) (*
 	return &document, nil
 }
 
-// List 按创建时间倒序分页。id 也参与排序，因为同一批导入的文档 created_at 可能相同，
-// 只按时间排会让翻页时出现重复或漏项。
-func (r *knowledgeDocumentRepository) List(ctx context.Context, offset, limit int) ([]entity.KnowledgeDocument, int64, error) {
-	query := r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{})
+// List 按创建时间倒序分页，条件来自 entity.KnowledgeDocumentQuery。
+//
+// id 也参与排序，因为同一批导入的文档 created_at 可能相同，只按时间排会让翻页时
+// 出现重复或漏项。
+//
+// 计数与取页共用同一组 WHERE：两者不同源的话，前端会收到"总数 3、本页 5 条"这种
+// 自相矛盾的响应，而它正是靠 total 算"已显示 X / Y"和判断还有没有下一页的。
+func (r *knowledgeDocumentRepository) List(ctx context.Context, query entity.KnowledgeDocumentQuery) ([]entity.KnowledgeDocument, int64, error) {
+	scope := r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).Scopes(documentConditions(query))
 
 	var total int64
-	if err := query.Count(&total).Error; err != nil {
+	if err := scope.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	var documents []entity.KnowledgeDocument
-	err := query.Order("created_at DESC, id DESC").Offset(offset).Limit(limit).Find(&documents).Error
+	err := scope.Order("created_at DESC, id DESC").Offset(query.Offset).Limit(query.Limit).Find(&documents).Error
 	if err != nil {
 		return nil, 0, err
 	}
 	return documents, total, nil
+}
+
+// CountActive 统计还在收录中的文档数（pending + processing）。
+//
+// 它同时覆盖两种"忙"：worker 正在处理的行（processing），以及刚提交、还没被
+// worker 取走的行（pending）。判据用库里的行数而不是进程内的标志位，是因为活的
+// 执行者是 rag.Worker —— 提交请求早就返回了，只有文档状态知道后台还在不在忙，
+// 进程重启后这一点依然成立。
+//
+// 这个查询吃得到 knowledge_documents_status_created_at_idx 这条部分索引：
+// 它的谓词正是 status IN ('pending', 'processing')。
+func (r *knowledgeDocumentRepository) CountActive(ctx context.Context) (int64, error) {
+	var total int64
+	err := r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).
+		Where("status IN ?", []string{
+			entity.KnowledgeDocumentStatusPending,
+			entity.KnowledgeDocumentStatusProcessing,
+		}).
+		Count(&total).Error
+	return total, err
+}
+
+// documentConditions 把查询条件翻成 WHERE 子句；条件为空时不加任何约束。
+func documentConditions(query entity.KnowledgeDocumentQuery) func(*gorm.DB) *gorm.DB {
+	return func(tx *gorm.DB) *gorm.DB {
+		if len(query.Statuses) > 0 {
+			tx = tx.Where("status IN ?", query.Statuses)
+		}
+		if keyword := strings.TrimSpace(query.Keyword); keyword != "" {
+			pattern := likePattern(keyword)
+			// 括号不能省：GORM 把多个 Where 用 AND 串起来，而 AND 比 OR 结合得紧，
+			// 少了它这条会变成 "(status IN (…) AND title ILIKE …) OR source_uri ILIKE …"，
+			// 后半句绕过了状态约束，会把别的状态的文档一起捞出来。
+			tx = tx.Where("(title ILIKE ? OR source_uri ILIKE ?)", pattern, pattern)
+		}
+		return tx
+	}
+}
+
+// likePattern 把用户输入包成 LIKE 模式，并转义模式里的通配符。
+//
+// 不转义的话，用户输入一个 % 就等于"匹配所有文档"，下划线同理 ——
+// 界面上看起来像"搜索失效"，实际是把通配符的控制权交给了调用方。
+// PostgreSQL 的 LIKE 默认转义字符就是反斜杠，所以这里补一个即可，不必写 ESCAPE 子句。
+func likePattern(keyword string) string {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(keyword)
+	return "%" + escaped + "%"
 }
 
 // CountChunksByDocument 用一条 GROUP BY 查询批量取回切片数，避免列表页的 N+1。

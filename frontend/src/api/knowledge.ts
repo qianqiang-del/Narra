@@ -108,11 +108,38 @@ function toDocument(d: KnowledgeDocumentDTO): KnowledgeDocument {
   }
 }
 
-/** 分页拉取文档列表。列表响应不含正文，只有字符数。 */
-export async function fetchKnowledgeDocuments(page = 1, size = 20): Promise<KnowledgePage> {
-  const data = await request<PageDTO<KnowledgeDocumentDTO>>(
-    `/knowledge/documents?page=${page}&size=${size}`,
-  )
+/** 列表查询条件；四项都可省略，省略就是不限。 */
+export interface KnowledgeListParams {
+  /** 页码，从 1 起（与后端 page 对齐） */
+  page?: number
+  /** 每页条数；超过后端上限 100 会被钳到 100 */
+  size?: number
+  /**
+   * 只看这些状态，会拼成逗号分隔的 `status=pending,processing`。
+   * 空数组或不传表示不限状态。
+   */
+  status?: KnowledgeDocumentStatus[]
+  /** 在标题与来源文件名上做模糊匹配（后端不区分大小写）；空串或不传表示不限 */
+  keyword?: string
+}
+
+/**
+ * 分页拉取文档列表。列表响应不含正文，只有字符数。
+ *
+ * 筛选与分页都在服务端做：列表本身就是分页的，拉回来再在前端过滤只能看到
+ * 已经下载的那几页 —— "第一页全是 failed、ready 排在第二页"会被过滤成空列表。
+ */
+export async function fetchKnowledgeDocuments(
+  params: KnowledgeListParams = {},
+): Promise<KnowledgePage> {
+  const search = new URLSearchParams()
+  search.set('page', String(params.page ?? 1))
+  search.set('size', String(params.size ?? 20))
+  if (params.status?.length) search.set('status', params.status.join(','))
+  const keyword = params.keyword?.trim()
+  if (keyword) search.set('keyword', keyword)
+
+  const data = await request<PageDTO<KnowledgeDocumentDTO>>(`/knowledge/documents?${search}`)
   return {
     list: data.list.map(toDocument),
     page: data.page,

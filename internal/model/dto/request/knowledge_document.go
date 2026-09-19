@@ -31,3 +31,18 @@ type KnowledgeIngestText struct {
 	SourceType string `json:"source_type"`                // 来源类型；留空按 manual 处理
 	SourceURI  string `json:"source_uri"`                 // 来源标识，可为空
 }
+
+// KnowledgeListQuery 是知识文档列表的查询条件。
+//
+// 字段全部可空：page / size 越界由 service.NormalizePage 钳到合法区间，
+// Statuses 为空表示不限状态，Keyword 为空表示不限关键字。
+//
+// 它由 service.ParseDocumentListQuery 从原始查询参数解析而来 —— 逗号拆分、
+// 状态校验与分页归一化都在服务层，接口层只负责把 query string 递进去，
+// 这样"哪些 status 合法""每页最多几条"这两条口径只有一处实现。
+type KnowledgeListQuery struct {
+	Page     int      // 页码，从 1 起
+	Size     int      // 每页条数，上限见 service.maxPageSize
+	Statuses []string // 只看这些状态（HTTP 上由 status 参数按逗号拆开）；空表示不限
+	Keyword  string   // 标题与来源标识的模糊匹配关键字；空表示不限
+}
