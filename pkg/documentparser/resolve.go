@@ -17,11 +17,16 @@ import (
 // 依赖清单变了就必须重建，否则会留下"代码升级了、依赖还是旧的"这类最难排查的问题。
 const markerFileName = ".narra-requirements.sha256"
 
-// importProbe 是运行时自检要导入的模块。
+// importProbe 是运行时自检要执行的语句。
 //
 // 声明成变量而不是常量，是为了让测试能把它换成一定能过的语句（测试环境不该依赖真实
 // 装好的 docling）。生产路径上不会改它。
-var importProbe = "import docling, fitz"
+//
+// 探的是**真正要用的那个入口**，而不是逐个 import 顶层包：docling 存在"顶层能过、
+// 子模块才炸"的缺失 —— `import docling` 一路正常，直到 document_converter 这条链走到
+// docling.models.base_ocr_model（它需要 scipy / rtree）才失败，而那时用户文档已经在上传
+// 路径上了。探针指到这里，这类缺失就只会在准备阶段以明确错误暴露出来。
+var importProbe = "import fitz; from docling.document_converter import DocumentConverter"
 
 // Runtime 描述一次解析实际使用的解释器。
 type Runtime struct {
@@ -97,7 +102,9 @@ func (r *Resolver) Resolve(ctx context.Context, onProgress func(string)) (*Runti
 		return &Runtime{Python: python, Source: "provisioned", Dir: r.cfg.EnvDir}, nil
 	}
 
-	report("未找到可用的 Python 环境，开始准备（首次运行需要下载依赖）")
+	// 走到这里有两种情况：环境还不存在，或者环境在但与当前依赖清单不符 —— 后者一样要重建，
+	// 所以文案不能说成"未找到"。
+	report("开始准备文档解析环境（首次运行需要下载依赖，可能耗时数分钟）")
 	if err := r.provision(ctx, report); err != nil {
 		return nil, err
 	}
@@ -160,7 +167,11 @@ func (r *Resolver) provision(ctx context.Context, report func(string)) error {
 	}
 
 	report(fmt.Sprintf("创建虚拟环境 %s", r.cfg.EnvDir))
-	if err := r.run(ctx, uv, base, "venv", "--python", r.cfg.PythonVersion, r.cfg.EnvDir); err != nil {
+	// --clear：能走到这一步，说明现成环境要么不存在、要么与当前依赖清单不符，那它就该被
+	// 重建而不是复用 —— 就绪标记的语义正是"这个环境是按这份清单建的"，只有清空重建才能
+	// 让这句话为真。不加这个 flag 时 uv 对已存在的目录直接报错退出，于是"改了依赖清单 →
+	// 自动重建环境"这条自愈路径根本走不通（只剩手工删目录一条路）。
+	if err := r.run(ctx, uv, base, "venv", "--python", r.cfg.PythonVersion, "--clear", r.cfg.EnvDir); err != nil {
 		return err
 	}
 

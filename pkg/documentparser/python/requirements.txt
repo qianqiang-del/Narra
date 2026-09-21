@@ -3,12 +3,18 @@
 # ⚠️ 不要换成 `docling`：docling 是元包，等价于 docling-slim[standard]，那个 extra 会拉进
 #    torch / torchvision（GB 级）。这里只取需要的 extra，并用 models-onnxruntime 替代 torch。
 #
+# ⚠️ `convert-core` 是硬依赖，不是可选增强：它带来 numpy / pillow / rtree / scipy。
+#    后两个少不了 —— docling/models/base_ocr_model.py 顶层就写着
+#    `from scipy.ndimage import binary_dilation, find_objects, label`，版面阶段还要用 rtree
+#    做页面元素的空间索引。漏掉它时 pip 会装得干干净净、就绪标记也照写，直到真正转换文档
+#    那一刻才抛 ModuleNotFoundError（表现为"上传成功、解析失败"），极难往回追。
+#
 # 注意：models-onnxruntime 在 Windows / Linux 上解析出的是 onnxruntime-gpu（体积明显大于
 #       CPU 版）。若要进一步压体积，可去掉该 extra，自行安装 onnxruntime 并给 Docling 显式
 #       配置 ONNX 版面模型 —— 这一步尚未验证，需要实测。
 #
 # 版本按 Python 3.13 / Windows 实测解析结果钉死；升级时请连同 parse_document.py 一起回归。
-docling-slim[format-office,format-pdf,models-onnxruntime,feat-ocr-rapidocr-onnx]==2.127.0
+docling-slim[convert-core,format-office,format-pdf,models-onnxruntime,feat-ocr-rapidocr-onnx]==2.127.0
 
 # PDF 文字层提取（脚本里的 _extract_pdf_text）
 pymupdf==1.28.2
