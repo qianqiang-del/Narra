@@ -158,6 +158,31 @@ function askDeleteDocument(document: KnowledgeDocument) {
   confirmOpen.value = true
 }
 
+/**
+ * 重试一条失败的上传记录。
+ *
+ * 与删除不同，这里不要确认框：重试是可逆的（大不了再失败一次），而且结果几秒内
+ * 就能看见。真正的动作在 store 里 —— 它会一直轮询到终态，再从服务端整表重拉，
+ * 所以成功之后列表与记录都会自己对齐。
+ */
+async function retryRecord(record: KnowledgeUploadRecord) {
+  if (!record.documentId) return
+
+  try {
+    const document = await store.retry(record.documentId)
+    // 失败不算异常：库里那行又变回 failed，按上传的口径提示即可。
+    if (document.status === 'failed') {
+      toast.error(t('knowledge.upload.failed'))
+    } else {
+      toast.success(
+        t('knowledge.upload.success', { title: document.title, chunks: document.chunks }),
+      )
+    }
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : t('knowledge.error.retry'))
+  }
+}
+
 function askDeleteRecord(record: KnowledgeUploadRecord) {
   pendingDelete.value = { kind: 'record', record }
   confirmOpen.value = true
@@ -335,7 +360,7 @@ function goBack() {
     </main>
 
     <NewKnowledgeDialog v-model:open="newOpen" />
-    <UploadRecordDrawer v-model:open="recordsOpen" @remove="askDeleteRecord" />
+    <UploadRecordDrawer v-model:open="recordsOpen" @remove="askDeleteRecord" @retry="retryRecord" />
     <DocumentPreviewDialog v-model:open="previewOpen" :document-id="previewId" />
 
     <ConfirmDialog
