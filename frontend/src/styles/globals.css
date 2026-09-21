@@ -134,23 +134,37 @@
     @apply border-border outline-ring/50;
   }
   html {
-    /* Always render the vertical scrollbar so layout doesn't horizontally
-       shift when content grows/shrinks across the viewport-height threshold
-       (e.g. expanding/collapsing recent classrooms). scrollbar-gutter:
-       stable doesn't cover every browser/config combo we see, so fall back
-       to forcing overflow-y: scroll as well. */
+    /* Reserve the vertical scrollbar gutter so the layout doesn't shift
+       horizontally when content grows past / shrinks below one viewport
+       (e.g. expanding/collapsing recent classrooms). `scrollbar-gutter:
+       stable` alone does that job — measured on Chrome 09-21: the gutter
+       space is kept whether or not the bar is actually painted, so the
+       content box stays 1265px wide either way and nothing moves.
+
+       ⚠️ Do NOT reintroduce `overflow-y: scroll` here. The body's overflow is
+       only propagated to the viewport while html's computed overflow stays
+       `visible` (CSS Overflow §3). `overflow-y: scroll` makes it non-visible,
+       which silently disabled every scroll lock in the app: reka-ui writes
+       `overflow: hidden` on body (UploadRecordDrawer does the same by hand)
+       and the page kept scrolling behind the overlay. It also misled reka-ui
+       into "compensating" for a scrollbar that never disappeared, shifting the
+       whole page sideways on open/close. See App.vue for the compensation. */
     scrollbar-gutter: stable;
-    overflow-y: scroll;
   }
   body {
     @apply bg-background text-foreground;
   }
-  /* Radix modal overlays wrap with `react-remove-scroll`, which compensates
-     for the removed page scrollbar by adding right-side body spacing. This
-     app already reserves the scrollbar gutter on <html> (above), so that
-     extra compensation creates a visible horizontal layout shift when opening
-     Settings on the homepage/classroom shells. Keep Radix's modal focus and
-     interaction locking, but neutralize only the redundant gap compensation. */
+  /* Modal overlays that lock body scroll normally compensate for the removed
+     page scrollbar by adding right-side spacing on <body>. This app already
+     reserves the scrollbar gutter on <html> (above), so no scrollbar is ever
+     removed and that compensation is a pure horizontal shift.
+
+     reka-ui (every dialog we have) is handled at the source instead: see
+     `:scroll-body="{ padding: 0, margin: 0 }"` on the ConfigProvider in App.vue.
+     It does NOT set `data-scroll-locked` (that attribute came from the React
+     port's react-remove-scroll), so the selectors below no longer cover our
+     dialogs — they stay as a backstop for any modal mounted outside that
+     provider, since `!important` beats an inline style. */
   body[data-maic-editor='true'],
   body[data-scroll-locked] {
     padding-right: 0 !important;
