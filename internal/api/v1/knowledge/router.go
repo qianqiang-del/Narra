@@ -18,6 +18,9 @@ func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	documents := g.Group("/knowledge/documents")
 	documents.POST("", c.Upload)
 	documents.POST("/text", c.IngestText)
+	// 重试是"让这一篇再跑一遍"，所以它是文档的子动作，不是新的一次上传（POST 而非 PUT）：
+	// 收的是状态流转，不是内容。路由段与 /:id/preview 同一形状，能共存。
+	documents.POST("/:id/retry", c.Retry)
 	documents.GET("", c.List)
 	documents.GET("/parser/status", c.ParserStatus)
 	documents.GET("/:id/preview", c.Preview)

@@ -291,6 +291,23 @@ export async function uploadKnowledgeFile(file: File, title?: string): Promise<K
   return toDocument(d)
 }
 
+/**
+ * 让一条收录失败的文档重新排队：后端复用服务器上留下的原件再跑一遍。
+ *
+ * 不收新文件 —— 失败时原件已经被归档在服务器上，所以这里没有 body。
+ * 返回的文档是 pending，调用方接着轮询 `fetchKnowledgeDocument` 看进度，
+ * 流程与上传之后完全一样（重试与上传在前端共用同一段轮询）。
+ *
+ * 后端在"现在不能重试"时回 409：已经不是失败态、后台正忙着收别的、
+ * 或者原件已经不在服务器上（那种只能重新上传）。都不是请求写错了。
+ */
+export async function retryKnowledgeDocument(id: number): Promise<KnowledgeDocument> {
+  const d = await request<KnowledgeDocumentDTO>(`/knowledge/documents/${id}/retry`, {
+    method: 'POST',
+  })
+  return toDocument(d)
+}
+
 /** 直接收录一段正文（Markdown），跳过文件与解析。 */
 export async function ingestKnowledgeText(content: string, title?: string): Promise<KnowledgeDocument> {
   const d = await request<KnowledgeDocumentDTO>('/knowledge/documents/text', {

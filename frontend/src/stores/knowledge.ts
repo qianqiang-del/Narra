@@ -8,6 +8,7 @@ import {
   deleteKnowledgeDocument,
   deleteUploadRecord,
   fetchUploadRecords,
+  retryKnowledgeDocument,
   uploadKnowledgeFile,
   type KnowledgeDocument,
   type KnowledgeUploadRecord,
@@ -195,33 +196,83 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    * 后端此刻若正在收另一份，上传接口会拒（409），错误照样从这里抛出去 ——
    * 前端在上传期间本来就锁着入口，撞上它的是并发场景。
    */
+  /**
+   * 轮询一份文档直到它走到终态（ready / failed），返回最后那一帧。
+   *
+   * 上传与重试共用这一段：两者都是"后台在跑、前端盯着状态"，差别只在第一步
+   * 怎么把任务交出去。边轮询边把当前帧写进 activeUpload，弹层那张卡片就跟着它动。
+   *
+   * 上限是必须的：一份卡在 pending 的文档（例如 worker 没起来）会把界面永远锁在
+   * "处理中"，而 uploading 一直为真，用户连下一份都传不了。
+   */
+  async function pollUntilSettled(document: KnowledgeDocument): Promise<KnowledgeDocument> {
+    const deadline = Date.now() + POLL_TIMEOUT_MS
+    let current = document
+    while (current.status === 'pending' || current.status === 'processing') {
+      if (Date.now() >= deadline) throw new Error('文档处理超时，请稍后刷新查看状态')
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      current = await fetchKnowledgeDocument(current.id)
+      activeUpload.value = current
+    }
+    return current
+  }
+
+  /**
+   * 拉一次上传记录，失败就当没发生过。
+   *
+   * 它服务于"提交之后让抽屉立刻有这条"：文件已经在收了，为一次刷新失败把整次
+   * 上传报成失败，反而会骗用户重传。
+   */
+  async function refreshRecordsQuietly() {
+    try {
+      await loadRecords()
+    } catch {
+      /* 抽屉的这条晚点到，不影响收录本身 */
+    }
+  }
+
   async function upload(file: File, title?: string): Promise<KnowledgeDocument> {
     uploading.value = true
     try {
-      let document = await uploadKnowledgeFile(file, title)
+      const document = await uploadKnowledgeFile(file, title)
       activeUpload.value = document
 
       // 提交的同时后端已经写了一条 pending 记录（同一个请求里建的），拉回来让
-      // 抽屉立刻有这条。拉失败不当回事：文件已经在收了，为一次刷新失败把整次上传
-      // 报成失败，反而会骗用户重传。
-      try {
-        await loadRecords()
-      } catch {
-        /* 抽屉的这条晚点到，不影响收录本身 */
-      }
+      // 抽屉立刻有这条。
+      await refreshRecordsQuietly()
 
-      const deadline = Date.now() + POLL_TIMEOUT_MS
-      while (document.status === 'pending' || document.status === 'processing') {
-        if (Date.now() >= deadline) throw new Error('文档处理超时，请稍后刷新查看状态')
-        await new Promise((resolve) => setTimeout(resolve, 1000))
-        document = await fetchKnowledgeDocument(document.id)
-        activeUpload.value = document
-      }
+      const settled = await pollUntilSettled(document)
 
       // 终态之后整表重拉：这一份的切片数、字符数、updated_at 都是后端在收尾时补的，
       // 记录那一行的状态也是在同一个事务里跟着翻的 —— 别拿轮询到的最后一帧糊弄过去
       await load()
-      return document
+      return settled
+    } finally {
+      uploading.value = false
+      activeUpload.value = null
+    }
+  }
+
+  /**
+   * 重试一次收录失败的投递。
+   *
+   * **不用重新选文件**：后端把那条 failed 文档改回 pending，输入是失败时归档在
+   * 服务器上的原件。所以它与 upload 的差别只有第一步 —— 一个交出新文件，
+   * 一个让旧任务重新排队；之后的轮询与整表重拉完全一样。
+   *
+   * 同样置 uploading：重试会占住后台的收录位，期间再传一份会被服务端的闸门拒掉
+   * （409），前端先一步把入口锁上，少一次注定失败的往返。
+   */
+  async function retry(documentId: number): Promise<KnowledgeDocument> {
+    uploading.value = true
+    try {
+      const document = await retryKnowledgeDocument(documentId)
+      activeUpload.value = document
+      await refreshRecordsQuietly()
+
+      const settled = await pollUntilSettled(document)
+      await load()
+      return settled
     } finally {
       uploading.value = false
       activeUpload.value = null
@@ -272,6 +323,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     loadRecords,
     loadMore,
     upload,
+    retry,
     preview,
     removeDocument,
     removeRecord,

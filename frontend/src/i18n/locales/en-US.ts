@@ -333,7 +333,8 @@ export default {
     last: {
       title: 'Most recent upload',
       processing: 'Parsing / embedding — the next upload unlocks when it finishes',
-      failedHint: 'Try a different file, or check the parser environment on the backend',
+      failedHint: 'You can retry this one as is; if it fails again, check the parser environment',
+      retryUnavailable: 'The document from this upload has been deleted, so it cannot be retried',
       idle: 'Nothing in progress — you can upload.',
     },
     records: {
@@ -392,6 +393,7 @@ export default {
     },
     action: {
       view: 'View',
+      retry: 'Retry',
       delete: 'Delete',
     },
     preview: {
@@ -408,6 +410,7 @@ export default {
     error: {
       load: 'Failed to load the knowledge base.',
       upload: 'Upload failed.',
+      retry: 'Retry failed.',
       preview: 'Failed to load the document text.',
       remove: 'Failed to delete the document.',
     },

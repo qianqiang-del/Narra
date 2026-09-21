@@ -9,8 +9,12 @@
  *
  * 删除只清这一条流水：若它对应的文档还没收录成功，后端会连带把那份文档与暂存文件
  * 一起清掉（不收掉的话上传闸门会一直卡着）；已经收录成功的文档绝不触碰。
+ *
+ * 失败的那一行多一个「重试」：让同一篇文档再跑一遍（后端留着归档的原件），
+ * 不新建记录、也不用重新选文件。文档已经被删掉的（documentId 为空）没有可重跑的对象，
+ * 那个按钮不出现。
  */
-import { X, Trash2 } from 'lucide-vue-next'
+import { X, Trash2, RotateCw } from 'lucide-vue-next'
 import { computed, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -20,7 +24,11 @@ import { useKnowledgeStore } from '@/stores/knowledge'
 
 const open = defineModel<boolean>('open', { default: false })
 
-const emit = defineEmits<{ remove: [record: KnowledgeUploadRecord] }>()
+const emit = defineEmits<{
+  remove: [record: KnowledgeUploadRecord]
+  /** 请求重试这一条投递（真正的调用与提示在页面层，与删除同一个路数） */
+  retry: [record: KnowledgeUploadRecord]
+}>()
 
 const { t } = useI18n()
 const store = useKnowledgeStore()
@@ -30,8 +38,11 @@ const records = computed(() => store.uploadRecords)
 /**
  * 抽屉打开时锁住页面滚动、顺便对一次账。
  *
- * 锁滚动：不锁的话页面自身那条滚动条会一直挂在抽屉右边，和抽屉内部这条并排出现。
- * （`html` 上有 `overflow-y: scroll`，所以只需要处理 body。）
+ * 锁滚动：给 body 设 `overflow: hidden` 就够 —— html 的 overflow 保持默认的
+ * visible，此时 body 的 overflow 会**传播到视口**（CSS Overflow §3），视口因此真的
+ * 滚不动，页面那条滚动条也不再和抽屉内部这条并排。⚠️ 前提是 globals.css 里 html
+ * 别写 `overflow-y: scroll`（那会让传播失效，这句锁就成了空操作）；槽位常驻交给
+ * `scrollbar-gutter: stable`，所以锁与解锁都不会横向位移。
  *
  * 对账：记录是后台在改的（上传还在轮询、别处可能刚删过东西），而抽屉多半是关着
  * 的时候数据变旧。拉失败就用手上这份，不要因为一次刷新失败把抽屉清空。
@@ -93,6 +104,19 @@ onUnmounted(() => {
             :record="record"
           >
             <template #actions>
+              <!--
+                只有失败且还关联着文档的那些能重试：重试的对象是文档，
+                文档已经被删掉之后这条记录只是一段历史（没有可重跑的输入）。
+              -->
+              <button
+                v-if="record.status === 'failed' && record.documentId"
+                type="button"
+                class="inline-flex cursor-pointer items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs transition-colors hover:bg-muted"
+                @click="emit('retry', record)"
+              >
+                <RotateCw class="size-3.5" />
+                {{ t('knowledge.action.retry') }}
+              </button>
               <button
                 type="button"
                 class="inline-flex cursor-pointer items-center gap-1 rounded-md border border-red-200 px-2.5 py-1 text-xs text-red-600 transition-colors hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"

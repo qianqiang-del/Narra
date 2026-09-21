@@ -329,7 +329,8 @@ export default {
     last: {
       title: '最近一次上传',
       processing: '解析 / 向量化中，完成后即可上传下一份',
-      failedHint: '可以换个文件重新上传，或先检查后端的解析环境',
+      failedHint: '可以直接重试这一份；若仍然失败，检查后端的解析环境',
+      retryUnavailable: '这次投递的文档已被删除，无法重试',
       idle: '暂无进行中的任务，可以上传。',
     },
     records: {
@@ -388,6 +389,7 @@ export default {
     },
     action: {
       view: '查看',
+      retry: '重试',
       delete: '删除',
     },
     preview: {
@@ -404,6 +406,7 @@ export default {
     error: {
       load: '加载知识库列表失败。',
       upload: '上传失败。',
+      retry: '重试失败。',
       preview: '加载文档正文失败。',
       remove: '删除文档失败。',
     },

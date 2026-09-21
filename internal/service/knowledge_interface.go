@@ -33,6 +33,17 @@ type KnowledgeService interface {
 	// 调用方拿返回的 id 用 Get 轮询进度。
 	SubmitFile(ctx context.Context, input requestdto.KnowledgeIngestFile) (responsedto.KnowledgeDocument, error)
 
+	// Retry 把一条收录失败的文档重新排队，让它再跑一遍（**原地重试**）。
+	//
+	// 复用同一行文档与同一条上传记录，输入是失败时归档在服务器上的原件
+	// （data/uploads/failed/<文档ID>/），所以不需要用户重新上传。
+	// 返回的文档 status 是 pending，调用方接着用 Get 轮询进度。
+	//
+	// 三种情形返回可判定的错误，接口层据此翻成 409 而不是 400：
+	// 状态不是 failed（ErrRetryNotFailed）、原件已不在服务器上（ErrStagedFileMissing）、
+	// 或此刻还有其他任务在跑（ErrIngestBusy）。
+	Retry(ctx context.Context, id uint64) (responsedto.KnowledgeDocument, error)
+
 	// IngestText 直接把一段正文收录为 Markdown，跳过解析。这条链路仍是同步的。
 	IngestText(ctx context.Context, input requestdto.KnowledgeIngestText) (responsedto.KnowledgeDocument, error)
 

@@ -139,17 +139,25 @@ type Ingester struct {
 	newEmbedder embedderFactory
 }
 
-// FileTaskStore 是异步文件收录对任务队列的最小依赖面，由 Worker 使用。
+// FileTaskStore 是异步文件收录对任务队列的最小依赖面。
 //
 // 队列就是 knowledge_documents 表本身，没有独立的任务表。它比 DocumentStore 多出的
-// 五个方法全部围绕"发任务、抢任务、收任务"：提交时写元数据，取任务时查 pending，
-// 抢任务时做条件更新，失败与僵尸回收各一个。之所以单独一个接口而不是并进
+// 方法全部围绕"发任务、抢任务、收任务"：提交时写元数据，取任务时查 pending，
+// 抢任务时做条件更新，失败、归档与回收各一个。之所以单独一个接口而不是并进
 // DocumentStore，是因为同步的 IngestText 用不到其中任何一个。
+//
+// 消费方有两处：Worker（抢任务、处理、收尾）与 Ingester（SubmitFile 发任务、
+// Retry 重新入队）。
 type FileTaskStore interface {
 	// SetMetadata 覆盖文档的 metadata，用于记下上传的暂存路径与标题回落标记。
 	SetMetadata(context.Context, uint64, json.RawMessage) error
 
-	// MarkFailed 把文档推进到 failed 并写入失败现场，同时把 reason 同步到上传记录。
+	// SetUploadPath 只替换 metadata 里的 upload_path，其余键（失败现场）原样保留。
+	// 失败原件归档到 failed/<文档ID>/ 之后用它把指针挪过去。
+	SetUploadPath(context.Context, uint64, string) error
+
+	// MarkFailed 把文档推进到 failed 并合并写入失败现场，同时把 reason 同步到上传记录。
+	// reason 的口径见 DocumentStore.MarkFailed。
 	MarkFailed(context.Context, uint64, json.RawMessage, string) error
 
 	// ListPending 按创建时间取最多 limit 条 pending 文档。
@@ -161,6 +169,9 @@ type FileTaskStore interface {
 	// ResetStale 把 updated_at 早于 olderThan 的 processing 打回 pending，
 	// 用来回收上一个进程遗留的僵尸任务。
 	ResetStale(context.Context, time.Time) error
+
+	// Requeue 把一行 failed 文档改回 pending 重新排队；返回 false 表示它已经不是失败状态。
+	Requeue(context.Context, uint64) (bool, error)
 }
 
 // NewIngester 创建收录器。
@@ -254,6 +265,25 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 		)
 	}
 	return IngestResult{Document: document}, nil
+}
+
+// Retry 把一条收录失败的文档重新入队，由 Worker 再跑一遍。
+//
+// 它只改状态、不碰文件：原件在失败时就被 worker 归档到了 failed/<文档ID>/，
+// metadata 里的 upload_path 指着那里（见 worker.archiveStagedFile），
+// 下一轮轮询自然会照常把这一行捡起来。
+//
+// 返回 false 表示这一行不满足重试条件 —— 不存在，或状态已经不是 failed
+// （另一个请求抢先重试了，或它已经被删掉）。这不是错误，调用方按"不需要重试"处理。
+//
+// 它是**原地重试**：复用同一行文档与同一条上传记录，不新建任何东西。
+// 一份文件一份资产，重试只是让它再跑一次，投递历史里不该凭空多出一条。
+func (i *Ingester) Retry(ctx context.Context, id uint64) (bool, error) {
+	store, ok := i.store.(FileTaskStore)
+	if !ok {
+		return false, fmt.Errorf("知识库存储不支持异步文件任务")
+	}
+	return store.Requeue(ctx, id)
 }
 
 // IngestFile 读一份文件并收录。
@@ -506,22 +536,36 @@ func (i *Ingester) createDocument(ctx context.Context, title, sourceType, source
 // 状态必须落 failed：文档行是解析之前就建好的，失败时如果不管它，
 // 库里会永远留着一篇 status = pending 的文档，看起来像"还在处理"，
 // 实际上那次上传早就结束了。
+//
+// 失败原因分两个键写，因为它们的读者不是同一个人：
+//   - error：给界面看的一句话，纯中文（见 userFacingReason）
+//   - error_detail：给排障看的完整诊断，含错误码与 stderr 原文
+//
+// 挤在一个键里只能二选一：给用户看就会被机器串污染，给排障看用户又读不懂。
+// 同步给上传记录的 error_message 是前者 —— 抽屉里显示的就是它。
 func (i *Ingester) failIngest(
 	ctx context.Context,
 	document *entity.KnowledgeDocument,
 	stage string,
 	cause error,
 ) (IngestResult, error) {
-	metadata, err := json.Marshal(map[string]any{
-		"stage":     stage,
-		"error":     cause.Error(),
-		"failed_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		metadata = json.RawMessage(`{"error":"记录失败原因时出错"}`)
+	reason := userFacingReason(cause)
+	fields := map[string]any{
+		"stage":        stage,
+		"error":        reason,
+		"error_detail": cause.Error(),
+		"failed_at":    time.Now().UTC().Format(time.RFC3339),
+	}
+	if code := parserErrorCode(cause); code != "" {
+		fields["error_code"] = code
 	}
 
-	if err := i.store.MarkFailed(ctx, document.ID, metadata, cause.Error()); err != nil {
+	payload, err := json.Marshal(fields)
+	if err != nil {
+		payload = json.RawMessage(`{"error":"记录失败原因时出错"}`)
+	}
+
+	if err := i.store.MarkFailed(ctx, document.ID, payload, reason); err != nil {
 		// 这一步失败不影响给用户的答复，但会让文档停在中间状态，必须留下日志。
 		logger.Error("知识文档标记失败状态时出错，文档可能停在中间状态",
 			zap.Uint64("document_id", document.ID),
@@ -532,8 +576,38 @@ func (i *Ingester) failIngest(
 
 	failed := *document
 	failed.Status = entity.KnowledgeDocumentStatusFailed
-	failed.Metadata = metadata
+	failed.Metadata = payload
 	return IngestResult{Document: &failed}, cause
+}
+
+// userFacingReason 把一次失败折成一句给用户看的中文。
+//
+// 不能直接用 cause.Error()：那是日志格式的完整诊断，错误码挂在前面、stderr 拖在后面，
+// 落到界面上就是 "PARSER_FAILED: 文档解析失败 (stderr: parser failed: No module named
+// 'scipy')" 这样一段中英混杂的机器串 —— 用户读不懂错误码，也判断不出该做什么。
+// 解析器的错误自带一句中文（见 documentparser.Error.UserMessage），取它即可。
+//
+// 别的错误一律原样用：向量化、切分、落库这几条路本来就是 Go 侧直接写的中文
+// （"第 1~16 个切片向量化失败: 上游返回 429"），没有需要剥掉的包装。
+func userFacingReason(cause error) string {
+	var parseErr *documentparser.Error
+	if errors.As(cause, &parseErr) {
+		if message := parseErr.UserMessage(); message != "" {
+			return message
+		}
+	}
+	return cause.Error()
+}
+
+// parserErrorCode 取稳定错误码，供排障按码检索。
+//
+// 只有解析器的错误有码，别处返回空串 —— 空串不进 metadata，免得那个键时有时无。
+func parserErrorCode(cause error) string {
+	var parseErr *documentparser.Error
+	if errors.As(cause, &parseErr) {
+		return parseErr.Code
+	}
+	return ""
 }
 
 // buildReplacement 组装入库所需的三份数据。

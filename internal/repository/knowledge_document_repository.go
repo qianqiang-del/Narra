@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -29,6 +30,23 @@ type knowledgeDocumentRepository struct {
 // SetMetadata 整份覆盖 metadata，不做合并（合并规则是调用方的事）。
 func (r *knowledgeDocumentRepository) SetMetadata(ctx context.Context, id uint64, metadata json.RawMessage) error {
 	return r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).Where("id = ?", id).Update("metadata", metadata).Error
+}
+
+// SetUploadPath 把 metadata 里的 upload_path 换成新位置，其他键一律不动。
+//
+// 单独开一个方法而不是复用 SetMetadata：后者是整份覆盖，而调用它的时机
+// （收录失败后把原件从暂存目录归档到 failed/<文档ID>/ 下）正好在 MarkFailed
+// 刚写完失败现场之后 —— 用覆盖写法会把 stage / error / failed_at 一起抹掉，
+// 用户就再也看不到这次为什么失败了。
+//
+// 与 MarkFailed 的"先读后写"不同，这里用一条 SQL 做 jsonb 顶层合并就够了：
+// 只改一个键，不需要知道其余键是什么，也就不存在读到旧值再写回去的窗口。
+func (r *knowledgeDocumentRepository) SetUploadPath(ctx context.Context, id uint64, path string) error {
+	return r.db.WithContext(ctx).
+		Model(&entity.KnowledgeDocument{}).
+		Where("id = ?", id).
+		Update("metadata", gorm.Expr("metadata || jsonb_build_object('upload_path', ?::text)", path)).
+		Error
 }
 
 // ListPending 按创建时间正序取待处理文档（先进先出），只做查询、不改状态。
@@ -205,22 +223,39 @@ func (r *knowledgeDocumentRepository) MarkProcessing(ctx context.Context, id uin
 		Updates(map[string]any{"status": entity.KnowledgeDocumentStatusProcessing}).Error
 }
 
-// MarkFailed 在一个事务里把文档推进到 failed，把失败现场写进 metadata，
+// MarkFailed 在一个事务里把文档推进到 failed，把失败现场**合并**进 metadata，
 // 并把原因同步到这次上传的记录上。
 //
 // 两行必须一起改：文档状态是给主页看的，记录状态是给上传记录抽屉看的 ——
 // 只改一处会让同一件事在两个界面上说法不同。
 //
-// reason 是给用户看的那一句话（"解析失败：No module named 'scipy'"），由调用方
-// 从错误里取出后显式传进来。仓储不去解析 metadata 的 JSON 结构：那个结构是收录链路
+// metadata 是合并写回而不是整份覆盖。这张表的 metadata 同时装着两件事：
+// "这一次失败长什么样"（stage / error / failed_at，由收录链路写）与
+// "收录这份文件的输入"（upload_path 指向磁盘上的原件、explicit_title 记着标题要不要
+// 回落到正文标题，由 SubmitFile 写）。覆盖会让后者整体消失，而后果不只是少几个字段：
+// upload_path 没了，失败原件的归档与删除时的清理都找不到它 —— 库里留一行 failed、
+// 磁盘上留一份没人认领的文件，就这么攒出了孤儿。
+//
+// 先读后写放在事务里：调用者是已经抢到这一行的执行者（rag.Worker 的 Claim），
+// 同一行不存在第二个写者，所以不需要行锁。
+//
+// reason 是给用户看的那一句中文（"文档解析失败：解析环境缺少 Python 模块 scipy"），
+// 由调用方从错误里折出来后显式传进来 —— 界面上显示的就是它，不是诊断串。
+// 仓储不去解析 metadata 的 JSON 结构：那个结构是收录链路
 // 与接口层共享的约定，在这里再实现一遍就成了第三份口径。
 func (r *knowledgeDocumentRepository) MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage, reason string) error {
-	updates := map[string]any{"status": entity.KnowledgeDocumentStatusFailed}
-	if len(metadata) > 0 {
-		updates["metadata"] = metadata
-	}
-
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		updates := map[string]any{"status": entity.KnowledgeDocumentStatusFailed}
+		if len(metadata) > 0 {
+			var current entity.KnowledgeDocument
+			err := tx.Model(&entity.KnowledgeDocument{}).
+				Select("metadata").Where("id = ?", id).Take(&current).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			updates["metadata"] = mergeMetadata(current.Metadata, metadata)
+		}
+
 		if err := tx.Model(&entity.KnowledgeDocument{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 			return err
 		}
@@ -233,6 +268,80 @@ func (r *knowledgeDocumentRepository) MarkFailed(ctx context.Context, id uint64,
 				"error_message": utils.OptionalString(reason),
 			}).Error
 	})
+}
+
+// Requeue 把一行 failed 文档改回 pending 重新排队，并清掉上一次的失败现场。
+//
+// 这是"原地重试"的写入口：复用同一行文档、同一条上传记录，不新建任何东西 ——
+// 一份文件一份资产，重试只是让它再跑一遍。返回 false 表示这一行不满足条件
+// （不存在，或状态已经不是 failed 了），调用方据此报"不需要重试"。
+//
+// 条件写在 UPDATE 的 WHERE 里而不是先查再改：两个请求同时点重试时，
+// 只有一个的 RowsAffected 会是 1，另一个拿到 false —— 不需要额外的锁。
+//
+// 清掉的是 stage / error / failed_at 三个键，它们描述的是上一次：
+// 留着会让处理期间的前端一直读到上一轮的失败原因。而 upload_path 与 explicit_title
+// 必须保留 —— 前者是这次重试的输入（原件已归档到 failed/<文档ID>/ 下），
+// 后者决定标题要不要回落到正文标题，丢了会让重试后的标题与第一次不一致。
+//
+// 同一个事务里把上传记录也置回 pending 并清掉 error_message：抽屉里显示的是它。
+// 只改文档不改记录，用户会看到"文档在转圈、记录那一行还说失败"。
+func (r *knowledgeDocumentRepository) Requeue(ctx context.Context, id uint64) (bool, error) {
+	requeued := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&entity.KnowledgeDocument{}).
+			Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusFailed).
+			Updates(map[string]any{
+				"status":   entity.KnowledgeDocumentStatusPending,
+				"metadata": gorm.Expr("metadata - 'stage' - 'error' - 'failed_at'"),
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		requeued = true
+
+		// 手动录入（IngestText）没有上传记录，这里匹配 0 行，无害。
+		return tx.Model(&entity.KnowledgeUploadRecord{}).
+			Where("document_id = ?", id).
+			Updates(map[string]any{
+				"status":        entity.KnowledgeUploadRecordStatusPending,
+				"error_message": nil,
+			}).Error
+	})
+	return requeued, err
+}
+
+// mergeMetadata 把 payload 的顶层键合并到 base 上，同名的键以 payload 为准。
+//
+// 只做顶层合并：这张表的 metadata 里都是扁平键（upload_path / explicit_title /
+// stage / error / failed_at / parser / chunks / model …），没有需要递归的嵌套对象。
+//
+// 任一侧读不成 JSON 对象时都退回 payload：那种情况下没有可合并的东西，
+// 写进这次失败现场比留下一份读不出来的旧值有用。
+func mergeMetadata(base, payload json.RawMessage) json.RawMessage {
+	merged := map[string]any{}
+	if len(base) > 0 {
+		if err := json.Unmarshal(base, &merged); err != nil {
+			merged = map[string]any{}
+		}
+	}
+
+	var incoming map[string]any
+	if err := json.Unmarshal(payload, &incoming); err != nil {
+		return payload
+	}
+	for key, value := range incoming {
+		merged[key] = value
+	}
+
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return payload
+	}
+	return out
 }
 
 // ReplaceChunks 在一个事务里替换切片与向量，并把文档置为 ready。

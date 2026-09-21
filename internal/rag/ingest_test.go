@@ -18,6 +18,7 @@ import (
 
 	"narra/internal/model/entity"
 	"narra/pkg/config"
+	"narra/pkg/documentparser"
 	"narra/pkg/embedding"
 )
 
@@ -80,11 +81,30 @@ func (s *fakeDocumentStore) MarkFailed(ctx context.Context, id uint64, metadata 
 	return nil
 }
 
-// 下面四个方法让替身同时满足 FileTaskStore —— SubmitFile 是异步收录的入口，
-// 它要先断言存储支持任务队列。队列本身（ListPending / Claim / ResetStale）
-// 归 Worker 用，这里给最简实现即可，用例断言的是"任务被记下来了"。
+// 下面六个方法让替身同时满足 FileTaskStore —— SubmitFile 与 Retry 是异步收录的
+// 两个入口，它们都要先断言存储支持任务队列。队列本身（ListPending / Claim /
+// ResetStale）归 Worker 用，这里给最简实现即可，用例断言的是"任务被记下来了"。
+//
+// SetUploadPath 是例外，它按真仓储的语义做合并：失败原件归档后要靠它把指针挪过去，
+// 而那时 metadata 里已经有失败现场 —— 替身若整份覆盖，用例验到的就是替身的偷懒。
 func (s *fakeDocumentStore) SetMetadata(ctx context.Context, id uint64, metadata json.RawMessage) error {
 	s.metadata = metadata
+	return nil
+}
+
+func (s *fakeDocumentStore) SetUploadPath(ctx context.Context, id uint64, path string) error {
+	merged := map[string]any{}
+	if len(s.metadata) > 0 {
+		if err := json.Unmarshal(s.metadata, &merged); err != nil {
+			return err
+		}
+	}
+	merged["upload_path"] = path
+	payload, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	s.metadata = payload
 	return nil
 }
 
@@ -98,6 +118,17 @@ func (s *fakeDocumentStore) Claim(ctx context.Context, id uint64) (bool, error) 
 
 func (s *fakeDocumentStore) ResetStale(ctx context.Context, olderThan time.Time) error {
 	return nil
+}
+
+// Requeue 把这一行改回 pending。替身没有真的状态机，把失败现场清掉、
+// 文档状态改回去即可 —— 用例断言的是"重试被接受，且失败现场没有残留"。
+func (s *fakeDocumentStore) Requeue(ctx context.Context, id uint64) (bool, error) {
+	s.failMeta = nil
+	s.failReason = ""
+	if s.created != nil {
+		s.created.Status = entity.KnowledgeDocumentStatusPending
+	}
+	return true, nil
 }
 
 func (s *fakeDocumentStore) ReplaceChunks(ctx context.Context, id uint64, input entity.ChunkReplacement) error {
@@ -498,6 +529,118 @@ func TestIngestFileFailsWhenEmbeddingFails(t *testing.T) {
 	}
 	if !strings.Contains(payload.Error, "429") {
 		t.Errorf("失败原因应当带上上游的错误，实际 %q", payload.Error)
+	}
+}
+
+// stubParser 是一个固定失败在给定错误上的解析器替身。
+//
+// 用它而不是 errors.New：要验的正是"解析器的错误怎么折成给用户看的一句话"，
+// 换成普通错误就绕开了那条路径，只有真的 *documentparser.Error 才走得进去。
+type stubParser struct {
+	err error
+}
+
+var _ documentparser.Parser = (*stubParser)(nil)
+
+func (p *stubParser) Parse(context.Context, documentparser.Request) (*documentparser.Result, error) {
+	return nil, p.err
+}
+
+func (p *stubParser) Status(context.Context) documentparser.Status {
+	return documentparser.Status{Ready: true, Source: "stub"}
+}
+
+// newIngesterWithParser 造的收录器只在解析这一步与 newIngesterWith 不同：
+// 解析器换成给定的桩，向量化仍走确定的桩，整条链路不碰外部世界。
+func newIngesterWithParser(store DocumentStore, parser documentparser.Parser) *Ingester {
+	ingester := NewIngester(store, &fakeUploadRecordStore{}, newFakeModels(), embedding.NewManager(testEmbeddingConfig()), parser)
+	ingester.newEmbedder = func() (Embedder, error) { return &stubEmbedder{dimension: testVectorDims}, nil }
+	return ingester
+}
+
+// TestIngestFileWritesReadableFailureReason 失败原因落库的是"给用户看的一句中文"，
+// 完整诊断另存一处。
+//
+// 这两个键曾经是同一个字符串（Go 的 err.Error()），界面上因此显示成
+// "PARSER_FAILED: 文档解析失败 (stderr: parser failed: No module named 'scipy')"。
+// 用例把两边都钉住：error 里不许出现错误码与 stderr，error_detail 里一字不少。
+func TestIngestFileWritesReadableFailureReason(t *testing.T) {
+	store := &fakeDocumentStore{}
+	parserErr := &documentparser.Error{
+		Code:    documentparser.CodeFailed,
+		Message: "文档解析失败",
+		Stderr:  "parser failed: No module named 'scipy'",
+	}
+	ingester := newIngesterWithParser(store, &stubParser{err: parserErr})
+
+	// 后缀必须落到 python 解析器上：md / txt 归纯文本解析器，压根不会调到这里。
+	path := writeTempFile(t, "报告.docx", "内容由桩决定，不看字节")
+
+	if _, err := ingester.IngestFile(context.Background(), FileInput{Path: path}); err == nil {
+		t.Fatal("解析失败时收录必须报错")
+	}
+
+	var payload struct {
+		Stage       string `json:"stage"`
+		Error       string `json:"error"`
+		ErrorDetail string `json:"error_detail"`
+		ErrorCode   string `json:"error_code"`
+	}
+	if err := json.Unmarshal(store.failMeta, &payload); err != nil {
+		t.Fatalf("失败现场不是合法 JSON: %v", err)
+	}
+
+	if payload.Stage != "parse" {
+		t.Errorf("失败阶段 = %q，期望 parse", payload.Stage)
+	}
+	if want := "文档解析失败：解析环境缺少 Python 模块 scipy"; payload.Error != want {
+		t.Errorf("给用户看的原因 = %q，期望 %q", payload.Error, want)
+	}
+	for _, banned := range []string{"PARSER_", "stderr", "No module named"} {
+		if strings.Contains(payload.Error, banned) {
+			t.Errorf("给用户看的原因里不该出现 %q，实际 %q", banned, payload.Error)
+		}
+	}
+	if payload.ErrorCode != documentparser.CodeFailed {
+		t.Errorf("错误码 = %q，期望 %q", payload.ErrorCode, documentparser.CodeFailed)
+	}
+	if want := parserErr.Error(); payload.ErrorDetail != want {
+		t.Errorf("完整诊断 = %q，期望 %q", payload.ErrorDetail, want)
+	}
+	// 上传记录的 error_message 是抽屉里直接显示的那句话，必须与文档的 error 同源 ——
+	// 两处说法漂移的话，同一个失败在弹层与抽屉里会是两个说法。
+	if store.failReason != payload.Error {
+		t.Errorf("上传记录的原因 = %q，应与 metadata 的 error 一致", store.failReason)
+	}
+}
+
+// TestIngestFileKeepsNonParserFailureReason 非解析器的错误原样保留。
+//
+// 向量化、切分、落库这几条路本来就是 Go 侧直接写的中文，没有错误码与 stderr 可摘 ——
+// 若把它们也"本地化"一遍，只会把有用的细节洗掉。
+func TestIngestFileKeepsNonParserFailureReason(t *testing.T) {
+	store := &fakeDocumentStore{}
+	embedder := &stubEmbedder{dimension: testVectorDims, err: fmt.Errorf("第 1~16 个切片向量化失败: 上游返回 429")}
+	ingester := newTestIngester(store, embedder)
+
+	path := writeTempFile(t, "正常.md", "# 标题\n\n"+strings.Repeat("正文。", 100))
+	if _, err := ingester.IngestFile(context.Background(), FileInput{Path: path}); err == nil {
+		t.Fatal("向量化失败时收录必须报错")
+	}
+
+	var payload struct {
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_code"`
+	}
+	if err := json.Unmarshal(store.failMeta, &payload); err != nil {
+		t.Fatalf("失败现场不是合法 JSON: %v", err)
+	}
+	if !strings.Contains(payload.Error, "429") {
+		t.Errorf("给用户看的原因应当带上上游的错误，实际 %q", payload.Error)
+	}
+	// 没有错误码就不写这个键：时有时无的键会让按码检索的人以为"这条没记"。
+	if payload.ErrorCode != "" {
+		t.Errorf("非解析器错误不该有错误码，实际 %q", payload.ErrorCode)
 	}
 }
 
