@@ -14,7 +14,7 @@ import "time"
 // 而且必须显式写 autoIncrement:false —— GORM 只要发现主键是整数类型、tag 里又没出现
 // autoIncrement 这个 key，就会无条件把它当成自增（schema.go 的 PrioritizedPrimaryField 分支），迁移时给这个列建出一个多余的序列。
 type BaseModel struct {
-	ID        uint64    `gorm:"column:id;primaryKey;autoIncrement" json:"id"`                // 主键
-	CreatedAt time.Time `gorm:"column:created_at;not null;autoCreateTime" json:"created_at"` // 创建时间
-	UpdatedAt time.Time `gorm:"column:updated_at;not null;autoUpdateTime" json:"updated_at"` // 更新时间
+	ID        uint64    `gorm:"column:id;primaryKey;autoIncrement;comment:主键，bigint 自增（库内是 GENERATED ALWAYS AS IDENTITY）" json:"id"` // 主键
+	CreatedAt time.Time `gorm:"column:created_at;not null;autoCreateTime;comment:创建时间，timestamptz，按 UTC 存" json:"created_at"`        // 创建时间
+	UpdatedAt time.Time `gorm:"column:updated_at;not null;autoUpdateTime;comment:最后修改时间，timestamptz，按 UTC 存" json:"updated_at"`      // 更新时间
 }

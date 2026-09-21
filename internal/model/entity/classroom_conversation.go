@@ -19,13 +19,13 @@ const (
 type ClassroomConversation struct {
 	BaseModel
 
-	ClassroomID   uint64     `gorm:"column:classroom_id;not null;index:idx_classroom_conversations_recent" json:"classroom_id"`
-	OriginSceneID *uint64    `gorm:"column:origin_scene_id" json:"origin_scene_id"`
-	Title         string     `gorm:"column:title;type:varchar(200);not null" json:"title"`
-	Type          string     `gorm:"column:type;type:varchar(32);not null;check:classroom_conversations_type_check,type IN ('qa', 'discussion', 'lecture')" json:"type"`
-	Status        string     `gorm:"column:status;type:varchar(32);not null;default:active;check:classroom_conversations_status_check,status IN ('active', 'closed')" json:"status"`
-	LastMessageAt *time.Time `gorm:"column:last_message_at;index:idx_classroom_conversations_recent,sort:DESC" json:"last_message_at"`
-	EndedAt       *time.Time `gorm:"column:ended_at" json:"ended_at"`
+	ClassroomID   uint64     `gorm:"column:classroom_id;not null;index:idx_classroom_conversations_recent;comment:所属课程 ID，指向 classrooms.id；课程删除时级联删除" json:"classroom_id"`
+	OriginSceneID *uint64    `gorm:"column:origin_scene_id;comment:这次会话由哪一页场景发起，指向 scenes.id；场景被删除时置空" json:"origin_scene_id"`
+	Title         string     `gorm:"column:title;type:varchar(200);not null;comment:会话标题" json:"title"`
+	Type          string     `gorm:"column:type;type:varchar(32);not null;check:classroom_conversations_type_check,type IN ('qa', 'discussion', 'lecture');comment:会话类型，取值 qa（问答）/ discussion（讨论）/ lecture（讲授）" json:"type"`
+	Status        string     `gorm:"column:status;type:varchar(32);not null;default:active;check:classroom_conversations_status_check,status IN ('active', 'closed');comment:会话状态，取值 active（进行中）/ closed（已结束）" json:"status"`
+	LastMessageAt *time.Time `gorm:"column:last_message_at;index:idx_classroom_conversations_recent,sort:DESC;comment:最后一条消息的时间；列表按它倒序，为空表示还没有人说过话" json:"last_message_at"`
+	EndedAt       *time.Time `gorm:"column:ended_at;comment:会话结束时间；未结束时为空" json:"ended_at"`
 
 	// Classroom / OriginScene 仅供 AutoMigrate 建外键（分别 ON DELETE CASCADE / SET NULL）。
 	// 业务代码禁止给它们赋值或 Preload。

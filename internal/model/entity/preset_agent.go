@@ -59,20 +59,20 @@ const (
 type PresetAgent struct {
 	BaseModel
 
-	AgentKey string `gorm:"column:agent_key;type:varchar(80);not null;unique" json:"agent_key"` // 稳定标识，前后端契约，如 teacher、clown；改它等于换了一个角色
+	AgentKey string `gorm:"column:agent_key;type:varchar(80);not null;unique;comment:角色稳定标识，前后端契约，如 teacher / clown；全局唯一，改它等于换了一个角色" json:"agent_key"` // 稳定标识，前后端契约，如 teacher、clown；改它等于换了一个角色
 
-	Name     string `gorm:"column:name;type:varchar(120);not null" json:"name"`                                                                                               // 展示名，如「陈老师」
-	Role     string `gorm:"column:role;type:varchar(120);not null" json:"role"`                                                                                               // 展示定位，如「主讲」「质疑」
-	RoleType string `gorm:"column:role_type;type:varchar(32);not null;check:preset_agents_role_type_check,role_type IN ('teacher', 'assistant', 'student')" json:"role_type"` // teacher | assistant | student；决定用哪份角色层提示词，也决定挑选名额
+	Name     string `gorm:"column:name;type:varchar(120);not null;comment:展示名，如「陈老师」" json:"name"`                                                                                                                                                  // 展示名，如「陈老师」
+	Role     string `gorm:"column:role;type:varchar(120);not null;comment:展示定位，如「主讲」「质疑」" json:"role"`                                                                                                                                              // 展示定位，如「主讲」「质疑」
+	RoleType string `gorm:"column:role_type;type:varchar(32);not null;check:preset_agents_role_type_check,role_type IN ('teacher', 'assistant', 'student');comment:角色大类，取值 teacher / assistant / student；决定用哪份角色层提示词，也决定随机挑选时的名额" json:"role_type"` // teacher | assistant | student；决定用哪份角色层提示词，也决定挑选名额
 
-	Persona string `gorm:"column:persona;type:varchar(1000);not null" json:"persona"` // 人设与说话风格；前端信息卡正文 + 提示词里的 {{persona}}
+	Persona string `gorm:"column:persona;type:varchar(1000);not null;comment:人设与说话风格；既是前端信息卡正文，也是提示词里的 {{persona}} 槽位" json:"persona"` // 人设与说话风格；前端信息卡正文 + 提示词里的 {{persona}}
 
-	Avatar  string `gorm:"column:avatar;type:varchar(255);not null" json:"avatar"`     // 头像资源路径，指向 frontend/public/avatars 下的文件
-	Color   string `gorm:"column:color;type:varchar(16);not null" json:"color"`        // 界面主题色，如 #722ed1
-	VoiceID string `gorm:"column:voice_id;type:varchar(120);not null" json:"voice_id"` // 默认音色 ID，取值必须在 service.IsValidVoiceID 的目录内
+	Avatar  string `gorm:"column:avatar;type:varchar(255);not null;comment:头像资源路径，指向 frontend/public/avatars 下的文件" json:"avatar"` // 头像资源路径，指向 frontend/public/avatars 下的文件
+	Color   string `gorm:"column:color;type:varchar(16);not null;comment:界面主题色，如 #722ed1" json:"color"`                           // 界面主题色，如 #722ed1
+	VoiceID string `gorm:"column:voice_id;type:varchar(120);not null;comment:默认音色 ID，取值必须在语音目录内" json:"voice_id"`                 // 默认音色 ID，取值必须在 service.IsValidVoiceID 的目录内
 
-	SortOrder int32 `gorm:"column:sort_order;not null;unique;check:preset_agents_sort_order_check,sort_order >= 0" json:"sort_order"` // 前端角色列表的展示顺序；唯一，否则顺序不确定
-	Enabled   bool  `gorm:"column:enabled;not null;default:true" json:"enabled"`                                                      // 是否可被挑中；下架用 false
+	SortOrder int32 `gorm:"column:sort_order;not null;unique;check:preset_agents_sort_order_check,sort_order >= 0;comment:前端角色列表的展示顺序；唯一，否则顺序不确定" json:"sort_order"` // 前端角色列表的展示顺序；唯一，否则顺序不确定
+	Enabled   bool  `gorm:"column:enabled;not null;default:true;comment:是否可被挑中；下架用 false，不要删行" json:"enabled"`                                                       // 是否可被挑中；下架用 false
 }
 
 // TableName 返回表名。

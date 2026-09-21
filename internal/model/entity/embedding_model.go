@@ -22,13 +22,13 @@ const EmbeddingProviderOpenAICompatible = "openai-compatible"
 type EmbeddingModel struct {
 	BaseModel
 
-	Name         string  `gorm:"column:name;type:varchar(160);not null;unique" json:"name"`                                                  // 模型名称或服务端模型 ID，如 text-embedding-3-small
-	Provider     string  `gorm:"column:provider;type:varchar(80);not null" json:"provider"`                                                  // 模型服务提供方或协议类型，如 openai-compatible
-	BaseURL      *string `gorm:"column:base_url;type:text" json:"base_url"`                                                                  // 该模型的服务根地址；为空时由应用的全局 embedding 配置提供
-	Dimensions   int32   `gorm:"column:dimensions;not null;check:embedding_models_dimensions_check,dimensions > 0" json:"dimensions"`        // 模型固定输出的向量维度
-	ModelVersion *string `gorm:"column:model_version;type:varchar(160)" json:"model_version"`                                                // 可选的提供方模型版本，用于追踪模型升级
-	IsDefault    bool    `gorm:"column:is_default;not null;uniqueIndex:embedding_models_one_default_idx,where:is_default" json:"is_default"` // 是否为线上 RAG 检索默认使用的模型
-	Enabled      bool    `gorm:"column:enabled;not null" json:"enabled"`                                                                     // 是否允许继续为知识切片生成或检索该模型的向量
+	Name         string  `gorm:"column:name;type:varchar(160);not null;unique;comment:模型名称或服务端模型 ID，如 text-embedding-3-small；全局唯一" json:"name"`                                          // 模型名称或服务端模型 ID，如 text-embedding-3-small
+	Provider     string  `gorm:"column:provider;type:varchar(80);not null;comment:服务方协议类型，目前固定为 openai-compatible" json:"provider"`                                                      // 模型服务提供方或协议类型，如 openai-compatible
+	BaseURL      *string `gorm:"column:base_url;type:text;comment:该模型的服务根地址；为空时回落到全局 embedding 配置" json:"base_url"`                                                                      // 该模型的服务根地址；为空时由应用的全局 embedding 配置提供
+	Dimensions   int32   `gorm:"column:dimensions;not null;check:embedding_models_dimensions_check,dimensions > 0;comment:模型固定输出的向量维度，必须与模型真实维度一致" json:"dimensions"`                    // 模型固定输出的向量维度
+	ModelVersion *string `gorm:"column:model_version;type:varchar(160);comment:可选的提供方模型版本，用于追踪模型升级" json:"model_version"`                                                                // 可选的提供方模型版本，用于追踪模型升级
+	IsDefault    bool    `gorm:"column:is_default;not null;uniqueIndex:embedding_models_one_default_idx,where:is_default;comment:是否为线上检索默认使用的模型；全表最多一条为 true（部分唯一索引）" json:"is_default"` // 是否为线上 RAG 检索默认使用的模型
+	Enabled      bool    `gorm:"column:enabled;not null;comment:是否允许继续用该模型生成或检索向量" json:"enabled"`                                                                                       // 是否允许继续为知识切片生成或检索该模型的向量
 }
 
 func (EmbeddingModel) TableName() string { return "embedding_models" }

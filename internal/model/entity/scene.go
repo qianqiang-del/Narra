@@ -42,12 +42,12 @@ const (
 type Scene struct {
 	BaseModel
 
-	ClassroomID uint64 `gorm:"column:classroom_id;not null;uniqueIndex:scenes_classroom_id_sort_order_key" json:"classroom_id"`                                           // 所属课程；级联删除
-	SortOrder   int32  `gorm:"column:sort_order;not null;uniqueIndex:scenes_classroom_id_sort_order_key;check:scenes_sort_order_check,sort_order >= 0" json:"sort_order"` // 场景顺序，从 0 开始
-	Type        string `gorm:"column:type;type:varchar(32);not null;check:scenes_type_check,type IN ('slide', 'quiz', 'interactive', 'pbl', 'complete')" json:"type"`     // 场景分类标签，不参与渲染；slide | quiz | interactive | pbl | complete
-	Title       string `gorm:"column:title;type:varchar(200);not null" json:"title"`                                                                                      // 场景标题；由大模型产出，写入前须按字符截断到 200 以内
+	ClassroomID uint64 `gorm:"column:classroom_id;not null;uniqueIndex:scenes_classroom_id_sort_order_key;comment:所属课程 ID，指向 classrooms.id；课程删除时级联删除" json:"classroom_id"`                                                                                                 // 所属课程；级联删除
+	SortOrder   int32  `gorm:"column:sort_order;not null;uniqueIndex:scenes_classroom_id_sort_order_key;check:scenes_sort_order_check,sort_order >= 0;comment:场景在课程里的顺序，从 0 开始；与 classroom_id 组成唯一约束" json:"sort_order"`                                                   // 场景顺序，从 0 开始
+	Type        string `gorm:"column:type;type:varchar(32);not null;check:scenes_type_check,type IN ('slide', 'quiz', 'interactive', 'pbl', 'complete');comment:场景分类标签，不参与渲染（前端按 content 里每个 block 的 type 渲染），取值 slide / quiz / interactive / pbl / complete" json:"type"` // 场景分类标签，不参与渲染；slide | quiz | interactive | pbl | complete
+	Title       string `gorm:"column:title;type:varchar(200);not null;comment:场景标题；由大模型产出，写入前截断到 200 字以内" json:"title"`                                                                                                                                                    // 场景标题；由大模型产出，写入前须按字符截断到 200 以内
 
-	Status string `gorm:"column:status;type:varchar(32);not null;check:scenes_status_check,status IN ('pending', 'generating', 'ready', 'failed')" json:"status"` // 场景状态，见 §5.2；Ready = 页面 JSON 与全部讲解段落都已就绪
+	Status string `gorm:"column:status;type:varchar(32);not null;check:scenes_status_check,status IN ('pending', 'generating', 'ready', 'failed');comment:场景状态，取值 pending / generating / ready / failed；ready 表示页面 JSON 与它全部讲解段落都已就绪" json:"status"` // 场景状态，见 §5.2；Ready = 页面 JSON 与全部讲解段落都已就绪
 
 	// Classroom 仅供 AutoMigrate 建外键 scenes_classroom_id_fkey（ON DELETE CASCADE）。
 	// 业务代码禁止给它赋值或 Preload。
@@ -62,14 +62,14 @@ type Scene struct {
 	//
 	// block 是最小的可高亮单位：content_key 只指向具体 block，不支持 list.2 这类子路径，
 	// 所以列表的每个要点、分栏里的每个条目都各占一个 block。
-	Content json.RawMessage `gorm:"column:content;type:jsonb;not null;default:'{}'" json:"content"`
+	Content json.RawMessage `gorm:"column:content;type:jsonb;not null;default:'{}';comment:页面内容 JSON，固定是一个 blocks 数组（形如 {“blocks”: [...]}）；前端按每个 block 的 type 渲染，block.key 是讲解段落挂钩子的地方" json:"content"`
 
 	// ErrorMessage 本场景生成失败的错误摘要。一页失败不会中断流程——跳过它、继续生成后面的
 	// 场景，所以这一页为什么没出得来只有这里记。与 classrooms.generation_error 分工不同：
 	// 那边记的是「这门课为什么没做完」，这一列记的是「这一页为什么没生成出来」。
 	// 只写能给人看的摘要，禁止写入原始 API 响应、堆栈和密钥，落库前按字符截断（建议 500）。
 	// 类型用 text 而非 varchar：varchar 超长是报错，会把整个生成事务回滚掉。
-	ErrorMessage *string `gorm:"column:error_message;type:text" json:"error_message"`
+	ErrorMessage *string `gorm:"column:error_message;type:text;comment:这一页为什么没生成出来的一句话；一页失败不中断整门课，后面的场景继续生成" json:"error_message"`
 }
 
 // TableName 返回表名。
