@@ -284,7 +284,7 @@ func TestKnowledgeStatusUpdatesBumpUpdatedAt(t *testing.T) {
 	}
 
 	metadata := json.RawMessage(`{"stage":"embed","error":"上游 429"}`)
-	if err := repo.MarkFailed(ctx, document.ID, metadata); err != nil {
+	if err := repo.MarkFailed(ctx, document.ID, metadata, "上游 429"); err != nil {
 		t.Fatalf("标记失败状态出错: %v", err)
 	}
 	failed, err := repo.GetByID(ctx, document.ID)
@@ -388,7 +388,7 @@ func TestKnowledgeListFiltersByStatusAndKeyword(t *testing.T) {
 	if err := repo.Create(ctx, failed); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
-	if err := repo.MarkFailed(ctx, failed.ID, json.RawMessage(`{"error":"测试失败"}`)); err != nil {
+	if err := repo.MarkFailed(ctx, failed.ID, json.RawMessage(`{"error":"测试失败"}`), "测试失败"); err != nil {
 		t.Fatalf("标记失败状态出错: %v", err)
 	}
 
@@ -486,7 +486,7 @@ func TestKnowledgeCountActiveExcludesFinished(t *testing.T) {
 	if err := repo.Create(ctx, failed); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
-	if err := repo.MarkFailed(ctx, failed.ID, json.RawMessage(`{"error":"测试失败"}`)); err != nil {
+	if err := repo.MarkFailed(ctx, failed.ID, json.RawMessage(`{"error":"测试失败"}`), "测试失败"); err != nil {
 		t.Fatalf("标记失败状态出错: %v", err)
 	}
 	afterFailed, err := repo.CountActive(ctx)

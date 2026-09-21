@@ -339,13 +339,22 @@ export default {
     records: {
       title: 'Upload records',
       count: '{total} items',
-      hint: 'Only documents that have not been ingested yet (pending / processing / failed). Successful ones move to the main page.',
+      hint: 'Every file you have uploaded, including successful ones. A record stays after its document is deleted, and its status becomes “Ingested, then deleted”.',
       empty: 'No upload records yet',
       removed: 'Record deleted',
+      status: {
+        ready: 'Ingested',
+        removed: 'Ingested, then deleted',
+        processing: 'Processing',
+        failed: 'Failed',
+      },
+      col: {
+        created: 'Uploaded',
+      },
       remove: {
         title: 'Delete upload record',
         message: 'Delete the upload record “{title}”?',
-        note: 'This record points at a document that was never ingested. Deleting it also clears its temporary files; ingested knowledge bases are unaffected.',
+        note: 'For a record that has not been ingested yet, deleting it also removes that document and its temporary files. Ingested knowledge bases are unaffected.',
       },
     },
     upload: {

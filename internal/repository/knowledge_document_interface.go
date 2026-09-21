@@ -50,10 +50,12 @@ type KnowledgeDocumentRepository interface {
 	// MarkProcessing 把文档推进到 processing，表示后台正在解析或向量化。
 	MarkProcessing(ctx context.Context, id uint64) error
 
-	// MarkFailed 把文档推进到 failed，并把失败现场写进 metadata。
+	// MarkFailed 把文档推进到 failed，并把失败现场写进 metadata、把原因同步到
+	// 这次上传的记录上（两处在同一个事务里，见实现）。
 	// metadata 必须是一份完整的 JSON 对象（可以带阶段、原因、时间），
 	// 仓储不负责和旧值合并 —— 合并规则属于业务语义。
-	MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage) error
+	// reason 是给用户看的那一句话，为空时记录的失败原因清空。
+	MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage, reason string) error
 
 	// ReplaceChunks 用一个事务完成"换掉这篇文档的全部切片与向量，并把文档标记为可检索"。
 	//

@@ -41,7 +41,9 @@ const (
 type fakeDocumentStore struct {
 	created    *entity.KnowledgeDocument
 	replaced   *entity.ChunkReplacement
+	metadata   json.RawMessage
 	failMeta   json.RawMessage
+	failReason string
 	processing bool
 	replaceErr error
 	chunkCount int64
@@ -72,8 +74,29 @@ func (s *fakeDocumentStore) MarkProcessing(ctx context.Context, id uint64) error
 	return nil
 }
 
-func (s *fakeDocumentStore) MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage) error {
+func (s *fakeDocumentStore) MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage, reason string) error {
 	s.failMeta = metadata
+	s.failReason = reason
+	return nil
+}
+
+// 下面四个方法让替身同时满足 FileTaskStore —— SubmitFile 是异步收录的入口，
+// 它要先断言存储支持任务队列。队列本身（ListPending / Claim / ResetStale）
+// 归 Worker 用，这里给最简实现即可，用例断言的是"任务被记下来了"。
+func (s *fakeDocumentStore) SetMetadata(ctx context.Context, id uint64, metadata json.RawMessage) error {
+	s.metadata = metadata
+	return nil
+}
+
+func (s *fakeDocumentStore) ListPending(ctx context.Context, limit int) ([]entity.KnowledgeDocument, error) {
+	return nil, nil
+}
+
+func (s *fakeDocumentStore) Claim(ctx context.Context, id uint64) (bool, error) {
+	return true, nil
+}
+
+func (s *fakeDocumentStore) ResetStale(ctx context.Context, olderThan time.Time) error {
 	return nil
 }
 
@@ -109,6 +132,25 @@ func (s *fakeDocumentStore) status() string {
 		return s.created.Status
 	}
 	return ""
+}
+
+// fakeUploadRecordStore 是 UploadRecordStore 的内存替身。
+//
+// 只有建记录这一个方法 —— 记录的状态推进不从这里走：置 ready 与置 failed 由
+// DocumentStore 的 ReplaceChunks / MarkFailed 在事务里顺带完成，替身也就不必实现它们。
+type fakeUploadRecordStore struct {
+	created *entity.KnowledgeUploadRecord
+	err     error
+}
+
+var _ UploadRecordStore = (*fakeUploadRecordStore)(nil)
+
+func (s *fakeUploadRecordStore) CreateUploadRecord(ctx context.Context, record *entity.KnowledgeUploadRecord) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.created = record
+	return nil
 }
 
 // fakeModelRegistry 是 ModelRegistry 的内存替身。
@@ -190,8 +232,11 @@ func newFakeModels() *fakeModelRegistry {
 
 // newIngesterWith 是测试用的完整构造：parser 固定传 nil（只走纯文本，完全离线），
 // 向量化换成桩 —— 走真实的 newEmbedder 会去连 example.test。
+//
+// 上传记录先挂一个空的替身。需要断言记录内容的用例，在拿到 ingester 之后
+// 直接换掉 ingester.records（同包可见）即可。
 func newIngesterWith(store DocumentStore, models ModelRegistry, embedder Embedder, cfg config.EmbeddingConfig) *Ingester {
-	ingester := NewIngester(store, models, embedding.NewManager(cfg), nil)
+	ingester := NewIngester(store, &fakeUploadRecordStore{}, models, embedding.NewManager(cfg), nil)
 	ingester.newEmbedder = func() (Embedder, error) {
 		if embedder == nil {
 			return nil, fmt.Errorf("用例没有提供向量桩")
@@ -312,6 +357,72 @@ func TestIngestFileStoresChunksAndVectors(t *testing.T) {
 		if want := strconv.Itoa(utf8.RuneCountInString(chunk.Content)); head != want {
 			t.Fatalf("第 %d 个向量与切片错位：向量首维 %s，切片长度 %s", index, head, want)
 		}
+	}
+}
+
+// TestSubmitFileCreatesUploadRecord 提交时除了建 pending 文档，还要建一条 pending 记录 ——
+// 抽屉里那条"处理中"就是从记录读出来的。
+func TestSubmitFileCreatesUploadRecord(t *testing.T) {
+	store := &fakeDocumentStore{}
+	records := &fakeUploadRecordStore{}
+	ingester := newIngesterWith(store, newFakeModels(), nil, testEmbeddingConfig())
+	ingester.records = records
+
+	path := writeTempFile(t, "设计.md", "# 标题\n\n正文。")
+	result, err := ingester.SubmitFile(context.Background(), FileInput{
+		Path:      path,
+		SourceURI: "设计文档.md",
+		SizeBytes: 4096,
+	})
+	if err != nil {
+		t.Fatalf("提交失败: %v", err)
+	}
+	if result.Document == nil || result.Document.Status != entity.KnowledgeDocumentStatusPending {
+		t.Fatalf("提交后应当是 pending 文档，实际 %+v", result.Document)
+	}
+	// 暂存路径必须记进 metadata —— worker 靠它找到要解析的文件。
+	var taskMetadata map[string]any
+	if err := json.Unmarshal(store.metadata, &taskMetadata); err != nil {
+		t.Fatalf("任务元数据不是合法 JSON: %v", err)
+	}
+	if taskMetadata["upload_path"] != path {
+		t.Errorf("upload_path = %v，期望 %q", taskMetadata["upload_path"], path)
+	}
+	if records.created == nil {
+		t.Fatal("提交时必须建一条上传记录")
+	}
+
+	record := records.created
+	if record.DocumentID == nil || *record.DocumentID != result.Document.ID {
+		t.Errorf("记录的 document_id = %v，期望指向文档 %d", record.DocumentID, result.Document.ID)
+	}
+	if record.OriginalName != "设计文档.md" {
+		t.Errorf("原始文件名 = %q，期望取 SourceURI", record.OriginalName)
+	}
+	if record.SizeBytes != 4096 {
+		t.Errorf("字节数 = %d，期望 4096", record.SizeBytes)
+	}
+	if record.Status != entity.KnowledgeUploadRecordStatusPending {
+		t.Errorf("记录状态 = %q，期望 pending", record.Status)
+	}
+}
+
+// TestSubmitFileSurvivesRecordFailure 建记录失败不该让提交跟着失败。
+//
+// 记录只是历史：在这里把错误交回去，用户会看到"上传失败"，而文档行其实已经建好、
+// worker 也照样会把它收录成功 —— 一个"报错但其实成功了"的假象更难解释。
+func TestSubmitFileSurvivesRecordFailure(t *testing.T) {
+	store := &fakeDocumentStore{}
+	ingester := newIngesterWith(store, newFakeModels(), nil, testEmbeddingConfig())
+	ingester.records = &fakeUploadRecordStore{err: fmt.Errorf("写库失败")}
+
+	path := writeTempFile(t, "设计.md", "# 标题\n\n正文。")
+	result, err := ingester.SubmitFile(context.Background(), FileInput{Path: path})
+	if err != nil {
+		t.Fatalf("建记录失败不该阻断提交: %v", err)
+	}
+	if result.Document == nil || result.Document.ID == 0 {
+		t.Errorf("文档行已经建好，应当照常返回，实际 %+v", result.Document)
 	}
 }
 

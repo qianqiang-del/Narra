@@ -42,6 +42,16 @@ type KnowledgeService interface {
 	// status 已校验并拆成列表）。直接传零值等价于"第一页、默认页长、不限条件"。
 	List(ctx context.Context, query requestdto.KnowledgeListQuery) ([]responsedto.KnowledgeDocument, int64, error)
 
+	// ListUploadRecords 分页返回上传记录 —— 文件投递的历史流水，含已经收录成功的那些。
+	//
+	// 它与 List 是两份不同的东西：List 列的是资产（能参与检索的文档），这里列的是动作
+	// （谁在什么时候投了什么文件、成没成）。两者靠 document_id 弱关联，删一个不影响另一个。
+	ListUploadRecords(ctx context.Context, page, size int) ([]responsedto.KnowledgeUploadRecord, int64, error)
+
+	// DeleteUploadRecord 删除一条记录；关联文档尚未收录成功时把它一起删掉。
+	// 记录不存在时返回带明确说明的错误。
+	DeleteUploadRecord(ctx context.Context, id uint64) error
+
 	// Get 返回单篇文档。文档不存在时返回带明确说明的错误。
 	Get(ctx context.Context, id uint64) (responsedto.KnowledgeDocument, error)
 

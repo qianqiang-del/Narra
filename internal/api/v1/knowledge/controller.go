@@ -111,6 +111,8 @@ func (c *Controller) Upload(ctx *gin.Context) {
 		SourceType: entity.KnowledgeDocumentSourceImport,
 		// 来源标识用用户看到的原始文件名，而不是服务器上的临时路径。
 		SourceURI: filepath.Base(header.Filename),
+		// 字节数取自接收到的文件头，是这份文件在上传记录里唯一能显示的大小信息。
+		SizeBytes: header.Size,
 	})
 	accepted = err == nil
 	if err != nil {
@@ -170,6 +172,38 @@ func (c *Controller) List(ctx *gin.Context) {
 		return
 	}
 	response.Success(ctx, response.NewPageResponse(documents, total, query.Page, query.Size))
+}
+
+// ListUploadRecords 分页返回上传记录（文件投递的历史流水）。
+//
+// 与 List 的区别在数据源：那边是文档（知识资产），这边是记录（投递动作）。
+// 所以这里没有 status / keyword 筛选 —— 记录就是一条流水，按时间倒序列出来即可。
+func (c *Controller) ListUploadRecords(ctx *gin.Context) {
+	page, size := service.NormalizePage(queryInt(ctx, "page", 1), queryInt(ctx, "size", 20))
+
+	records, total, err := c.svc.ListUploadRecords(ctx.Request.Context(), page, size)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+	response.Success(ctx, response.NewPageResponse(records, total, page, size))
+}
+
+// DeleteUploadRecord 删除一条上传记录。
+//
+// 若它对应的文档还没收录成功，服务层会连同那份文档一起删（连带删除的判定在仓储里）。
+// 已经收录成功的文档不受影响 —— 那种情况下只是这条投递历史消失了。
+func (c *Controller) DeleteUploadRecord(ctx *gin.Context) {
+	id, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.BadRequest(ctx, "记录 ID 无效")
+		return
+	}
+	if err := c.svc.DeleteUploadRecord(ctx.Request.Context(), id); err != nil {
+		response.BadRequest(ctx, err.Error())
+		return
+	}
+	response.SuccessWithMessage(ctx, "记录已删除", nil)
 }
 
 // Get 返回单篇文档。

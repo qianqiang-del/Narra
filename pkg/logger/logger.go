@@ -12,8 +12,14 @@ import (
 )
 
 var (
-	log   *zap.Logger
-	sugar *zap.SugaredLogger
+	// 未 Init 时给一个 no-op logger，而不是留 nil。
+	//
+	// 留 nil 的代价在测试里立刻显形：任何走到 logger.Error 的分支都会 nil pointer
+	// panic，把"少一条日志"变成"整个进程崩掉" —— failIngest 里那句"记录失败原因时
+	// 出错不该影响给用户的答复"就完全失效了。生产路径上服务启动必定先 Init，
+	// 所以这个兜底只影响没初始化就调用的场景（测试、工具脚本）。
+	log   = zap.NewNop()
+	sugar = log.Sugar()
 )
 
 // Init 初始化日志系统
