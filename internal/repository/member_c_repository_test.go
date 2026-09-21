@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,6 +96,7 @@ type memberCTestFixture struct {
 	messages      MessageRepository
 	runs          RunRepository
 	turns         TurnRepository
+	compactions   ContextCompactionRepository
 	tx            TransactionManager
 	cleanup       func()
 }
@@ -124,6 +126,7 @@ func newMemberCTestFixture(t *testing.T) *memberCTestFixture {
 		messages:      NewMessageRepository(db),
 		runs:          NewRunRepository(db),
 		turns:         NewTurnRepository(db),
+		compactions:   NewContextCompactionRepository(db),
 		tx:            NewTransactionManager(db),
 	}
 
@@ -147,6 +150,10 @@ func newMemberCTestFixture(t *testing.T) *memberCTestFixture {
 		db.Where("run_id IN (?)", runIDs).Delete(&entity.AgentTurn{})
 		db.Where("conversation_id = ?", conversation.ID).Delete(&entity.OrchestrationRun{})
 		db.Where("conversation_id = ?", conversation.ID).Delete(&entity.ConversationMessage{})
+		// 摘要也要显式删。它自引用（previous_compaction_id → 自己），而且有
+		// UNIQUE (conversation_id, covered_to_sequence)：留着不仅算残留，
+		// 还会让下一次用例存同一个 covered_to 时撞唯一约束，症状看起来像"实现写错了"。
+		db.Where("conversation_id = ?", conversation.ID).Delete(&entity.ContextCompaction{})
 		db.Where("id = ?", conversation.ID).Delete(&entity.ClassroomConversation{})
 		db.Where("id = ?", classroom.ID).Delete(&entity.Classroom{})
 
@@ -425,5 +432,118 @@ func TestMemberCClosedConversationRejectsAppend(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("被拒绝后消息条数 = %d，期望仍是 1", count)
+	}
+}
+
+// newCompaction 存一版摘要。
+//
+// 不走事务：这张表没有任何需要原子分配的东西（没有序号列），
+// 单条 INSERT 本身就是一个隐式事务。
+//
+// previous 传 nil 表示这是该会话的第一版摘要。sourceTokens / summaryTokens 由调用方手填 ——
+// 正常路径下它们来自真实估算，这里手填是为了能把"摘要必须比原文短"那条 CHECK 精确压到边界上。
+func (f *memberCTestFixture) newCompaction(
+	t *testing.T,
+	ctx context.Context,
+	previous *entity.ContextCompaction,
+	from, to int64,
+	summary string,
+	sourceTokens, summaryTokens int32,
+) *entity.ContextCompaction {
+	t.Helper()
+
+	compaction := &entity.ContextCompaction{
+		ConversationID:      f.conversation.ID,
+		CoveredFromSequence: from,
+		CoveredToSequence:   to,
+		Summary:             summary,
+		KeyPoints:           json.RawMessage("{}"),
+		SourceTokens:        sourceTokens,
+		SummaryTokens:       summaryTokens,
+	}
+	if previous != nil {
+		compaction.PreviousCompactionID = &previous.ID
+	}
+	if err := f.compactions.Create(ctx, compaction); err != nil {
+		t.Fatalf("存摘要失败: %v", err)
+	}
+	return compaction
+}
+
+// TestMemberCContextCompactionLatestIsNilWhenAbsent 验证"还没有任何摘要"不是错误。
+//
+// 这是本仓储唯一一个"查不到不算异常"的方法：编排每次组装上下文都会先问一句
+// "有没有上一版摘要"，答"没有"是完全正常的第一次调用。若返回 error，调用方就得用
+// errors.Is(gorm.ErrRecordNotFound) 去分辨 —— 等于把 GORM 的细节漏到业务层。
+func TestMemberCContextCompactionLatestIsNilWhenAbsent(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	latest, err := f.compactions.LatestByConversation(ctx, f.conversation.ID)
+	if err != nil {
+		t.Fatalf("没有摘要时不该报错，实际返回: %v", err)
+	}
+	if latest != nil {
+		t.Fatalf("没有摘要时应返回 nil，实际拿到 id=%d", latest.ID)
+	}
+}
+
+// TestMemberCContextCompactionLatestPicksHighestCoveredTo 验证取到的是"覆盖得最远"的那一版。
+//
+// 判据用 covered_to_sequence，而不是 created_at 或 id：摘要被修正后可能重存，
+// 而"覆盖到第几条消息"才是版本新旧的事实依据。
+func TestMemberCContextCompactionLatestPicksHighestCoveredTo(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	first := f.newCompaction(t, ctx, nil, 1, 10, "第一版摘要：讨论了天空为什么是蓝的", 200, 20)
+	second := f.newCompaction(t, ctx, first, 11, 30, "第二版摘要：在第一版基础上补充了散射的细节", 400, 40)
+
+	latest, err := f.compactions.LatestByConversation(ctx, f.conversation.ID)
+	if err != nil {
+		t.Fatalf("取最新摘要失败: %v", err)
+	}
+	if latest == nil {
+		t.Fatal("明明有两版摘要，却返回 nil")
+	}
+	if latest.ID != second.ID {
+		t.Errorf("取到 id=%d，期望最新那版 id=%d", latest.ID, second.ID)
+	}
+	if latest.CoveredToSequence != 30 {
+		t.Errorf("covered_to_sequence = %d，期望 30", latest.CoveredToSequence)
+	}
+	// 版本链必须接得上：编排靠 previous_compaction_id 判断"上一版覆盖到哪、这次从哪继续压"。
+	if latest.PreviousCompactionID == nil || *latest.PreviousCompactionID != first.ID {
+		t.Errorf("版本链断了：previous_compaction_id = %v，期望 %d", latest.PreviousCompactionID, first.ID)
+	}
+}
+
+// TestMemberCContextCompactionRejectsSummaryLongerThanSource 验证
+// "摘要必须比原文短"这条规则由数据库兜底，而不是只靠调用方自觉。
+//
+// 为什么专门测它：压缩完反而更长，这次压缩就毫无意义 —— 上下文没变小，
+// 还白白多了一行记录、多一次模型调用。这种错必须在写入那一刻就炸，而不是留到线上。
+func TestMemberCContextCompactionRejectsSummaryLongerThanSource(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	bad := &entity.ContextCompaction{
+		ConversationID:      f.conversation.ID,
+		CoveredFromSequence: 1,
+		CoveredToSequence:   5,
+		Summary:             "这段摘要比被替掉的原文还长，属于无效压缩",
+		KeyPoints:           json.RawMessage("{}"),
+		SourceTokens:        10,
+		SummaryTokens:       20,
+	}
+	err := f.compactions.Create(ctx, bad)
+	if err == nil {
+		t.Fatal("摘要 token 比原文多，竟然存进去了 —— 数据库那条 CHECK 没生效")
+	}
+	if !strings.Contains(err.Error(), "token_count_check") {
+		t.Errorf("报错里没带上约束名，排查时看不出根因: %v", err)
 	}
 }
