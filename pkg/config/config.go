@@ -18,11 +18,37 @@ type Config struct {
 	JWT            JWTConfig            `mapstructure:"jwt"`
 	Log            LogConfig            `mapstructure:"log"`
 	CORS           CORSConfig           `mapstructure:"cors"`
+	Worker         WorkerConfig         `mapstructure:"worker"`
 	ConfigPath     string               `mapstructure:"-"`
 }
 
 type StorageConfig struct {
 	UploadDir string `mapstructure:"upload_dir"`
+}
+
+// WorkerConfig 是后台生成任务的执行配置。
+type WorkerConfig struct {
+	Concurrency       int           `mapstructure:"concurrency"`        // 同时处理的生成任务数
+	MaxRetry          int           `mapstructure:"max_retry"`          // 单个任务最多重试几次
+	Timeout           time.Duration `mapstructure:"timeout"`            // 单次执行超时
+	ReconcileInterval time.Duration `mapstructure:"reconcile_interval"` // 周期对账间隔；0 表示只在对齐启动时对账一次
+}
+
+// Validate 校验后台任务配置。
+func (c WorkerConfig) Validate() error {
+	if c.Concurrency < 1 {
+		return fmt.Errorf("worker.concurrency 必须大于 0")
+	}
+	if c.MaxRetry < 0 {
+		return fmt.Errorf("worker.max_retry 不能为负")
+	}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("worker.timeout 必须大于 0")
+	}
+	if c.ReconcileInterval < 0 {
+		return fmt.Errorf("worker.reconcile_interval 不能为负")
+	}
+	return nil
 }
 
 // TTSProviderQwen 是 Qwen，走阿里云百炼；音色目录誊的就是它。

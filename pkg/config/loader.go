@@ -39,6 +39,11 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("document_parser.python_version", "3.12")
 	v.SetDefault("document_parser.ocr_engine", "rapidocr")
 	v.SetDefault("storage.upload_dir", "data/uploads")
+	// 后台生成任务：默认串行、最多重试两次、单次不超过一刻钟、每十分钟对一次账。
+	v.SetDefault("worker.concurrency", 1)
+	v.SetDefault("worker.max_retry", 2)
+	v.SetDefault("worker.timeout", "15m")
+	v.SetDefault("worker.reconcile_interval", "10m")
 
 	// 读取配置文件
 	if err := v.ReadInConfig(); err != nil {
@@ -80,6 +85,9 @@ func Load(configPath string) (*Config, error) {
 	}
 	if err := config.DocumentParser.Validate(); err != nil {
 		return nil, fmt.Errorf("文档解析器配置无效: %w", err)
+	}
+	if err := config.Worker.Validate(); err != nil {
+		return nil, fmt.Errorf("后台任务配置无效: %w", err)
 	}
 
 	globalConfig = config
