@@ -13,7 +13,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"narra/internal/agent/classroom"
 	"narra/internal/api"
+	"narra/internal/bootstrap"
 	internalmcp "narra/internal/mcp"
 	"narra/internal/model/entity"
 	"narra/internal/rag"
@@ -36,6 +38,7 @@ type App struct {
 	router          *api.Router
 	server          *http.Server
 	mcpManager      *internalmcp.Manager
+	worker          *bootstrap.WorkerRuntime
 	knowledgeWorker *rag.Worker
 }
 
@@ -174,6 +177,9 @@ func (a *App) initDependencies() error {
 	embeddingModelRepo := repository.NewEmbeddingModelRepository(a.postgresDB)
 	mcpServerRepo := repository.NewMCPServerRepository(a.postgresDB)
 	llmProviderRepo := repository.NewLLMProviderRepository(a.postgresDB)
+	classroomRepo := repository.NewClassroomRepository(a.postgresDB)
+	sceneRepo := repository.NewSceneRepository(a.postgresDB)
+	sceneSegmentRepo := repository.NewSceneSegmentRepository(a.postgresDB)
 	knowledgeDocumentRepo := repository.NewKnowledgeDocumentRepository(a.postgresDB)
 	knowledgeUploadRecordRepo := repository.NewKnowledgeUploadRecordRepository(a.postgresDB)
 
@@ -225,7 +231,29 @@ func (a *App) initDependencies() error {
 	a.knowledgeWorker.Start()
 	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, uploadDir)
 	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey)
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, knowledgeSvc, uploadDir, parser)
+
+	// ========== 课堂受理 + 生成任务 ==========
+	classroomDeps := classroom.Deps{
+		Providers:     llmProviderRepo,
+		Classrooms:    classroomRepo,
+		Scenes:        sceneRepo,
+		Segments:      sceneSegmentRepo,
+		Tools:         a.mcpManager,
+		EncryptionKey: encryptionKey,
+	}
+	queue, workerRuntime, err := bootstrap.BuildWorker(classroomDeps, a.cfg)
+	if err != nil {
+		return err
+	}
+	a.worker = workerRuntime
+	classroomSvc := service.NewClassroomService(classroomRepo, llmProviderSvc, queue)
+
+	// 对账：队列里已不会继续处理的 generating 课程，归档的判失败、丢了的重投。
+	if err := bootstrap.ReconcileGenerating(context.Background(), classroomDeps, workerRuntime, queue); err != nil {
+		return err
+	}
+
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, knowledgeSvc, uploadDir, parser)
 	return nil
 }
 
@@ -290,6 +318,13 @@ func (a *App) initServer() {
 
 // Run 运行应用
 func (a *App) Run() {
+	// 启动生成任务消费端
+	if a.worker != nil {
+		if err := a.worker.Start(); err != nil {
+			logger.Fatal("生成任务消费端启动失败", zap.Error(err))
+		}
+	}
+
 	// 启动 HTTP 服务器
 	go func() {
 		logger.Info("HTTP 服务器启动",
@@ -332,6 +367,11 @@ func (a *App) gracefulShutdown() {
 		if err := a.router.Close(); err != nil {
 			logger.Error("关闭路由连接失败", zap.Error(err))
 		}
+	}
+
+	// 停止生成任务消费端：等在途任务跑完（超时的会被推回队列），避免半截被关掉数据库连接。
+	if a.worker != nil {
+		a.worker.Shutdown()
 	}
 
 	if a.mcpManager != nil {

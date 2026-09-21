@@ -17,6 +17,8 @@ var promptFS embed.FS
 const (
 	promptDirRoles      = "prompts/roles"
 	promptFileNarration = "prompts/tasks/narration.md"
+	promptFileOutline   = "prompts/tasks/outline.md"
+	promptFileScene     = "prompts/tasks/scene.md"
 )
 
 // PromptTask 这次要干什么活。角色层回答「你是谁」，任务层回答「这次干什么活」。
@@ -24,6 +26,12 @@ type PromptTask string
 
 // TaskNarration 生成期的讲稿撰写，产出 scene_segments.text。
 const TaskNarration PromptTask = "narration"
+
+// TaskOutline 生成期的排课，产出 scenes 的骨架。
+const TaskOutline PromptTask = "outline"
+
+// TaskScene 生成期的单场景内容与讲稿。
+const TaskScene PromptTask = "scene"
 
 // roleHead 全体角色共用的框架。
 var roleHead = mustPromptFile(promptDirRoles + "/head.md")
@@ -47,11 +55,19 @@ var roleLayer = map[string]string{
 // 目前只有讲稿一个任务，且只有教师有：讲解只由教师发声
 // （internal/model/entity/scene_segment.go:20）。播放期的圆桌发言不在本模块，
 // 那边的任务层加在 prompts/tasks/ 下，在这里补一行。
+//
+// 不需要角色的任务（大纲、场景内容）不在这张表里——见下面的 roleFreeTasks。
 var taskLayer = map[PromptTask]struct {
 	body     string
 	roleType string
 }{
 	TaskNarration: {mustPromptFile(promptFileNarration), entity.PresetAgentRoleTypeTeacher},
+}
+
+// roleFreeTasks 不需要角色层的任务：排课与出内容不是任何角色在发言，也不该夹带角色池的人设。
+var roleFreeTasks = map[PromptTask]string{
+	TaskOutline: mustPromptFile(promptFileOutline),
+	TaskScene:   mustPromptFile(promptFileScene),
 }
 
 // BuildSystemPrompt 装配一个角色在指定任务下的完整系统提示词。
@@ -74,6 +90,16 @@ func BuildSystemPrompt(a entity.PresetAgent, task PromptTask) (string, bool) {
 
 	s := joinSections(roleHead, role, t.body)
 	return strings.NewReplacer("{{agentName}}", a.Name, "{{persona}}", a.Persona).Replace(s), true
+}
+
+// BuildTaskPrompt 装配不需要角色的任务提示词，只拼任务层、不注入 {{agentName}} / {{persona}}。
+// 返回 false 表示该 task 不在 roleFreeTasks 里（如讲稿，要用 BuildSystemPrompt）。
+func BuildTaskPrompt(task PromptTask) (string, bool) {
+	body, ok := roleFreeTasks[task]
+	if !ok {
+		return "", false
+	}
+	return joinSections(body), true
 }
 
 // mustPromptFile 读一个内嵌的提示词文件，读不到就 panic。

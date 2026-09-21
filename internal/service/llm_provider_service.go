@@ -1,12 +1,9 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -18,6 +15,7 @@ import (
 	"narra/internal/repository"
 	appcrypto "narra/pkg/crypto"
 	apperrors "narra/pkg/errors"
+	"narra/pkg/llm"
 )
 
 type llmProviderService struct {
@@ -172,7 +170,17 @@ func (s *llmProviderService) Test(ctx context.Context, id uint64) (*responsedto.
 	var failedModel string
 	var testErr error
 	for _, model := range models {
-		if err := testOpenAICompatible(ctx, item.BaseURL, apiKey, model, timeout); err != nil {
+		client, err := llm.NewClient(llm.Config{
+			BaseURL: item.BaseURL,
+			APIKey:  apiKey,
+			Model:   model,
+			Timeout: timeout,
+		})
+		if err != nil {
+			failedModel, testErr = model, err
+			break
+		}
+		if err := client.Ping(ctx); err != nil {
 			failedModel, testErr = model, err
 			break
 		}
@@ -317,63 +325,7 @@ func (s *llmProviderService) decrypt(value string) (string, error) {
 	return appcrypto.Decrypt(value, s.encryptionKey)
 }
 
-// testOpenAICompatible 打一次最小 chat completion 请求，只验证地址、密钥、模型三者可用。
-// 故意不带 temperature 和 max_tokens：o1/o3/o4-mini 这类推理模型会对它们直接返回 400
-// （temperature 只接受默认值、max_tokens 要换成 max_completion_tokens），
-// 于是好好的配置被判成测不通。只发三个必填字段，所有 OpenAI 兼容端点都收。
-func testOpenAICompatible(ctx context.Context, baseURL, apiKey, model string, timeout time.Duration) error {
-	body, _ := json.Marshal(map[string]any{
-		"model": model, "messages": []map[string]string{{"role": "user", "content": "Reply with OK only."}},
-		"stream": false,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("创建测试请求失败")
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("连接失败或请求超时: %v", err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return fmt.Errorf("读取服务响应失败")
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("服务返回 HTTP %d: %s", resp.StatusCode, safeUpstreamMessage(raw))
-	}
-	// 只校验响应具备「OpenAI 兼容 chat completion」的形状，不要求 content 非空。
-	// 推理模型会先把 token 花在 reasoning_content 上，content 为空但连接完全正常；
-	// 这个测试要证明的是地址、密钥、模型三者可用，不是模型愿意说话。
-	var result struct {
-		Choices []json.RawMessage `json:"choices"`
-	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return fmt.Errorf("服务响应不是合法 JSON，请确认 Base URL 指向 OpenAI 兼容接口")
-	}
-	if len(result.Choices) == 0 {
-		return fmt.Errorf("服务响应没有 choices 字段，请确认 Base URL 指向 OpenAI 兼容接口")
-	}
-	return nil
-}
-
-// safeUpstreamMessage 只从上游错误体里取 message 字段，不回显整个响应。
-func safeUpstreamMessage(raw []byte) string {
-	var body struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(raw, &body) == nil && body.Error.Message != "" {
-		return truncateText(body.Error.Message, 300)
-	}
-	return "请检查服务地址、API Key 和模型 ID"
-}
+// 测试连接走 pkg/llm，协议细节都在那边。
 
 // truncateText 按字符而不是字节截断，免得把汉字切坏。
 func truncateText(value string, max int) string {
