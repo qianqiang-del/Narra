@@ -27,18 +27,18 @@ const (
 type SharedContextMemory struct {
 	BaseModel
 
-	ClassroomID     uint64     `gorm:"column:classroom_id;not null;index:idx_shared_memories_classroom,priority:1" json:"classroom_id"`
-	ConversationID  *uint64    `gorm:"column:conversation_id;index:idx_shared_memories_conversation,priority:1" json:"conversation_id"`
-	Scope           string     `gorm:"column:scope;type:varchar(16);not null;index:idx_shared_memories_classroom,priority:2;check:shared_context_memories_scope_check,(scope = 'classroom' AND conversation_id IS NULL) OR (scope = 'conversation' AND conversation_id IS NOT NULL)" json:"scope"`
-	MemoryType      string     `gorm:"column:memory_type;type:varchar(32);not null;check:shared_context_memories_type_check,memory_type IN ('fact', 'decision', 'learning_state', 'preference', 'open_question')" json:"memory_type"`
-	Content         string     `gorm:"column:content;type:text;not null" json:"content"`
-	Importance      int16      `gorm:"column:importance;not null;default:3;index:idx_shared_memories_classroom,priority:4,sort:DESC;index:idx_shared_memories_conversation,priority:3,sort:DESC;check:shared_context_memories_importance_check,importance BETWEEN 1 AND 5" json:"importance"`
-	SourceMessageID *uint64    `gorm:"column:source_message_id" json:"source_message_id"`
-	SourceTurnID    *uint64    `gorm:"column:source_turn_id" json:"source_turn_id"`
-	Status          string     `gorm:"column:status;type:varchar(16);not null;default:active;index:idx_shared_memories_classroom,priority:3;index:idx_shared_memories_conversation,priority:2;check:shared_context_memories_status_check,status IN ('active', 'superseded', 'retracted')" json:"status"`
-	SupersededByID  *uint64    `gorm:"column:superseded_by_id;check:shared_context_memories_not_self_superseded_check,superseded_by_id IS NULL OR superseded_by_id <> id" json:"superseded_by_id"`
-	ExpiresAt       *time.Time `gorm:"column:expires_at" json:"expires_at"`
-	LastUsedAt      *time.Time `gorm:"column:last_used_at" json:"last_used_at"`
+	ClassroomID     uint64     `gorm:"column:classroom_id;not null;index:idx_shared_memories_classroom,priority:1;comment:所属课程 ID，指向 classrooms.id；课程删除时级联删除" json:"classroom_id"`
+	ConversationID  *uint64    `gorm:"column:conversation_id;index:idx_shared_memories_conversation,priority:1;comment:所属会话 ID；scope 为 conversation 时必填，为 classroom 时必须为空" json:"conversation_id"`
+	Scope           string     `gorm:"column:scope;type:varchar(16);not null;index:idx_shared_memories_classroom,priority:2;check:shared_context_memories_scope_check,(scope = 'classroom' AND conversation_id IS NULL) OR (scope = 'conversation' AND conversation_id IS NOT NULL);comment:记忆作用域，取值 classroom（整堂课共享）/ conversation（只在某个会话里有效）" json:"scope"`
+	MemoryType      string     `gorm:"column:memory_type;type:varchar(32);not null;check:shared_context_memories_type_check,memory_type IN ('fact', 'decision', 'learning_state', 'preference', 'open_question');comment:记忆类型，取值 fact（事实）/ decision（决定）/ learning_state（学习状态）/ preference（偏好）/ open_question（待解问题）" json:"memory_type"`
+	Content         string     `gorm:"column:content;type:text;not null;comment:记忆正文" json:"content"`
+	Importance      int16      `gorm:"column:importance;not null;default:3;index:idx_shared_memories_classroom,priority:4,sort:DESC;index:idx_shared_memories_conversation,priority:3,sort:DESC;check:shared_context_memories_importance_check,importance BETWEEN 1 AND 5;comment:重要度，1 ~ 5，越大越优先被召回进上下文" json:"importance"`
+	SourceMessageID *uint64    `gorm:"column:source_message_id;comment:这条记忆从哪条消息提炼而来；来源消息被删除后置空" json:"source_message_id"`
+	SourceTurnID    *uint64    `gorm:"column:source_turn_id;comment:这条记忆从哪个 Agent 回合提炼而来；回合被删除后置空" json:"source_turn_id"`
+	Status          string     `gorm:"column:status;type:varchar(16);not null;default:active;index:idx_shared_memories_classroom,priority:3;index:idx_shared_memories_conversation,priority:2;check:shared_context_memories_status_check,status IN ('active', 'superseded', 'retracted');comment:记忆状态，取值 active（生效）/ superseded（被新记忆取代）/ retracted（已撤回）" json:"status"`
+	SupersededByID  *uint64    `gorm:"column:superseded_by_id;check:shared_context_memories_not_self_superseded_check,superseded_by_id IS NULL OR superseded_by_id <> id;comment:取代它的那条记忆 ID，自引用；不允许指向自己" json:"superseded_by_id"`
+	ExpiresAt       *time.Time `gorm:"column:expires_at;comment:过期时间；为空表示不过期" json:"expires_at"`
+	LastUsedAt      *time.Time `gorm:"column:last_used_at;comment:最近一次被召回进上下文的时间；为空表示还没用过" json:"last_used_at"`
 
 	// 以下关联仅供 AutoMigrate 建外键（CASCADE / CASCADE / SET NULL / SET NULL / 自引用 SET NULL）。
 	// 业务代码禁止给它们赋值或 Preload。

@@ -33,14 +33,14 @@ const (
 type KnowledgeDocument struct {
 	BaseModel
 
-	Title           string          `gorm:"column:title;type:varchar(300);not null" json:"title"`                                                                                                                // 文章展示标题
-	Content         string          `gorm:"column:content;type:text;not null;check:knowledge_documents_ready_has_content_check,status <> 'ready' OR length(content) > 0" json:"content"`                         // 未切分的完整原文，是重建切片的唯一来源；CHECK 跨 status 与 content 两列，挂在本字段（每字段限一条 check tag）
-	SourceType      string          `gorm:"column:source_type;type:varchar(32);not null;check:knowledge_documents_source_type_check,source_type IN ('manual', 'import', 'api')" json:"source_type"`              // 文章来源类型：manual、import 或 api
-	SourceURI       *string         `gorm:"column:source_uri;type:text" json:"source_uri"`                                                                                                                       // 外部来源地址、文件位置或接口标识；手工文章可为空
-	ContentChecksum *string         `gorm:"column:content_checksum;type:char(64)" json:"content_checksum"`                                                                                                       // 原文内容的 SHA-256 摘要，用于判断是否需要重新切片
-	Enabled         bool            `gorm:"column:enabled;not null" json:"enabled"`                                                                                                                              // 是否允许该文章的切片参与 RAG 检索
-	Status          string          `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_documents_status_check,status IN ('pending', 'processing', 'ready', 'failed')" json:"status"` // 处理状态：pending、processing、ready 或 failed
-	Metadata        json.RawMessage `gorm:"column:metadata;type:jsonb;not null;index:knowledge_documents_metadata_idx,type:gin" json:"metadata"`                                                                 // 扩展信息：分类、标签、作者，以及解析失败原因等处理产物
+	Title           string          `gorm:"column:title;type:varchar(300);not null;comment:文章展示名，上限 300 字；留空时由正文首个一级标题、再退到原始文件名顶替" json:"title"`                                                                                                                                                  // 文章展示标题
+	Content         string          `gorm:"column:content;type:text;not null;check:knowledge_documents_ready_has_content_check,status <> 'ready' OR length(content) > 0;comment:未切分的完整原文，不参与检索，只作为重建切片的唯一来源" json:"content"`                                                                      // 未切分的完整原文，是重建切片的唯一来源；CHECK 跨 status 与 content 两列，挂在本字段（每字段限一条 check tag）
+	SourceType      string          `gorm:"column:source_type;type:varchar(32);not null;check:knowledge_documents_source_type_check,source_type IN ('manual', 'import', 'api');comment:来源类型，取值 manual（手工录入）/ import（文件导入）/ api（接口同步）" json:"source_type"`                                         // 文章来源类型：manual、import 或 api
+	SourceURI       *string         `gorm:"column:source_uri;type:text;comment:来源标识；文件导入时是原始文件名，接口同步时是外部地址，手工录入为空" json:"source_uri"`                                                                                                                                                             // 外部来源地址、文件位置或接口标识；手工文章可为空
+	ContentChecksum *string         `gorm:"column:content_checksum;type:char(64);comment:正文的 SHA-256 摘要（64 位十六进制），用于判断内容变没变、要不要重新切片" json:"content_checksum"`                                                                                                                                     // 原文内容的 SHA-256 摘要，用于判断是否需要重新切片
+	Enabled         bool            `gorm:"column:enabled;not null;comment:是否参与知识检索；为 false 时本文档的切片不会被召回" json:"enabled"`                                                                                                                                                                         // 是否允许该文章的切片参与 RAG 检索
+	Status          string          `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_documents_status_check,status IN ('pending', 'processing', 'ready', 'failed');comment:处理状态，取值 pending（排队）/ processing（处理中）/ ready（可用）/ failed（失败，原因在 metadata）" json:"status"` // 处理状态：pending、processing、ready 或 failed
+	Metadata        json.RawMessage `gorm:"column:metadata;type:jsonb;not null;index:knowledge_documents_metadata_idx,type:gin;comment:扩展信息 JSON：分类、标签、作者，以及解析器身份、耗时与失败原因等处理产物" json:"metadata"`                                                                                                  // 扩展信息：分类、标签、作者，以及解析失败原因等处理产物
 
 	// CreatedAt / UpdatedAt 遮蔽 BaseModel 的同名字段，只为给它们挂索引。
 	// 遮蔽在 GORM schema 里是安全的：直接声明的字段 BindNames 更短，会覆盖嵌入字段
@@ -55,10 +55,10 @@ type KnowledgeDocument struct {
 	//
 	// 别把它改成 status IN ('pending', 'processing') 手写形式——那会被 Unquote 丢弃，
 	// 索引静默消失。改动后记得核对 pg_indexes 里这条索引还在。
-	CreatedAt time.Time `gorm:"column:created_at;not null;autoCreateTime;index:knowledge_documents_status_created_at_idx,where:status IN ('pending'\\,'processing')" json:"created_at"`
+	CreatedAt time.Time `gorm:"column:created_at;not null;autoCreateTime;index:knowledge_documents_status_created_at_idx,where:status IN ('pending'\\,'processing');comment:创建时间，timestamptz 按 UTC 存；本列挂着后台取待处理任务的队列部分索引（只含 pending / processing）" json:"created_at"`
 
 	// UpdatedAt 挂「启用中文档按更新时间倒序」的部分索引；谓词不含逗号，无需转义。
-	UpdatedAt time.Time `gorm:"column:updated_at;not null;autoUpdateTime;index:knowledge_documents_enabled_updated_at_idx,where:enabled,sort:DESC" json:"updated_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at;not null;autoUpdateTime;index:knowledge_documents_enabled_updated_at_idx,where:enabled,sort:DESC;comment:最后修改时间，timestamptz 按 UTC 存；本列挂着「已启用文档按更新时间倒序」的部分索引" json:"updated_at"`
 }
 
 func (KnowledgeDocument) TableName() string { return "knowledge_documents" }

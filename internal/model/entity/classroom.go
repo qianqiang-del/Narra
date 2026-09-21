@@ -34,16 +34,16 @@ const (
 type Classroom struct {
 	BaseModel
 
-	FolderID *uint64 `gorm:"column:folder_id;index:idx_classrooms_folder_id" json:"folder_id"` // 所属文件夹，可空；删除文件夹时置 NULL
+	FolderID *uint64 `gorm:"column:folder_id;index:idx_classrooms_folder_id;comment:所属文件夹 ID，指向 folders.id；可为空表示未归档，文件夹被删除时置空" json:"folder_id"` // 所属文件夹，可空；删除文件夹时置 NULL
 
 	// Folder 仅供 AutoMigrate 建立外键 classrooms_folder_id_fkey（ON DELETE SET NULL）。
 	// 业务代码禁止给它赋值或 Preload：赋了非空值再保存本课程，GORM 会连带 upsert folders 行。
 	Folder *Folder `gorm:"foreignKey:FolderID;constraint:classrooms_folder_id_fkey,OnDelete:SET NULL" json:"-"`
 
-	Title       string `gorm:"column:title;type:varchar(200);not null" json:"title"`                                                                                        // 课程名称
-	Requirement string `gorm:"column:requirement;type:text;not null" json:"requirement"`                                                                                    // 用户原始生成需求
-	Mode        string `gorm:"column:mode;type:varchar(32);not null;check:classrooms_mode_check,mode IN ('vocational', 'interactive')" json:"mode"`                         // vocational | interactive
-	Status      string `gorm:"column:status;type:varchar(32);not null;check:classrooms_status_check,status IN ('generating', 'playable', 'ready', 'failed')" json:"status"` // 课程当前状态，见 §5.1
+	Title       string `gorm:"column:title;type:varchar(200);not null;comment:课程名称" json:"title"`                                                                                                                                                                           // 课程名称
+	Requirement string `gorm:"column:requirement;type:text;not null;comment:用户提交的原始生成需求，重新生成时以它为准" json:"requirement"`                                                                                                                                                      // 用户原始生成需求
+	Mode        string `gorm:"column:mode;type:varchar(32);not null;check:classrooms_mode_check,mode IN ('vocational', 'interactive');comment:课程模式，取值 vocational（职业技能）/ interactive（互动课堂）" json:"mode"`                                                                     // vocational | interactive
+	Status      string `gorm:"column:status;type:varchar(32);not null;check:classrooms_status_check,status IN ('generating', 'playable', 'ready', 'failed');comment:课程状态，取值 generating（生成中，首页未就绪进不去）/ playable（首页已就绪可进入）/ ready（全部场景完整生成）/ failed（中断且首页未就绪）" json:"status"` // 课程当前状态，见 §5.1
 
 	// GenerationError 这次生成没能把课做完整的原因，给用户看的一句话；为空表示课程生成完整、
 	// 不必再等。换句话说：这一列有值 ⇔ 这门课不会再生成了。
@@ -65,14 +65,14 @@ type Classroom struct {
 	// 里空无一物，这一列是唯一的失败记录。
 	// 同样只写能给人看的摘要，禁止写入原始 API 响应、堆栈和密钥，落库前按字符截断（建议 500）。
 	// 用 text 而非 varchar：varchar 超长是报错，会把整个生成事务回滚掉。
-	GenerationError *string `gorm:"column:generation_error;type:text" json:"generation_error"`
+	GenerationError *string `gorm:"column:generation_error;type:text;comment:这门课为什么没做完的一句话；有值即表示不会再继续生成。与 status 正交 —— status 只看能不能进课堂" json:"generation_error"`
 
 	// GenerationConfig 本次生成的模型、搜索、解析器等快照。
-	GenerationConfig json.RawMessage `gorm:"column:generation_config;type:jsonb;not null;default:'{}'" json:"generation_config"`
+	GenerationConfig json.RawMessage `gorm:"column:generation_config;type:jsonb;not null;default:'{}';comment:本次生成用的模型、搜索、解析器等配置快照（JSON）" json:"generation_config"`
 
 	// AgentConfig 角色选择模式、自动生成策略与 TTS 配置。
 	// 只保存本次采用的选择方式和生成策略；角色明细统一存 classroom_agents，不在此重复。
-	AgentConfig json.RawMessage `gorm:"column:agent_config;type:jsonb;not null;default:'{}'" json:"agent_config"`
+	AgentConfig json.RawMessage `gorm:"column:agent_config;type:jsonb;not null;default:'{}';comment:本次的角色选择模式、自动生成策略与 TTS 配置（JSON）；角色明细在 classroom_agents，不在此重复" json:"agent_config"`
 }
 
 // TableName 返回表名。

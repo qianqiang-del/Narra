@@ -35,20 +35,20 @@ type KnowledgeUploadRecord struct {
 	// 一次上传只写一条记录，但**刻意不做成唯一约束**：批 ③ 的"重试这一份"还没定
 	// 最终形态，若它选择"再投递一次、新建一条记录"，唯一索引就会当场挡住它。
 	// 普通索引足够 —— 状态同步与列表联表都按这一列走。
-	DocumentID *uint64 `gorm:"column:document_id;index:knowledge_upload_records_document_id_idx" json:"document_id"` // 关联文档 ID；文档被删除后为空，表示这次上传的成果已经不在了
+	DocumentID *uint64 `gorm:"column:document_id;index:knowledge_upload_records_document_id_idx;comment:关联文档 ID，指向 knowledge_documents.id；文档被删除后置空（ON DELETE SET NULL），表示这次投递的成果已不在" json:"document_id"` // 关联文档 ID；文档被删除后为空，表示这次上传的成果已经不在了
 
-	OriginalName string `gorm:"column:original_name;type:varchar(300);not null" json:"original_name"` // 用户看到的原始文件名，与 documents.title 同为 varchar(300)；截断见 rag.truncateTitle
+	OriginalName string `gorm:"column:original_name;type:varchar(300);not null;comment:上传时的原始文件名，与 documents.title 同为 varchar(300)，超长会被截断" json:"original_name"` // 用户看到的原始文件名，与 documents.title 同为 varchar(300)；截断见 rag.truncateTitle
 
 	// 文件字节数。取值来自 HTTP 层的 header.Size，是**接收时**的大小，不做二次统计。
 	// 上传记录里最有用的一列：用户看到"这份 834 KB 的 pptx 失败了"，就能对上自己传的是哪个文件。
-	SizeBytes int64 `gorm:"column:size_bytes;not null;default:0" json:"size_bytes"`
+	SizeBytes int64 `gorm:"column:size_bytes;not null;default:0;comment:接收到的文件字节数，取自上传请求头；0 表示回填的历史数据没有这个值" json:"size_bytes"`
 
-	Status string `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_upload_records_status_check,status IN ('pending', 'processing', 'ready', 'failed')" json:"status"` // 收录状态：pending、processing、ready 或 failed
+	Status string `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_upload_records_status_check,status IN ('pending', 'processing', 'ready', 'failed');comment:投递状态，取值 pending（排队）/ processing（处理中）/ ready（收录成功）/ failed（失败），与关联文档的状态同源" json:"status"` // 收录状态：pending、processing、ready 或 failed
 
 	// 失败原因，一眼可读的一句话（"解析失败：No module named 'scipy'"）。
 	// 与 documents.metadata 里那份的关系：那份是完整的失败现场（阶段、耗时、堆栈），
 	// 这份是给界面看的那一句。同步写入的时机见 repository.MarkFailed。
-	ErrorMessage *string `gorm:"column:error_message;type:text" json:"error_message"`
+	ErrorMessage *string `gorm:"column:error_message;type:text;comment:失败原因的一句话，供界面直接显示；收录成功时为空" json:"error_message"`
 
 	// Document 仅供 AutoMigrate 建外键 knowledge_upload_records_document_id_fkey（ON DELETE SET NULL）。
 	// 业务代码禁止给它赋值或 Preload。
@@ -59,7 +59,7 @@ type KnowledgeUploadRecord struct {
 
 	// CreatedAt 遮蔽 BaseModel 的同名字段，只为挂"抽屉按时间倒序"的索引。
 	// 遮蔽在 GORM schema 里是安全的，理由见 KnowledgeDocument.CreatedAt 的注释。
-	CreatedAt time.Time `gorm:"column:created_at;not null;autoCreateTime;index:knowledge_upload_records_created_at_idx,sort:DESC" json:"created_at"`
+	CreatedAt time.Time `gorm:"column:created_at;not null;autoCreateTime;index:knowledge_upload_records_created_at_idx,sort:DESC;comment:投递时间，timestamptz 按 UTC 存；上传记录抽屉按这一列倒序" json:"created_at"`
 }
 
 func (KnowledgeUploadRecord) TableName() string { return "knowledge_upload_records" }

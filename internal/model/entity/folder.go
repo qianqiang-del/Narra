@@ -9,7 +9,7 @@ package entity
 type Folder struct {
 	BaseModel
 
-	Name string `gorm:"column:name;type:varchar(120);not null" json:"name"` // 文件夹名称
+	Name string `gorm:"column:name;type:varchar(120);not null;comment:文件夹名称" json:"name"` // 文件夹名称
 }
 
 // TableName 返回表名。
