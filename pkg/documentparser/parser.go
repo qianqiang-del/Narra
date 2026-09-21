@@ -38,11 +38,116 @@ type Error struct {
 	Stderr  string
 }
 
+// Error 拼出的是**给日志与排障看的完整诊断**：错误码在前、stderr 原文在后。
+// 它不适合直接显示给用户 —— 界面要的是 UserMessage()。
 func (e *Error) Error() string {
 	if e.Stderr == "" {
 		return fmt.Sprintf("%s: %s", e.Code, e.Message)
 	}
 	return fmt.Sprintf("%s: %s (stderr: %s)", e.Code, e.Message, e.Stderr)
+}
+
+// UserMessage 把错误折成一句给用户看的中文：没有错误码，也没有 stderr 原文。
+//
+// 这两个方法的分工必须分清，它们很容易被混用，而混用的后果就在界面上：
+//   - Error() 是诊断串，形如
+//     "PARSER_FAILED: 文档解析失败 (stderr: parser failed: No module named 'scipy')"；
+//   - UserMessage() 是一句人话，形如 "文档解析失败：解析环境缺少 Python 模块 scipy"。
+//
+// 主体直接取 Message —— 脚本的 error_message 本来就是中文，Go 侧新增的几条也是，
+// 所以不需要按错误码另立一张文案表。stderr 只在能认出"缺哪个依赖"这类
+// 用户可据以行动的原因时才作为补充缀上去（见 stderrHint）。
+func (e *Error) UserMessage() string {
+	if e == nil {
+		return ""
+	}
+	message := strings.TrimSpace(e.Message)
+	if message == "" {
+		message = defaultUserMessage(e.Code)
+	}
+	hint := stderrHint(e.Stderr)
+	switch {
+	case message == "":
+		return hint
+	case hint == "":
+		return message
+	default:
+		return message + "：" + hint
+	}
+}
+
+// defaultUserMessage 是 Message 为空时按错误码给的兜底说法。
+//
+// 正常情况下走不到这里（每条错误都带了 Message）。但界面拿到空串就没法解释
+// "这一行为什么是红的"，所以宁可给一句笼统的，也不要留空。
+func defaultUserMessage(code string) string {
+	switch code {
+	case CodeFileNotFound:
+		return "文件不存在或已被移动"
+	case CodeUnsupportedType:
+		return "不支持这种文件类型"
+	case CodeOCRConfigMissing:
+		return "这份文件需要 OCR，但还没配置 OCR 服务"
+	case CodeOCREngineInvalid:
+		return "OCR 引擎配置有误"
+	case CodeRuntimeUnavailable:
+		return "文档解析环境不可用"
+	case CodeTimeout:
+		return "文档解析超时"
+	case CodeEncodingInvalid:
+		return "文件编码不是 UTF-8 或 UTF-16"
+	default:
+		return "文档解析失败"
+	}
+}
+
+// stderrHint 从解析脚本的 stderr 里摘一句中文原因，认不出来就返回空串。
+//
+// 只认"含义确定、用户能据此行动"的那几种。宁可返回空串（此时界面只显示 Message），
+// 也不把整段 traceback 原样贴上去 —— 那正是这个函数要消掉的东西。
+// 需要完整 stderr 的是排障，那条路走 Error() 与 metadata.error_detail。
+func stderrHint(stderr string) string {
+	if module := missingModule(stderr); module != "" {
+		return "解析环境缺少 Python 模块 " + module
+	}
+	return ""
+}
+
+// missingModule 从 stderr 里认出 "No module named 'xxx'" 这类缺失依赖的报错，
+// 返回模块名；认不出来返回空串。
+//
+// 这是本地解析环境最常见的失败：依赖没装全时，此后每一份需要它的文件都会在
+// 同一步倒下，用户看到的原因却一直是笼统的"文档解析失败"。
+// 模块名保留原样 —— 它是 Python 的标识符，不是可以翻译的文案。
+func missingModule(stderr string) string {
+	const marker = "No module named "
+	index := strings.Index(stderr, marker)
+	if index < 0 {
+		return ""
+	}
+	// 模块名可能被引号包着（"No module named 'scipy'"），先剥掉左侧的包裹字符。
+	rest := strings.TrimLeft(stderr[index+len(marker):], " \t'\"")
+	end := 0
+	for end < len(rest) && isModuleNameByte(rest[end]) {
+		end++
+	}
+	// 尾巴上的点号属于句子（"No module named 'scipy'."），不属于模块名。
+	return strings.TrimRight(rest[:end], ".")
+}
+
+// isModuleNameByte 判断一个字节能否是模块名的一部分。
+//
+// 只认 ASCII：Python 的依赖名实际都是 ASCII，而按字节判断能天然在多字节字符的
+// 第一个字节上停下来，不会切出半个汉字。
+func isModuleNameByte(char byte) bool {
+	switch {
+	case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z', char >= '0' && char <= '9':
+		return true
+	case char == '_', char == '.', char == '-':
+		return true
+	default:
+		return false
+	}
 }
 
 // Page 是脚本输出的单页信息（仅 PDF 有）。
@@ -280,10 +385,19 @@ func (p *PythonParser) Parse(ctx context.Context, req Request) (result *Result, 
 		if wireErr := errorFromOutput(stdout, stderr); wireErr != nil {
 			return nil, wireErr
 		}
+		// Message 只放一句人话，不把 err.Error()（"exit status 2" 这类 Go 的 exec 术语）
+		// 拼进去 —— 它对用户没有任何可操作性，真因在 stderr 里，由 UserMessage 摘出来。
+		// 例外是 stderr 也空的时候：那时 exec 的错误是唯一线索，兜进 Message，
+		// 免得界面只剩一句无从下手的"文档解析失败"。
+		message := "文档解析失败"
+		stderrTail := tail(string(stderr), stderrTailBytes)
+		if stderrTail == "" {
+			message = "文档解析失败: " + err.Error()
+		}
 		return nil, &Error{
 			Code:    CodeFailed,
-			Message: "文档解析失败: " + err.Error(),
-			Stderr:  tail(string(stderr), stderrTailBytes),
+			Message: message,
+			Stderr:  stderrTail,
 		}
 	}
 

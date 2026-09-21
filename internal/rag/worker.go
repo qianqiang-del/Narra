@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"narra/internal/model/entity"
+	"narra/pkg/logger"
 )
 
 // unusablePathReason 是"暂存文件不在自己管的上传目录里"时给用户的说明。
@@ -17,6 +21,13 @@ import (
 // 它同时写进两处：文档 metadata 的 error 键（失败现场）与上传记录的 error_message
 // （界面直接显示的那一句）。共用同一个常量，免得两处说法漂移。
 const unusablePathReason = "上传暂存文件不存在或路径无效"
+
+// failedDirName 是上传根目录下归档失败原件的子目录名，一篇文档一个子目录，
+// 名字就是它的文档 ID（failed/<文档ID>/upload.<ext>）。
+//
+// 与待处理目录（pending/）用纳秒时间戳命名不同，这里用文档 ID 是因为归档的文件
+// 需要被反查：磁盘上捡到一份 upload.pptx，看目录名就知道它属于哪一篇、该不该清。
+const failedDirName = "failed"
 
 // Worker 是文件收录的后台执行者。
 //
@@ -34,7 +45,7 @@ const unusablePathReason = "上传暂存文件不存在或路径无效"
 type Worker struct {
 	store       FileTaskStore
 	ingester    *Ingester
-	uploadRoot  string // 上传暂存根目录；processOne 只会清理这个目录下的文件
+	uploadRoot  string // 上传根目录（pending/ 待处理、failed/ 失败归档都在它下面）；只碰这个目录下的文件
 	concurrency int
 	stop        chan struct{}
 	done        chan struct{}
@@ -138,10 +149,13 @@ func (w *Worker) process(ctx context.Context) {
 //
 // 暂存文件不在上传根目录下时直接判失败：路径是从 metadata 里读出来的，
 // 而 metadata 的写入者对路径没有任何约束力，不加这道判断就等于允许
-// "构造一条记录、让后台进程删掉任意目录"。
+// "构造一条记录、让后台进程删掉任意目录"。这条分支**不清理任何目录** ——
+// 路径本身就不可信，filepath.Dir 指到哪儿都有可能。
 //
-// 无论成败都删掉暂存目录：文件内容已经进库，留着只会白占磁盘；
-// 失败现场记在 metadata 里，不需要靠残留文件来复现。
+// 成败对暂存文件的处置不同：
+//   - 成功：内容已经进库，原件没有用了，删掉整个暂存目录；
+//   - 失败：原件**留下来**并归档到 failed/<文档ID>/ —— 它是重试的输入，
+//     删掉就等于把"重试这一份"的能力一起删了，用户只能重新上传一遍。
 func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocument) {
 	path := uploadPath(document.Metadata)
 	if path == "" || !w.isUnderRoot(path) {
@@ -149,12 +163,89 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 		_ = w.store.MarkFailed(ctx, document.ID, payload, unusablePathReason)
 		return
 	}
-	defer os.RemoveAll(filepath.Dir(path))
-	_, _ = w.ingester.processExistingFile(ctx, &document, FileInput{
+
+	if _, err := w.ingester.processExistingFile(ctx, &document, FileInput{
 		Path:      path,
 		Title:     taskTitle(document.Metadata, document.Title),
 		SourceURI: sourceURI(document),
-	})
+	}); err != nil {
+		// 界面上只显示一句中文摘要（failIngest 写进 metadata 的 error 键），
+		// 完整诊断（错误码 + stderr 原文）躺在 metadata 的 error_detail 里。
+		// 这里再留一条日志：排障时不该为了看一句 traceback 去翻某一行文档的 JSON。
+		logger.Warn("文件收录失败，失败原件将归档保留",
+			zap.Uint64("document_id", document.ID),
+			zap.String("path", path),
+			zap.Error(err),
+		)
+		w.archiveStagedFile(ctx, document.ID, path)
+		return
+	}
+	w.discardStagedFile(path)
+}
+
+// archiveStagedFile 把失败的原件从暂存目录挪到 failed/<文档ID>/，再把新位置写回 metadata。
+//
+// 归档失败不阻断流程：原件留在暂存目录、upload_path 也不改 —— 它仍然在 uploadRoot
+// 之下，所以重试与删除时的清理照样找得到它（见 isUnderRoot 与 service.isUploadPath）。
+// 代价是它不会再被自动清理，所以这里必须留日志：那是"文件为什么残留"唯一的线索。
+func (w *Worker) archiveStagedFile(ctx context.Context, documentID uint64, path string) {
+	source := filepath.Dir(path)
+	if _, err := os.Stat(source); err != nil {
+		// 原件已经不在了（metadata 里的路径可能早被人工动过），没有东西要归档。
+		return
+	}
+
+	target := filepath.Join(w.uploadRoot, failedDirName, strconv.FormatUint(documentID, 10))
+	// 重试之后又失败时会第二次走到这里，而这一回原件已经躺在归档目录里了
+	// （source 与 target 是同一个目录）：不用挪，也不用改指针。
+	//
+	// 这一步不能省。下面的"先清掉目标再挪"是给"目标里放着上一次那份"准备的，
+	// 而在这里 target 就是 source —— RemoveAll 会把唯一那份原件连目录一起删掉，
+	// 归档随之失败，重试的输入就此永久消失。
+	if sameDirectory(source, target) {
+		return
+	}
+
+	// 归档根目录要自己建：os.Rename 只挪条目，不会替调用方创建父目录，
+	// 而 uploadRoot 下本来只有 pending/ —— 少了这一步，第一次归档必定失败。
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		logger.Warn("创建失败归档目录失败，原件留在暂存目录",
+			zap.Uint64("document_id", documentID), zap.String("dir", target), zap.Error(err))
+		return
+	}
+	// 重试又失败时会第二次走到这里，而目标目录里还躺着上一次那一份。
+	// 先清掉：os.Rename 在目标已存在时（Windows 上尤其）会直接失败。
+	if err := os.RemoveAll(target); err != nil {
+		logger.Warn("清理上一次归档的失败原件失败",
+			zap.Uint64("document_id", documentID), zap.String("dir", target), zap.Error(err))
+	}
+
+	if err := os.Rename(source, target); err != nil {
+		logger.Warn("保留失败原件失败，原件留在暂存目录且不会被自动清理",
+			zap.Uint64("document_id", documentID), zap.String("from", source), zap.Error(err))
+		return
+	}
+
+	archived := filepath.Join(target, filepath.Base(path))
+	if err := w.store.SetUploadPath(ctx, documentID, archived); err != nil {
+		// 文件挪走了、库里还指着旧位置 —— 这是必须让人看见的坏状态：
+		// 重试会报"原件已不在"，删除时的清理也会漏掉这一份。
+		logger.Error("失败原件已归档但 upload_path 未更新，重试会找不到它",
+			zap.Uint64("document_id", documentID), zap.String("path", archived), zap.Error(err))
+	}
+}
+
+// discardStagedFile 删掉收录成功后不再需要的暂存目录。
+//
+// 不再用挂在 processOne 上的 defer：那个写法会让失败路径也走到删除，
+// 而失败恰恰是最需要把文件留下的那条路。返回值也不再丢弃 ——
+// 删不掉是有信息的（Windows 上常见于文件仍被解析器进程占用），
+// 而这个目录此后没有任何人会再来清理它。
+func (w *Worker) discardStagedFile(path string) {
+	directory := filepath.Dir(path)
+	if err := os.RemoveAll(directory); err != nil {
+		logger.Warn("清理上传暂存目录失败", zap.String("dir", directory), zap.Error(err))
+	}
 }
 
 // uploadPath 从 metadata 里读上传时记下的暂存文件路径，读不到返回空串。
@@ -189,6 +280,22 @@ func sourceURI(document entity.KnowledgeDocument) string {
 		return ""
 	}
 	return *document.SourceURI
+}
+
+// sameDirectory 判断两个目录是不是同一个。
+//
+// 都取绝对路径再比：source 来自 metadata（可能是相对路径），target 是这里拼出来的，
+// 直接比字符串会在 "a/b" 与 "a/./b" 这种等价写法上判错。
+func sameDirectory(left, right string) bool {
+	leftAbs, err := filepath.Abs(left)
+	if err != nil {
+		return false
+	}
+	rightAbs, err := filepath.Abs(right)
+	if err != nil {
+		return false
+	}
+	return leftAbs == rightAbs
 }
 
 // isUnderRoot 判断路径是否落在上传根目录之内。

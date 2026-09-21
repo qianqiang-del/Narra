@@ -19,7 +19,7 @@ import (
 //
 // 按消费方分三组：
 //   - 收录链路（rag.DocumentStore）：Create / GetByID / MarkProcessing / MarkFailed / ReplaceChunks
-//   - 后台任务队列（rag.FileTaskStore）：SetMetadata / ListPending / Claim / ResetStale / MarkFailed
+//   - 后台任务队列（rag.FileTaskStore）：SetMetadata / SetUploadPath / ListPending / Claim / ResetStale / Requeue / MarkFailed
 //   - 查询与删除（service）：List / GetByID / CountChunksByDocument / Delete
 //
 // MarkFailed 被前两组共用，所以它在两处都出现。
@@ -50,11 +50,13 @@ type KnowledgeDocumentRepository interface {
 	// MarkProcessing 把文档推进到 processing，表示后台正在解析或向量化。
 	MarkProcessing(ctx context.Context, id uint64) error
 
-	// MarkFailed 把文档推进到 failed，并把失败现场写进 metadata、把原因同步到
-	// 这次上传的记录上（两处在同一个事务里，见实现）。
-	// metadata 必须是一份完整的 JSON 对象（可以带阶段、原因、时间），
-	// 仓储不负责和旧值合并 —— 合并规则属于业务语义。
-	// reason 是给用户看的那一句话，为空时记录的失败原因清空。
+	// MarkFailed 把文档推进到 failed，把失败现场**合并**进 metadata，
+	// 并把原因同步到这次上传的记录上（两处在同一个事务里，见实现）。
+	//
+	// metadata 是一份 JSON 对象（阶段、原因、时间），合并时只覆盖同名的键：
+	// upload_path 与 explicit_title 这些收录链路的输入会原样留着 ——
+	// 失败原件的归档、删除时的清理、以及重试都要靠它们。见实现的 mergeMetadata。
+	// reason 是给用户看的那一句中文（界面直接显示它），为空时记录的失败原因清空。
 	MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage, reason string) error
 
 	// ReplaceChunks 用一个事务完成"换掉这篇文档的全部切片与向量，并把文档标记为可检索"。
@@ -65,8 +67,13 @@ type KnowledgeDocumentRepository interface {
 	ReplaceChunks(ctx context.Context, id uint64, input entity.ChunkReplacement) error
 
 	// SetMetadata 整份覆盖文档的 metadata。上传链路用它记下暂存文件路径与标题回落标记；
-	// 和 MarkFailed 一样不做合并，覆盖的规则由调用方决定。
+	// 覆盖的规则由调用方决定（这里只负责写）。
 	SetMetadata(ctx context.Context, id uint64, metadata json.RawMessage) error
+
+	// SetUploadPath 只替换 metadata 里的 upload_path，其余键原样保留。
+	// 失败原件归档到 failed/<文档ID>/ 之后用它把指针挪过去 —— 这时 metadata 里
+	// 已经有 MarkFailed 写下的失败现场，整份覆盖会把失败原因抹掉。
+	SetUploadPath(ctx context.Context, id uint64, path string) error
 
 	// ListPending 按创建时间取最多 limit 条 pending 文档，供后台任务队列取任务。
 	// 它只是查询，不代表这些任务已经被抢到 —— 并发执行者之间靠 Claim 决出胜负。
@@ -80,6 +87,14 @@ type KnowledgeDocumentRepository interface {
 	// ResetStale 把 updated_at 早于 olderThan 且仍在 processing 的文档打回 pending。
 	// 用于回收上一个进程留下的僵尸任务：进程在处理中退出后，那些行没有任何人会再碰。
 	ResetStale(ctx context.Context, olderThan time.Time) error
+
+	// Requeue 把一行 failed 文档改回 pending 重新排队，并清掉上一次的失败现场，
+	// 同一个事务里把上传记录也置回 pending（见实现）。这是"原地重试"的写入口。
+	//
+	// 返回 false 表示这一行不满足条件（不存在，或状态已经不是 failed），
+	// 调用方据此报"不需要重试" —— 不把它当成错误，是因为并发点两次重试时
+	// 后到的那次本来就该安静地输掉。
+	Requeue(ctx context.Context, id uint64) (bool, error)
 
 	// Delete 删除一篇文档。切片与向量不在这里删 —— 外键 ON DELETE CASCADE 会把它们带走。
 	// 硬删除，不走软删除：UNIQUE (document_id, chunk_index) 要求同序号的上一条先消失。

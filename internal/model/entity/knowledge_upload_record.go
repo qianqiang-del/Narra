@@ -32,9 +32,12 @@ const (
 type KnowledgeUploadRecord struct {
 	BaseModel
 
-	// 一次上传只写一条记录，但**刻意不做成唯一约束**：批 ③ 的"重试这一份"还没定
-	// 最终形态，若它选择"再投递一次、新建一条记录"，唯一索引就会当场挡住它。
-	// 普通索引足够 —— 状态同步与列表联表都按这一列走。
+	// 一次上传只写一条记录，但**刻意不做成唯一约束**。
+	//
+	// 重试（批 ③）走的是原地重跑：同一篇文档改回 pending 再跑一遍，既不新建文档、
+	// 也不新建记录（见 repository.Requeue）。"一篇文档至多一条记录"因此由实现保证，
+	// 不靠约束兜底 —— 多一条唯一索引换不来现在需要的东西，却会把将来"重试另建一条
+	// 记录"这种形态挡死。普通索引足够 —— 状态同步与列表联表都按这一列走。
 	DocumentID *uint64 `gorm:"column:document_id;index:knowledge_upload_records_document_id_idx;comment:关联文档 ID，指向 knowledge_documents.id；文档被删除后置空（ON DELETE SET NULL），表示这次投递的成果已不在" json:"document_id"` // 关联文档 ID；文档被删除后为空，表示这次上传的成果已经不在了
 
 	OriginalName string `gorm:"column:original_name;type:varchar(300);not null;comment:上传时的原始文件名，与 documents.title 同为 varchar(300)，超长会被截断" json:"original_name"` // 用户看到的原始文件名，与 documents.title 同为 varchar(300)；截断见 rag.truncateTitle
@@ -45,9 +48,11 @@ type KnowledgeUploadRecord struct {
 
 	Status string `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_upload_records_status_check,status IN ('pending', 'processing', 'ready', 'failed');comment:投递状态，取值 pending（排队）/ processing（处理中）/ ready（收录成功）/ failed（失败），与关联文档的状态同源" json:"status"` // 收录状态：pending、processing、ready 或 failed
 
-	// 失败原因，一眼可读的一句话（"解析失败：No module named 'scipy'"）。
-	// 与 documents.metadata 里那份的关系：那份是完整的失败现场（阶段、耗时、堆栈），
-	// 这份是给界面看的那一句。同步写入的时机见 repository.MarkFailed。
+	// 失败原因，给界面直接显示的一句话 —— 纯中文，不带错误码与 stderr 原文
+	// （"文档解析失败：解析环境缺少 Python 模块 scipy"）。
+	// 与 documents.metadata 里那份的关系：metadata 的 error 键是同一句话，
+	// error_detail 才是完整的诊断（错误码 + stderr），两者分工见 rag.Ingester.failIngest。
+	// 同步写入的时机见 repository.MarkFailed。
 	ErrorMessage *string `gorm:"column:error_message;type:text;comment:失败原因的一句话，供界面直接显示；收录成功时为空" json:"error_message"`
 
 	// Document 仅供 AutoMigrate 建外键 knowledge_upload_records_document_id_fkey（ON DELETE SET NULL）。

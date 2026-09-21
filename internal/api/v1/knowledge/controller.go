@@ -129,6 +129,36 @@ func (c *Controller) Upload(ctx *gin.Context) {
 	response.SuccessWithMessage(ctx, "文档已收录", document)
 }
 
+// Retry 把一条收录失败的文档重新排队，让后台拿同一份原件再跑一遍。
+//
+// 不收新文件：失败的原件已经被归档在服务器上（data/uploads/failed/<文档ID>/），
+// 所以这次请求不需要 multipart，一个空 POST 就够。返回的文档是 pending，
+// 调用方接着轮询 Get 看进度 —— 与上传之后的流程完全一样。
+//
+// 三种"现在不行"翻成 409 而不是 400：问题不在这次请求的参数，而在此刻的状态 ——
+// 文档已经不是失败态、后台正忙着收别的、或者原件已经不在了（那只能重新上传）。
+func (c *Controller) Retry(ctx *gin.Context) {
+	id, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.BadRequest(ctx, "文档 ID 无效")
+		return
+	}
+
+	document, err := c.svc.Retry(ctx.Request.Context(), id)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrIngestBusy),
+			errors.Is(err, service.ErrRetryNotFailed),
+			errors.Is(err, service.ErrStagedFileMissing):
+			response.Conflict(ctx, err.Error())
+		default:
+			response.BadRequest(ctx, err.Error())
+		}
+		return
+	}
+	response.SuccessWithMessage(ctx, "已重新排队", document)
+}
+
 // IngestText 直接把一段正文收录为知识文档。
 //
 // 提供它是为了让"不走文件"的场景也能用同一条链路（外部系统同步、编辑器保存），

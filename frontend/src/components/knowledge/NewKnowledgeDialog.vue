@@ -7,8 +7,8 @@
  * （少一次注定失败的往返）。
  *
  * 卡片是"被拒绝时用户能看懂发生了什么"的配套 UI：它显示当前在处理哪一份、
- * 上一份是因为什么失败的。重试入口等批 ③ 的 `POST /documents/:id/retry` 落地后再加
- * —— 现在磁盘上没留失败原件，重试也跑不起来。
+ * 上一份是因为什么失败的；失败的那一份可以直接重试 —— 后端拿归档在服务器上的
+ * 原件重跑，用户不用重新选文件。
  */
 import {
   DialogContent,
@@ -18,7 +18,7 @@ import {
   DialogRoot,
   DialogTitle,
 } from 'reka-ui'
-import { AlertCircle, FileText, Loader2, Upload, X } from 'lucide-vue-next'
+import { AlertCircle, FileText, Loader2, RotateCw, Upload, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
@@ -44,6 +44,15 @@ const busy = computed(() => store.uploading)
 const processing = computed(() => (store.uploading ? store.activeUpload : null))
 
 const failed = computed(() => (store.uploading ? null : store.lastFailedRecord))
+
+/**
+ * 上一份失败的可不可以重试。
+ *
+ * 重试要落到一篇文档上，而记录未必还关联着文档 —— 那次投递的成果可能已经被删了
+ * （记录仍在，状态显示为「已收录后删除」，但失败的那些没有这个说法：文档一删，
+ * 记录就只剩 documentId 为空）。那种情况没有可重跑的对象，按钮置灰。
+ */
+const canRetry = computed(() => Boolean(failed.value?.documentId))
 
 const selectedSize = computed(() =>
   selectedFile.value ? `${(selectedFile.value.size / 1024 / 1024).toFixed(1)} MB` : '',
@@ -103,6 +112,32 @@ async function submit() {
     clearSelection()
   } catch (error) {
     toast.error(error instanceof Error ? error.message : t('knowledge.error.upload'))
+  }
+}
+
+/**
+ * 重试上一份失败的文件。
+ *
+ * 重试的是那份**文档**，不是这条记录：后端把同一行改回 pending 重新跑一遍，
+ * 成功后仍是同一条记录、同一篇文档，不会多出一条投递历史。
+ *
+ * 失败同样不当异常：它还是有效结果（库里那行又变回 failed），照上传的口径给提示。
+ */
+async function retryFailed() {
+  const record = failed.value
+  if (!record?.documentId || busy.value) return
+
+  try {
+    const document = await store.retry(record.documentId)
+    if (document.status === 'failed') {
+      toast.error(t('knowledge.upload.failed'))
+    } else {
+      toast.success(
+        t('knowledge.upload.success', { title: document.title, chunks: document.chunks }),
+      )
+    }
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : t('knowledge.error.retry'))
   }
 }
 </script>
@@ -237,6 +272,19 @@ async function submit() {
                 >
                   {{ failed.error }}
                 </p>
+                <!-- 重试同一份原件：不用重新选文件（后端留着归档的输入） -->
+                <button
+                  type="button"
+                  class="mt-2 inline-flex cursor-pointer items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                  :disabled="!canRetry"
+                  :title="
+                    canRetry ? t('knowledge.action.retry') : t('knowledge.last.retryUnavailable')
+                  "
+                  @click="retryFailed"
+                >
+                  <RotateCw class="size-3.5" />
+                  {{ t('knowledge.action.retry') }}
+                </button>
               </div>
             </div>
 

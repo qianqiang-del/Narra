@@ -381,7 +381,9 @@ func TestResolverProvisionsEnvironmentWithUV(t *testing.T) {
 		joined = append(joined, strings.Join(call, " "))
 	}
 	all := strings.Join(joined, "\n")
-	for _, want := range []string{"python install", "venv --python", "pip install --python"} {
+	// --clear 不能少：已存在的环境目录若被复用，就绪标记关于"按这份清单建的"承诺就成空话；
+	// 而不给这个 flag 时 uv 会对已存在的目录直接报错，重建路径根本走不通（见下面那条用例）。
+	for _, want := range []string{"python install", "venv --python 3.12 --clear", "pip install --python"} {
 		if !strings.Contains(all, want) {
 			t.Fatalf("缺少准备步骤 %q，实际命令:\n%s", want, all)
 		}
@@ -396,6 +398,84 @@ func TestResolverProvisionsEnvironmentWithUV(t *testing.T) {
 	}
 	if strings.TrimSpace(string(marker)) != requirementsDigest(content) {
 		t.Fatal("就绪标记的内容应当是依赖清单摘要")
+	}
+}
+
+// TestResolverRebuildsUnmarkedExistingEnv 复现"依赖清单改了、环境还在"的场景。
+//
+// 这是最容易出事的一条路径：目录里有旧环境、没有就绪标记（或标记与当前清单不符），
+// 于是 Resolve 落到 provision。而 uv venv 面对已存在的目录会直接报错退出，除非给它
+// --clear —— 少了这个 flag，自动重建永远失败，只剩"手工删目录"这一条路，而且报错信息
+// 与"依赖装少了"毫无关系，很难追。这里让 stub 忠实模拟 uv 的行为来钉住它。
+func TestResolverRebuildsUnmarkedExistingEnv(t *testing.T) {
+	allowImportProbe(t)
+
+	dir := t.TempDir()
+	requirements := filepath.Join(dir, requirementsName)
+	writeFile(t, requirements, "docling-slim==2.127.0\n")
+
+	// 旧环境：解释器在，但没有就绪标记，等价于"这份环境是按上一版清单建的"。
+	envDir := filepath.Join(dir, "env")
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		t.Fatalf("造旧环境目录失败: %v", err)
+	}
+	writeFile(t, venvPythonPath(envDir), "")
+
+	uvPath := filepath.Join(dir, uvBinaryName())
+	writeFile(t, uvPath, "")
+
+	runner := &stubRunner{onRun: func(_ string, args []string) error {
+		if len(args) == 0 || args[0] != "venv" {
+			return nil
+		}
+		target := args[len(args)-1]
+		cleared := false
+		for _, arg := range args {
+			if arg == "--clear" {
+				cleared = true
+			}
+		}
+		if _, err := os.Stat(target); err == nil && !cleared {
+			// uv 的真实行为：目标已存在且没有 --clear 时报错。
+			return errors.New("a virtual environment already exists")
+		}
+		python := venvPythonPath(target)
+		if err := os.MkdirAll(filepath.Dir(python), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(python, nil, 0o644)
+	}}
+
+	resolver := &Resolver{
+		cfg: Config{
+			Requirements: requirements,
+			EnvDir:       envDir,
+			UVPath:       uvPath,
+		}.WithDefaults(),
+		runner:   runner,
+		lookPath: func(string) (string, error) { return "", os.ErrNotExist },
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("清单变更后应当能重建环境，实际失败: %v", err)
+	}
+	if resolved.Source != "provisioned" {
+		t.Fatalf("来源应为 provisioned，实际: %q", resolved.Source)
+	}
+}
+
+// TestImportProbeCoversConversionEntry 给自检探针的深度上护栏。
+//
+// docling 里存在"顶层 import 能过、子模块才炸"的依赖缺失：少了 scipy / rtree 时
+// `import docling` 一路正常，直到 document_converter 那条链走到 base_ocr_model 才失败。
+// 探针若退回逐个 import 顶层包，准备阶段就拦不住这类缺失，只能等用户上传文档时才报错。
+func TestImportProbeCoversConversionEntry(t *testing.T) {
+	if !strings.Contains(importProbe, "docling.document_converter") {
+		t.Fatalf("自检探针必须探到真正要用的转换入口，当前: %q", importProbe)
+	}
+	if !strings.Contains(importProbe, "fitz") {
+		t.Fatalf("自检探针必须覆盖 PDF 文字层用到的 fitz，当前: %q", importProbe)
 	}
 }
 

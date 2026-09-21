@@ -86,11 +86,31 @@ type asyncIngester interface {
 	SubmitFile(context.Context, rag.FileInput) (rag.IngestResult, error)
 }
 
+// fileRetrier 是收录能力里"把失败的任务重新入队"的那一半，由 *rag.Ingester 提供。
+//
+// 与 asyncIngester 同一个路数（类型断言而非并进 ingester）：它后加，并进去会要求
+// 所有已有的测试替身再补一个方法。代价同样是这层保障从编译期退到运行期。
+type fileRetrier interface {
+	// Retry 把一行 failed 文档改回 pending 重新排队；返回 false 表示它不满足重试条件。
+	Retry(ctx context.Context, id uint64) (bool, error)
+}
+
 // ErrIngestBusy 表示知识库正在收录另一份文件，此刻不接受新的上传。
 //
 // 它是**可判定的**：接口层据此把"忙"翻译成 409，而不是和参数错误一起塞进 400 ——
 // 两者的处置方式不同（等一会儿重试 vs. 改参数再试），给用户的话也不该一样。
 var ErrIngestBusy = errors.New("已有文件正在收录，请等它处理完再上传")
+
+// ErrRetryNotFailed 表示这份文档不是失败状态，不需要（也不能）重试。
+//
+// 与 ErrIngestBusy 同属"现在不行"这一类的可判定错误，接口层一并翻成 409。
+var ErrRetryNotFailed = errors.New("这份文档不是失败状态，不需要重试")
+
+// ErrStagedFileMissing 表示这次上传的原始文件已经不在服务器上，重试没有输入源。
+//
+// 它和上面两个的区别在处置方式：用户能做的是**重新上传**这份文件，
+// 而不是等一会儿再点一次。所以文案里要把这句话说出来。
+var ErrStagedFileMissing = errors.New("这次上传的原始文件已不在服务器上，请重新上传")
 
 // SubmitFile 把一份文件交给后台收录，建好 pending 行就返回。
 //
@@ -128,6 +148,72 @@ func (s *knowledgeService) SubmitFile(ctx context.Context, input requestdto.Know
 		SizeBytes:  input.SizeBytes,
 	})
 	return toDocumentResponse(result.Document, result.Chunks), err
+}
+
+// Retry 把一条收录失败的文档重新排队，让它再跑一遍。
+//
+// **原地重试**：复用同一行文档与同一条上传记录，不新建任何东西。输入是失败时
+// 归档在服务器上的原件（data/uploads/failed/<文档ID>/），所以用户不用重新选文件 ——
+// 上次上传的是什么，这次重试的就是什么。
+//
+// 三道检查按"最可能是哪个原因"排序，每一道都给出可判定的错误：
+//   - 文档不存在 → 照常报"文档不存在"；
+//   - 状态不是 failed → ErrRetryNotFailed（正在跑的不需要重试，ready 的更不需要）；
+//   - 原件不在磁盘上 → ErrStagedFileMissing（归档的文件被清掉了，只能重新上传）。
+//
+// 原件那一道放在进闸门之前：它是一次磁盘探测，不该和正在跑的收录抢那把锁。
+//
+// 闸门与 SubmitFile 是同一套，而且是必要的 —— 重试同样会占住后台的收录位。
+// 两次检查之间那一行可能被别人重试或删掉，所以 Requeue 返回 false 时
+// 仍然按"不需要重试"处理，而不是当成内部错误。
+func (s *knowledgeService) Retry(ctx context.Context, id uint64) (responsedto.KnowledgeDocument, error) {
+	document, err := s.documents.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return responsedto.KnowledgeDocument{}, fmt.Errorf("知识文档 %d 不存在", id)
+		}
+		return responsedto.KnowledgeDocument{}, fmt.Errorf("查询知识文档失败: %w", err)
+	}
+	if document.Status != entity.KnowledgeDocumentStatusFailed {
+		return responsedto.KnowledgeDocument{}, ErrRetryNotFailed
+	}
+
+	path := metadataUploadPath(document.Metadata)
+	if path == "" || !s.isUploadPath(path) {
+		return responsedto.KnowledgeDocument{}, ErrStagedFileMissing
+	}
+	if _, err := os.Stat(path); err != nil {
+		return responsedto.KnowledgeDocument{}, ErrStagedFileMissing
+	}
+
+	if !s.ingestMu.TryLock() {
+		return responsedto.KnowledgeDocument{}, ErrIngestBusy
+	}
+	defer s.ingestMu.Unlock()
+
+	active, err := s.documents.CountActive(ctx)
+	if err != nil {
+		return responsedto.KnowledgeDocument{}, fmt.Errorf("检查收录队列失败: %w", err)
+	}
+	if active > 0 {
+		return responsedto.KnowledgeDocument{}, ErrIngestBusy
+	}
+
+	retrier, ok := s.ingester.(fileRetrier)
+	if !ok {
+		return responsedto.KnowledgeDocument{}, fmt.Errorf("知识库异步收录不可用")
+	}
+	requeued, err := retrier.Retry(ctx, id)
+	if err != nil {
+		return responsedto.KnowledgeDocument{}, fmt.Errorf("重新排队失败: %w", err)
+	}
+	if !requeued {
+		return responsedto.KnowledgeDocument{}, ErrRetryNotFailed
+	}
+
+	// 回读一次再返回：上面那份文档还是 failed，被改成 pending 的是库里的行。
+	// 走 Get 而不是自己拼响应，顺带把切片数也按同一个口径算出来。
+	return s.Get(ctx, id)
 }
 
 // knowledgeService 是 KnowledgeService 的实现。
@@ -545,7 +631,8 @@ func parserName(metadata json.RawMessage) string {
 // failureReason 从 metadata 里取出失败原因。
 //
 // 只认 error 这一个键：metadata 的完整结构会随实现变化，前端不该依赖它，
-// 它需要的只是一句能显示给用户的话。
+// 它需要的只是一句能显示给用户的话 —— 而 error 里放的就是这样一句话（纯中文）。
+// 完整诊断在 error_detail 键里，那是给排障看的，两者别对调。
 func failureReason(metadata json.RawMessage) string {
 	if len(metadata) == 0 {
 		return ""
