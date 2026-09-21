@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"narra/internal/model/entity"
+	"narra/pkg/utils"
 )
 
 // knowledgeInsertBatch 是切片与向量的批量插入粒度。
@@ -204,16 +205,34 @@ func (r *knowledgeDocumentRepository) MarkProcessing(ctx context.Context, id uin
 		Updates(map[string]any{"status": entity.KnowledgeDocumentStatusProcessing}).Error
 }
 
-// MarkFailed 推进到 failed 并把失败现场写进 metadata。
-func (r *knowledgeDocumentRepository) MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage) error {
+// MarkFailed 在一个事务里把文档推进到 failed，把失败现场写进 metadata，
+// 并把原因同步到这次上传的记录上。
+//
+// 两行必须一起改：文档状态是给主页看的，记录状态是给上传记录抽屉看的 ——
+// 只改一处会让同一件事在两个界面上说法不同。
+//
+// reason 是给用户看的那一句话（"解析失败：No module named 'scipy'"），由调用方
+// 从错误里取出后显式传进来。仓储不去解析 metadata 的 JSON 结构：那个结构是收录链路
+// 与接口层共享的约定，在这里再实现一遍就成了第三份口径。
+func (r *knowledgeDocumentRepository) MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage, reason string) error {
 	updates := map[string]any{"status": entity.KnowledgeDocumentStatusFailed}
 	if len(metadata) > 0 {
 		updates["metadata"] = metadata
 	}
-	return r.db.WithContext(ctx).
-		Model(&entity.KnowledgeDocument{}).
-		Where("id = ?", id).
-		Updates(updates).Error
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&entity.KnowledgeDocument{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+			return err
+		}
+
+		// 手动录入（IngestText）没有上传记录，这里匹配 0 行，不报错也不影响什么。
+		return tx.Model(&entity.KnowledgeUploadRecord{}).
+			Where("document_id = ?", id).
+			Updates(map[string]any{
+				"status":        entity.KnowledgeUploadRecordStatusFailed,
+				"error_message": utils.OptionalString(reason),
+			}).Error
+	})
 }
 
 // ReplaceChunks 在一个事务里替换切片与向量，并把文档置为 ready。
@@ -263,6 +282,16 @@ func (r *knowledgeDocumentRepository) ReplaceChunks(ctx context.Context, id uint
 		if len(input.Metadata) > 0 {
 			updates["metadata"] = input.Metadata
 		}
-		return tx.Model(&entity.KnowledgeDocument{}).Where("id = ?", id).Updates(updates).Error
+		if err := tx.Model(&entity.KnowledgeDocument{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+			return err
+		}
+
+		// 4. 这次投递成功了，记录也跟着到 ready。
+		//    必须在同一个事务里：否则会出现"文档已经可检索、记录还停在处理中"这两行
+		//    互相矛盾的状态，用户看到的就是抽屉里一条永远转圈的处理中。
+		//    手动录入（IngestText）没有记录，这里匹配 0 行，无害。
+		return tx.Model(&entity.KnowledgeUploadRecord{}).
+			Where("document_id = ?", id).
+			Update("status", entity.KnowledgeUploadRecordStatusReady).Error
 	})
 }

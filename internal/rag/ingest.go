@@ -37,11 +37,24 @@ type DocumentStore interface {
 	// MarkProcessing 把文档推进到 processing。
 	MarkProcessing(ctx context.Context, id uint64) error
 
-	// MarkFailed 把文档推进到 failed，并把失败现场写进 metadata。
-	MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage) error
+	// MarkFailed 把文档推进到 failed，把失败现场写进 metadata，并把 reason 同步到
+	// 这次上传的记录上（实现在同一个事务里改两行）。
+	MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage, reason string) error
 
-	// ReplaceChunks 用一个事务换掉这篇文档的全部切片与向量，并把它标记为可检索。
+	// ReplaceChunks 用一个事务换掉这篇文档的全部切片与向量，把它标记为可检索，
+	// 并把这次上传的记录置为 ready。
 	ReplaceChunks(ctx context.Context, id uint64, input entity.ChunkReplacement) error
+}
+
+// UploadRecordStore 是文件收录对上传记录的最小依赖面。
+//
+// 只有建记录这一个方法，因为记录之后的状态变更不从这里走：置 ready 与置 failed
+// 必须和文档的状态变更在同一个事务里完成，那两处由仓储在 ReplaceChunks / MarkFailed
+// 内部顺带处理（见 DocumentStore 的说明）。正文收录（IngestText）没有上传这回事，
+// 用不到这个接口。
+type UploadRecordStore interface {
+	// CreateUploadRecord 插入一条上传记录，落库后回填 record.ID。
+	CreateUploadRecord(ctx context.Context, record *entity.KnowledgeUploadRecord) error
 }
 
 // ModelRegistry 是收录链路对向量模型登记的最小依赖面。
@@ -64,6 +77,7 @@ type FileInput struct {
 	Title      string // 调用方指定的标题；为空时依次回落到正文一级标题、文件名
 	SourceType string // manual / import / api；为空时按 import 处理
 	SourceURI  string // 用户看到的来源标识；为空时取 Path 的文件名部分
+	SizeBytes  int64  // 原始文件的字节数，只写进上传记录供界面显示；0 表示调用方没提供
 }
 
 // TextInput 是直接收录一段正文所需的输入。
@@ -115,6 +129,7 @@ const maxTitleRunes = 300
 // IngestFile = createDocument + processExistingFile。
 type Ingester struct {
 	store     DocumentStore
+	records   UploadRecordStore
 	models    ModelRegistry
 	embedding *embedding.Manager
 	parser    documentparser.Parser
@@ -134,8 +149,8 @@ type FileTaskStore interface {
 	// SetMetadata 覆盖文档的 metadata，用于记下上传的暂存路径与标题回落标记。
 	SetMetadata(context.Context, uint64, json.RawMessage) error
 
-	// MarkFailed 把文档推进到 failed 并写入失败现场。
-	MarkFailed(context.Context, uint64, json.RawMessage) error
+	// MarkFailed 把文档推进到 failed 并写入失败现场，同时把 reason 同步到上传记录。
+	MarkFailed(context.Context, uint64, json.RawMessage, string) error
 
 	// ListPending 按创建时间取最多 limit 条 pending 文档。
 	ListPending(context.Context, int) ([]entity.KnowledgeDocument, error)
@@ -153,14 +168,18 @@ type FileTaskStore interface {
 // parser 可以是 nil —— 表示文档解析能力没启用，此时只有 md / txt 能收录，
 // 其它格式会收到一句明确的错误（见 documentparser.ParserFor）。这里不做 fail-fast，
 // 是因为"解析器没装好"不该拦住纯文本导入和整个服务的启动。
+//
+// records 是上传记录的写入口，只在文件收录（SubmitFile）里用到。
 func NewIngester(
 	store DocumentStore,
+	records UploadRecordStore,
 	models ModelRegistry,
 	embeddingManager *embedding.Manager,
 	parser documentparser.Parser,
 ) *Ingester {
 	ingester := &Ingester{
 		store:     store,
+		records:   records,
 		models:    models,
 		embedding: embeddingManager,
 		parser:    parser,
@@ -213,6 +232,26 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 	payload, _ := json.Marshal(metadata)
 	if err := store.SetMetadata(ctx, document.ID, payload); err != nil {
 		return IngestResult{}, err
+	}
+
+	// 建这条投递的历史记录。它的状态往后由 MarkFailed / ReplaceChunks 顺带推进，
+	// 这里只负责在起点写一条 pending。
+	//
+	// 建失败**不阻断这次收录**：记录只是历史，缺一条不影响文档本身能不能入库。
+	// 反过来若在这里返回错误，用户会看到"上传失败"，而文档行其实已经建好、
+	// worker 也照样会把它收录成功 —— 一个"报错但其实成功了"的假象更难解释。
+	record := &entity.KnowledgeUploadRecord{
+		DocumentID:   &document.ID,
+		OriginalName: truncateTitle(sourceURI),
+		SizeBytes:    input.SizeBytes,
+		Status:       entity.KnowledgeUploadRecordStatusPending,
+	}
+	if err := i.records.CreateUploadRecord(ctx, record); err != nil {
+		logger.Error("创建上传记录失败，这份文件将没有投递历史",
+			zap.Uint64("document_id", document.ID),
+			zap.String("original_name", sourceURI),
+			zap.Error(err),
+		)
 	}
 	return IngestResult{Document: document}, nil
 }
@@ -482,7 +521,7 @@ func (i *Ingester) failIngest(
 		metadata = json.RawMessage(`{"error":"记录失败原因时出错"}`)
 	}
 
-	if err := i.store.MarkFailed(ctx, document.ID, metadata); err != nil {
+	if err := i.store.MarkFailed(ctx, document.ID, metadata, cause.Error()); err != nil {
 		// 这一步失败不影响给用户的答复，但会让文档停在中间状态，必须留下日志。
 		logger.Error("知识文档标记失败状态时出错，文档可能停在中间状态",
 			zap.Uint64("document_id", document.ID),

@@ -48,6 +48,21 @@ type documentQuerier interface {
 	CountChunksByDocument(ctx context.Context, documentIDs []uint64) (map[uint64]int64, error)
 }
 
+// uploadRecordStore 是本服务对上传记录存储的最小依赖面。
+//
+// 比 repository.KnowledgeUploadRecordRepository 窄一个方法：Create 是收录链路的
+// 入口（rag.UploadRecordStore），服务层只负责列表与删除，看不见它。
+type uploadRecordStore interface {
+	// List 按创建时间倒序分页返回上传记录，并带上关联文档的标题。
+	List(ctx context.Context, offset, limit int) ([]entity.KnowledgeUploadRecordView, int64, error)
+
+	// GetByID 按主键取一条记录。查不到返回 gorm.ErrRecordNotFound。
+	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeUploadRecord, error)
+
+	// DeleteRecord 删掉一条记录；关联文档尚未收录成功时连同它一起删。
+	DeleteRecord(ctx context.Context, id uint64) error
+}
+
 // ingester 是本服务对收录能力的最小依赖面。
 //
 // 与 mcp_server_service 里的 mcpRuntime 同一路数：服务层负责 HTTP 面（DTO 进、DTO 出），
@@ -105,7 +120,13 @@ func (s *knowledgeService) SubmitFile(ctx context.Context, input requestdto.Know
 		return responsedto.KnowledgeDocument{}, ErrIngestBusy
 	}
 
-	result, err := async.SubmitFile(ctx, rag.FileInput{Path: input.Path, Title: input.Title, SourceType: input.SourceType, SourceURI: input.SourceURI})
+	result, err := async.SubmitFile(ctx, rag.FileInput{
+		Path:       input.Path,
+		Title:      input.Title,
+		SourceType: input.SourceType,
+		SourceURI:  input.SourceURI,
+		SizeBytes:  input.SizeBytes,
+	})
 	return toDocumentResponse(result.Document, result.Chunks), err
 }
 
@@ -116,6 +137,7 @@ func (s *knowledgeService) SubmitFile(ctx context.Context, input requestdto.Know
 // 这里是"面"，那里是"里"。
 type knowledgeService struct {
 	documents documentQuerier
+	records   uploadRecordStore
 	ingester  ingester
 	uploadDir string
 
@@ -132,12 +154,12 @@ var _ KnowledgeService = (*knowledgeService)(nil)
 // uploadDir 是可选参数（早期调用点只传两个依赖）：它必须与 controller、worker
 // 用同一个值 —— 删除文档时靠它判断一条记录的 upload_path 是否可信。
 // 不传（空串）时 isUploadPath 恒为 false，清理动作整体跳过，删除功能不受影响。
-func NewKnowledgeService(documents documentQuerier, ingester ingester, uploadDirs ...string) KnowledgeService {
+func NewKnowledgeService(documents documentQuerier, records uploadRecordStore, ingester ingester, uploadDirs ...string) KnowledgeService {
 	uploadDir := ""
 	if len(uploadDirs) > 0 {
 		uploadDir = uploadDirs[0]
 	}
-	return &knowledgeService{documents: documents, ingester: ingester, uploadDir: uploadDir}
+	return &knowledgeService{documents: documents, records: records, ingester: ingester, uploadDir: uploadDir}
 }
 
 // IngestFile 收录一份文件，并把结果翻成对外的文档结构。
@@ -353,6 +375,92 @@ func (s *knowledgeService) Delete(ctx context.Context, id uint64) error {
 		_ = os.RemoveAll(filepath.Dir(path))
 	}
 	return nil
+}
+
+// ListUploadRecords 分页返回上传记录 —— 文件投递的历史流水，含已经收录成功的那些。
+//
+// 它与 List 是两份不同的东西：List 列的是**资产**（能参与检索的文档），
+// 这里列的是**动作**（谁在什么时候投了什么文件、成没成）。同一次上传在两边各出现一次，
+// 但它们会分开消失 —— 删掉一条记录不该动那份知识，删掉一份知识也不会让这次投递
+// 从历史里消失（那行会变成"已收录后删除"）。
+func (s *knowledgeService) ListUploadRecords(ctx context.Context, page, size int) ([]responsedto.KnowledgeUploadRecord, int64, error) {
+	// 与 List 同一个理由再钳一次：它是接口上的公开方法，调用方不一定走过归一化。
+	page, size = NormalizePage(page, size)
+
+	views, total, err := s.records.List(ctx, (page-1)*size, size)
+	if err != nil {
+		return nil, 0, fmt.Errorf("查询上传记录失败: %w", err)
+	}
+
+	out := make([]responsedto.KnowledgeUploadRecord, len(views))
+	for index, view := range views {
+		out[index] = toUploadRecordResponse(view)
+	}
+	return out, total, nil
+}
+
+// DeleteUploadRecord 删除一条上传记录；关联文档尚未收录成功时把它一起删掉。
+//
+// 两条顺序上的讲究：
+//
+//  1. 先把文档的暂存路径读出来再删。删除会连带删掉文档行，之后 metadata 就取不到了，
+//     而暂存文件留在磁盘上没有人会再清理它。
+//  2. 文档可能已经不存在（记录还在、成果被删了）。那不是错误，是"已收录后删除"
+//     这条历史正在被清理，ErrRecordNotFound 直接跳过即可。
+//
+// 连带删除只发生在文档未收录成功时（pending / processing / failed），判定在仓储里：
+// 未就绪的行正是上传闸门 CountActive 的输入，留着它会让"一次只收一份"永久返回 409，
+// 而记录删掉之后用户在界面上再也没有入口能清掉它。已 ready 的文档绝不触碰。
+func (s *knowledgeService) DeleteUploadRecord(ctx context.Context, id uint64) error {
+	record, err := s.records.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("上传记录 %d 不存在", id)
+		}
+		return fmt.Errorf("查询上传记录失败: %w", err)
+	}
+
+	stagedPath := ""
+	if record.DocumentID != nil {
+		if document, err := s.documents.GetByID(ctx, *record.DocumentID); err == nil {
+			stagedPath = metadataUploadPath(document.Metadata)
+		}
+	}
+
+	if err := s.records.DeleteRecord(ctx, id); err != nil {
+		return fmt.Errorf("删除上传记录失败: %w", err)
+	}
+
+	if stagedPath != "" && s.isUploadPath(stagedPath) {
+		_ = os.RemoveAll(filepath.Dir(stagedPath))
+	}
+	return nil
+}
+
+// toUploadRecordResponse 把记录（含联表带来的文档标题）翻成对外结构。
+//
+// 标题回落放在这里而不是写成 SQL 的 COALESCE：COALESCE 能少一次判断，
+// 但"文档没了就看原始文件名"是展示语义，埋进 SQL 之后只有读仓储的人才知道它存在。
+func toUploadRecordResponse(view entity.KnowledgeUploadRecordView) responsedto.KnowledgeUploadRecord {
+	title := strings.TrimSpace(view.DocumentTitle)
+	if title == "" {
+		title = view.OriginalName
+	}
+
+	out := responsedto.KnowledgeUploadRecord{
+		ID:           view.ID,
+		DocumentID:   view.DocumentID,
+		Title:        title,
+		OriginalName: view.OriginalName,
+		SizeBytes:    view.SizeBytes,
+		Status:       view.Status,
+		CreatedAt:    view.CreatedAt,
+		UpdatedAt:    view.UpdatedAt,
+	}
+	if view.ErrorMessage != nil {
+		out.Error = *view.ErrorMessage
+	}
+	return out
 }
 
 // metadataUploadPath 从 metadata 里取上传时的暂存文件路径，读不到返回空串。

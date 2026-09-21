@@ -135,6 +135,7 @@ func (a *App) initDatabase() error {
 		&entity.EmbeddingModel{},
 		&entity.EmbeddingSetting{},
 		&entity.KnowledgeDocument{},
+		&entity.KnowledgeUploadRecord{},
 		&entity.KnowledgeChunk{},
 		&entity.KnowledgeEmbedding{},
 		&entity.ClassroomConversation{},
@@ -174,6 +175,7 @@ func (a *App) initDependencies() error {
 	mcpServerRepo := repository.NewMCPServerRepository(a.postgresDB)
 	llmProviderRepo := repository.NewLLMProviderRepository(a.postgresDB)
 	knowledgeDocumentRepo := repository.NewKnowledgeDocumentRepository(a.postgresDB)
+	knowledgeUploadRecordRepo := repository.NewKnowledgeUploadRecordRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
 	roleSvc := service.NewRoleService(roleRepo)
@@ -205,9 +207,10 @@ func (a *App) initDependencies() error {
 	// ========== 创建 Router ==========
 	// 收录链路归 internal/rag，服务层只做 DTO 映射与文档查询。与 MCP 同一种装法：
 	// 运行时模块（rag.Ingester / mcp.Manager）在这里建好，再作为依赖注入服务层。
+	// 文档与上传记录是两个仓储：前者是资产，后者是投递历史，表也不同。
 	parser := newDocumentParser(a.cfg)
 	knowledgeIngester := rag.NewIngester(
-		knowledgeDocumentRepo, embeddingModelRepo, embeddingManager, parser)
+		knowledgeDocumentRepo, knowledgeUploadRecordRepo, embeddingModelRepo, embeddingManager, parser)
 	uploadDir := a.cfg.Storage.UploadDir
 	if uploadDir == "" {
 		uploadDir = "data/uploads"
@@ -220,7 +223,7 @@ func (a *App) initDependencies() error {
 	// uploadDir 必须和上面给 controller、service 的是同一个值，否则删除时的暂存清理会静默失效。
 	a.knowledgeWorker = rag.NewWorker(knowledgeDocumentRepo, knowledgeIngester, uploadDir, 1)
 	a.knowledgeWorker.Start()
-	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeIngester, uploadDir)
+	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, uploadDir)
 	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey)
 	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, knowledgeSvc, uploadDir, parser)
 	return nil

@@ -12,6 +12,12 @@ import (
 	"narra/internal/model/entity"
 )
 
+// unusablePathReason 是"暂存文件不在自己管的上传目录里"时给用户的说明。
+//
+// 它同时写进两处：文档 metadata 的 error 键（失败现场）与上传记录的 error_message
+// （界面直接显示的那一句）。共用同一个常量，免得两处说法漂移。
+const unusablePathReason = "上传暂存文件不存在或路径无效"
+
 // Worker 是文件收录的后台执行者。
 //
 // 它把"上传"和"解析"拆成两件事：HTTP 请求只负责落盘并建一条 pending 行
@@ -139,8 +145,8 @@ func (w *Worker) process(ctx context.Context) {
 func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocument) {
 	path := uploadPath(document.Metadata)
 	if path == "" || !w.isUnderRoot(path) {
-		payload, _ := json.Marshal(map[string]any{"error": "上传暂存文件不存在或路径无效", "stage": "worker"})
-		_ = w.store.MarkFailed(ctx, document.ID, payload)
+		payload, _ := json.Marshal(map[string]any{"error": unusablePathReason, "stage": "worker"})
+		_ = w.store.MarkFailed(ctx, document.ID, payload, unusablePathReason)
 		return
 	}
 	defer os.RemoveAll(filepath.Dir(path))

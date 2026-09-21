@@ -5,14 +5,15 @@
  * 三块：
  * - **主页列表**只列已收录（ready）的文档，滚到底自动续接下一批（每批 10 条）；
  * - **新增知识库**收进弹层：一次只能传一份，上一份处理完才放开；
- * - **上传记录**收进抽屉：只装没收录成功的（等待中 / 处理中 / 失败），只提供删除。
+ * - **上传记录**收进抽屉：每一次文件投递的流水（批 ② 起独立成表），含已收录成功的。
  *
  * 收录取自后端异步链路：上传请求只落盘建行，解析与向量化在后台推进。所以这里的
  * 重点不是进度条，而是把"还在处理""处理失败了、为什么"讲清楚 —— 失败原因
  * 由后端原样带回，直接展示，不加工。
  *
- * ⚠️ 一处依赖后端批次，见 `stores/knowledge.ts` 文件头的 TODO：
- * 上传记录目前从文档列表里派生（批 ② 独立成表）。搜索与分页已经在服务端做（批 ①）。
+ * 两处删除的后果不一样，文案也就分开写：
+ * 主页删的是**知识**（正文、切片、向量一起没了）；抽屉删的是**记录**
+ * （连带清掉还没收录成功的那份文档，已收录的知识一律不碰）。
  */
 import { ArrowLeft, Bell, Database, Loader2, Plus, RefreshCw, Search, X } from 'lucide-vue-next'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -21,7 +22,7 @@ import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { toast } from 'vue-sonner'
 
-import type { KnowledgeDocument } from '@/api/knowledge'
+import type { KnowledgeDocument, KnowledgeUploadRecord } from '@/api/knowledge'
 import ConfirmDialog from '@/components/knowledge/ConfirmDialog.vue'
 import DocumentPreviewDialog from '@/components/knowledge/DocumentPreviewDialog.vue'
 import KnowledgeRow from '@/components/knowledge/KnowledgeRow.vue'
@@ -33,7 +34,7 @@ const { t } = useI18n()
 const router = useRouter()
 const store = useKnowledgeStore()
 
-const { loading, keyword, readyDocuments, readyTotal, uploadRecords, hasMore, isEmpty } =
+const { loading, keyword, readyDocuments, readyTotal, hasMore, isEmpty, recordAlerts } =
   storeToRefs(store)
 
 const newOpen = ref(false)
@@ -42,13 +43,26 @@ const previewOpen = ref(false)
 const previewId = ref<number | null>(null)
 const confirmOpen = ref(false)
 const deleting = ref(false)
-/** 待确认删除的目标：主页删的是知识库，抽屉删的是上传记录，文案与后果都不一样 */
-const pendingDelete = ref<{ kind: 'doc' | 'record'; document: KnowledgeDocument } | null>(null)
+
+/**
+ * 待确认删除的目标。两种目标的"要删的东西"不是同一个字段（文档看 id，记录看 id），
+ * 所以用判别联合分开存 —— 主页删的是知识库，抽屉删的是上传记录，文案与后果都不一样。
+ */
+const pendingDelete = ref<
+  { kind: 'doc'; document: KnowledgeDocument } | { kind: 'record'; record: KnowledgeUploadRecord } | null
+>(null)
 
 const sentinel = ref<HTMLElement | null>(null)
 let observer: IntersectionObserver | null = null
 
 const searching = computed(() => keyword.value.trim().length > 0)
+
+/** 两种目标的标题字段名不同，取出来拼确认文案 */
+const pendingTitle = computed(() => {
+  const target = pendingDelete.value
+  if (!target) return ''
+  return target.kind === 'record' ? target.record.title : target.document.title
+})
 
 const confirmTitle = computed(() =>
   pendingDelete.value?.kind === 'record'
@@ -61,7 +75,7 @@ const confirmMessage = computed(() =>
         pendingDelete.value.kind === 'record'
           ? 'knowledge.records.remove.message'
           : 'knowledge.remove.confirm',
-        { title: pendingDelete.value.document.title },
+        { title: pendingTitle.value },
       )
     : '',
 )
@@ -144,8 +158,8 @@ function askDeleteDocument(document: KnowledgeDocument) {
   confirmOpen.value = true
 }
 
-function askDeleteRecord(document: KnowledgeDocument) {
-  pendingDelete.value = { kind: 'record', document }
+function askDeleteRecord(record: KnowledgeUploadRecord) {
+  pendingDelete.value = { kind: 'record', record }
   confirmOpen.value = true
 }
 
@@ -154,7 +168,8 @@ async function confirmDelete() {
   if (!target) return
   deleting.value = true
   try {
-    await store.remove(target.document.id)
+    if (target.kind === 'record') await store.removeRecord(target.record.id)
+    else await store.removeDocument(target.document.id)
     toast.success(
       target.kind === 'record' ? t('knowledge.records.removed') : t('knowledge.remove.success'),
     )
@@ -215,6 +230,10 @@ function goBack() {
         </button>
       </div>
 
+      <!--
+        角标数的是"还没好 / 失败了"的记录，不是记录总数 —— 记录里混着已收录的历史，
+        拿总数当角标会随使用量单调增长，看不出有没有事要管。
+      -->
       <button
         type="button"
         class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[13px] font-medium transition-colors hover:bg-muted"
@@ -223,10 +242,10 @@ function goBack() {
         <Bell class="size-4" />
         {{ t('knowledge.toolbar.records') }}
         <span
-          v-if="uploadRecords.length"
+          v-if="recordAlerts"
           class="rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] leading-none font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
         >
-          {{ uploadRecords.length }}
+          {{ recordAlerts }}
         </span>
       </button>
 

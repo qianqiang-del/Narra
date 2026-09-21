@@ -1,0 +1,78 @@
+package entity
+
+import "time"
+
+// 上传记录的状态。取值与 knowledge_documents.status 完全同源 —— 一次上传的生命周期
+// 就是它那条文档的生命周期，用别名而不是另立一组字符串，让"两边必须一致"由编译器兜住。
+//
+// 取值必须与 Status 字段上 check tag 里的 knowledge_upload_records_status_check 保持一致，
+// 改一处要改两处（与 KnowledgeDocument 同一条约定）。
+const (
+	KnowledgeUploadRecordStatusPending    = KnowledgeDocumentStatusPending    // 已登记，排队等 worker 取走
+	KnowledgeUploadRecordStatusProcessing = KnowledgeDocumentStatusProcessing // 解析 / 切分 / 向量化进行中
+	KnowledgeUploadRecordStatusReady      = KnowledgeDocumentStatusReady      // 收录完成
+	KnowledgeUploadRecordStatusFailed     = KnowledgeDocumentStatusFailed     // 收录失败，原因记在 error_message
+)
+
+// KnowledgeUploadRecord 上传记录实体对应上传记录表，是"一次文件上传"这件事本身。
+//
+// 它与 KnowledgeDocument 是两张表，因为承载的是两种不同的东西：文档是可检索的资产
+// （正文、切片、向量都挂在它下面，删了就是知识的损失），记录是投递历史（只是一行流水）。
+// 拆开之后"删掉一条历史"与"删掉一份知识"才是两件事 —— 原型里两个方向的删除互不影响，
+// 靠的就是这个拆分；把它们挤在 knowledge_documents 一行里时，删记录必然等于删文档。
+//
+// 记录要能独立表达状态，是因为关联是弱关联：document_id 可以指向空的。
+// 上传时它指向那条文档；文档被删除后外键把它置空（ON DELETE SET NULL），而记录留着 ——
+// 此时 status 仍是 ready，界面上读作"已收录后删除"。光看 document_id 分不出
+// "收录成功后被删"和"当时就失败了"，所以状态必须落在记录自己身上。
+//
+// 它同时是投递侧信息的归宿：原始文件名、文件字节数、失败原因。这三样在只有文档表的
+// 时候无处可放 —— 原名挤在 documents.source_uri、字节数干脆没有、失败原因埋在
+// documents.metadata 的 JSON 里（那是处理产物，结构随实现变化，不该被界面依赖）。
+type KnowledgeUploadRecord struct {
+	BaseModel
+
+	// 一次上传只写一条记录，但**刻意不做成唯一约束**：批 ③ 的"重试这一份"还没定
+	// 最终形态，若它选择"再投递一次、新建一条记录"，唯一索引就会当场挡住它。
+	// 普通索引足够 —— 状态同步与列表联表都按这一列走。
+	DocumentID *uint64 `gorm:"column:document_id;index:knowledge_upload_records_document_id_idx" json:"document_id"` // 关联文档 ID；文档被删除后为空，表示这次上传的成果已经不在了
+
+	OriginalName string `gorm:"column:original_name;type:varchar(300);not null" json:"original_name"` // 用户看到的原始文件名，与 documents.title 同为 varchar(300)；截断见 rag.truncateTitle
+
+	// 文件字节数。取值来自 HTTP 层的 header.Size，是**接收时**的大小，不做二次统计。
+	// 上传记录里最有用的一列：用户看到"这份 834 KB 的 pptx 失败了"，就能对上自己传的是哪个文件。
+	SizeBytes int64 `gorm:"column:size_bytes;not null;default:0" json:"size_bytes"`
+
+	Status string `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_upload_records_status_check,status IN ('pending', 'processing', 'ready', 'failed')" json:"status"` // 收录状态：pending、processing、ready 或 failed
+
+	// 失败原因，一眼可读的一句话（"解析失败：No module named 'scipy'"）。
+	// 与 documents.metadata 里那份的关系：那份是完整的失败现场（阶段、耗时、堆栈），
+	// 这份是给界面看的那一句。同步写入的时机见 repository.MarkFailed。
+	ErrorMessage *string `gorm:"column:error_message;type:text" json:"error_message"`
+
+	// Document 仅供 AutoMigrate 建外键 knowledge_upload_records_document_id_fkey（ON DELETE SET NULL）。
+	// 业务代码禁止给它赋值或 Preload。
+	//
+	// 用 SET NULL 而不是 CASCADE：文档消失时这条投递历史要留着（界面靠它显示
+	// "已收录后删除"），删掉记录等于把用户的投递记录抹了。
+	Document *KnowledgeDocument `gorm:"foreignKey:DocumentID;constraint:knowledge_upload_records_document_id_fkey,OnDelete:SET NULL" json:"-"`
+
+	// CreatedAt 遮蔽 BaseModel 的同名字段，只为挂"抽屉按时间倒序"的索引。
+	// 遮蔽在 GORM schema 里是安全的，理由见 KnowledgeDocument.CreatedAt 的注释。
+	CreatedAt time.Time `gorm:"column:created_at;not null;autoCreateTime;index:knowledge_upload_records_created_at_idx,sort:DESC" json:"created_at"`
+}
+
+func (KnowledgeUploadRecord) TableName() string { return "knowledge_upload_records" }
+
+// KnowledgeUploadRecordView 是上传记录与它关联文档标题的组合，只用于列表查询。
+//
+// 标题不进记录表：两处都存必然漂移（用户改了文档标题，记录里还是旧的）。
+// 它是 LEFT JOIN knowledge_documents 的产物，不落库、不建表 —— 放在 entity 的理由
+// 与 ChunkReplacement、KnowledgeDocumentQuery 相同：service 与 repository 共同依赖。
+//
+// 文档已被删除时 DocumentTitle 是空串，由调用方回落到 OriginalName。
+type KnowledgeUploadRecordView struct {
+	KnowledgeUploadRecord
+
+	DocumentTitle string `gorm:"column:document_title"`
+}

@@ -6,9 +6,11 @@ import {
   fetchKnowledgeDocument,
   fetchKnowledgeDocumentPreview,
   deleteKnowledgeDocument,
+  deleteUploadRecord,
+  fetchUploadRecords,
   uploadKnowledgeFile,
   type KnowledgeDocument,
-  type KnowledgeDocumentStatus,
+  type KnowledgeUploadRecord,
 } from '@/api/knowledge'
 
 /**
@@ -16,20 +18,20 @@ import {
  *
  * 页面结构对齐 `docs/prototypes/knowledge-redesign.html`：
  * - **主页**只列已就绪（ready）的文档，滚到底由服务端续接下一页；
- * - **上传记录**装的是"还没收录成功"的那些（等待中 / 处理中 / 失败），只提供删除。
- *   两者互不重叠 —— 所以删掉一条上传记录，不会影响主页上看到的内容。
- * - 收录是异步的：`upload` 拿到的是 pending 文档，靠 `fetchKnowledgeDocument`
- *   轮询到终态，前端据此驱动"处理中"的反馈。
+ * - **上传记录**装的是每一次文件投递的流水（批 ② 起独立成表），含已收录成功的。
  *
- * 两个列表都走**服务端筛选与分页**（批 ①）：主页问 `status=ready`，上传记录问
- * `status=pending,processing,failed`。在那之前是一次拉满上限再在前端 filter ——
- * 而列表本身是分页的，只看得到已经拉下来的那几页，"第一页全是 failed、
- * ready 排在第二页"会被过滤成空列表。
+ * 两者是**两种东西**，这是批 ② 之后最要紧的一条：
+ * 主页回答"现在库里有哪些知识"，抽屉回答"投递过什么"。所以一条记录在文档被删之后
+ * 仍然留着（那时它的展示状态是「已收录后删除」），而主页看不到任何痕迹 ——
+ * 记录条数与主页条数**不该相等**，也不该被拿来互推。
  *
- * ⚠️ 一处临时实现，等批 ② 落地后替换，**组件不需要跟着改**：
- * "上传记录"是从文档列表里挑出非 ready 的行 —— 批 ② 之前"一条记录 = 一行文档"，
- * 所以删记录等同于删那篇文档；因为抽屉里不出现 ready 文档，这个差异在界面上不可见。
- *    TODO(批 ②)：改读 `GET /knowledge/upload-records`，删除改调 `DELETE /upload-records/:id`。
+ * 收录是异步的：`upload` 拿到的是 pending 文档，靠 `fetchKnowledgeDocument`
+ * 轮询到终态，前端据此驱动"处理中"的反馈。
+ *
+ * 两个列表都走**服务端筛选与分页**（批 ①）：主页问 `status=ready`，
+ * 上传记录走独立的 `GET /knowledge/upload-records`。在那之前记录是从文档列表里
+ * 派生出来的（问 `status=pending,processing,failed`）—— 那样既漏掉已收录的历史，
+ * 也没法表达"文档删了但那次投递确实成功过"。
  */
 export const useKnowledgeStore = defineStore('knowledge', () => {
   /** 主页每次"下拉"续接的条数，也是首屏拉取的条数 */
@@ -44,9 +46,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   /** 轮询上限。一份大文档解析几分钟很正常，但不能无限等 */
   const POLL_TIMEOUT_MS = 15 * 60 * 1000
 
-  /** "还没收录成功"的三个状态，就是上传记录的取值范围 */
-  const RECORD_STATUSES: KnowledgeDocumentStatus[] = ['pending', 'processing', 'failed']
-
   /** 主页数据：已收录的文档。按页从服务端取回后依次累加 */
   const readyDocuments = ref<KnowledgeDocument[]>([])
 
@@ -56,8 +55,15 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   /** 已经铺到第几页。0 表示还没拉过 */
   const readyPage = ref(0)
 
-  /** 上传记录：等待中 / 处理中 / 失败。顺序沿用后端（新的在前） */
-  const uploadRecords = ref<KnowledgeDocument[]>([])
+  /**
+   * 上传记录：**完整流水**，含已收录成功的。顺序沿用后端（新的在前）。
+   *
+   * 只拉第一页（100 条）—— 抽屉是"看看最近传过什么"的地方，不做无限滚动。
+   */
+  const uploadRecords = ref<KnowledgeUploadRecord[]>([])
+
+  /** 服务端给出的记录总数，抽屉标题上的"N 条"用它 */
+  const recordTotal = ref(0)
 
   const loading = ref(false)
 
@@ -85,9 +91,23 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   /** 空态：加载完了但一条 ready 都铺不出来（可能是没有 ready，也可能被搜索过滤光了） */
   const isEmpty = computed(() => !loading.value && readyDocuments.value.length === 0)
 
-  /** 最近一次失败的记录，卡片拿它显示失败原因 */
+  /**
+   * 最近一次失败的投递，新增弹层的"上次失败"卡片拿它显示原因。
+   *
+   * 列表是倒序的，所以取到的第一条 failed 就是最近那次 —— 不用再比时间。
+   */
   const lastFailedRecord = computed(
-    () => uploadRecords.value.find((d) => d.status === 'failed') ?? null,
+    () => uploadRecords.value.find((record) => record.status === 'failed') ?? null,
+  )
+
+  /**
+   * 还需要盯着的记录数：等待中 / 处理中 / 失败。工具条上的小角标用它。
+   *
+   * 不能拿 `uploadRecords.length` 当角标 —— 记录里混着已收录成功的历史，
+   * 那会让角标随着"用得多"单调增长，看不出有没有事要管。
+   */
+  const recordAlerts = computed(
+    () => uploadRecords.value.filter((record) => record.status !== 'ready').length,
   )
 
   // 关键字一变就重新从第一页拉：筛选在服务端，本地不需要再维护"铺到第几条"。
@@ -116,15 +136,28 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
           status: ['ready'],
           keyword: keyword.value,
         }),
-        fetchKnowledgeDocuments({ page: 1, size: RECORD_PAGE_SIZE, status: RECORD_STATUSES }),
+        fetchUploadRecords({ page: 1, size: RECORD_PAGE_SIZE }),
       ])
       readyDocuments.value = ready.list
       readyTotal.value = ready.total
       readyPage.value = ready.page
       uploadRecords.value = records.list
+      recordTotal.value = records.total
     } finally {
       loading.value = false
     }
+  }
+
+  /**
+   * 只重拉上传记录。
+   *
+   * 抽屉每次打开、以及提交后要让新记录立刻出现时用。之所以要单独一条路径：
+   * 提交后到终态之间轮询得很密，把主页也一起重拉会让列表反复闪。
+   */
+  async function loadRecords() {
+    const records = await fetchUploadRecords({ page: 1, size: RECORD_PAGE_SIZE })
+    uploadRecords.value = records.list
+    recordTotal.value = records.total
   }
 
   /** 滚到底续接下一页（服务端分页） */
@@ -152,13 +185,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     }
   }
 
-  /** 把一条文档并进上传记录（有则替换、无则插到最前），用于上传过程中原地刷新进度 */
-  function upsertRecord(document: KnowledgeDocument) {
-    const index = uploadRecords.value.findIndex((item) => item.id === document.id)
-    if (index >= 0) uploadRecords.value[index] = document
-    else uploadRecords.value.unshift(document)
-  }
-
   /**
    * 上传并收录一份文件，一路轮询到终态。
    *
@@ -174,7 +200,15 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     try {
       let document = await uploadKnowledgeFile(file, title)
       activeUpload.value = document
-      upsertRecord(document)
+
+      // 提交的同时后端已经写了一条 pending 记录（同一个请求里建的），拉回来让
+      // 抽屉立刻有这条。拉失败不当回事：文件已经在收了，为一次刷新失败把整次上传
+      // 报成失败，反而会骗用户重传。
+      try {
+        await loadRecords()
+      } catch {
+        /* 抽屉的这条晚点到，不影响收录本身 */
+      }
 
       const deadline = Date.now() + POLL_TIMEOUT_MS
       while (document.status === 'pending' || document.status === 'processing') {
@@ -182,11 +216,10 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
         await new Promise((resolve) => setTimeout(resolve, 1000))
         document = await fetchKnowledgeDocument(document.id)
         activeUpload.value = document
-        upsertRecord(document)
       }
 
-      // 终态之后整表重拉：这一份要从上传记录移到主页，切片数、updated_at 这些
-      // 也是后端在收尾时补的，别拿轮询到的最后一帧糊弄过去
+      // 终态之后整表重拉：这一份的切片数、字符数、updated_at 都是后端在收尾时补的，
+      // 记录那一行的状态也是在同一个事务里跟着翻的 —— 别拿轮询到的最后一帧糊弄过去
       await load()
       return document
     } finally {
@@ -199,9 +232,23 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     return fetchKnowledgeDocumentPreview(id)
   }
 
-  /** 删除一篇文档（切片与向量由数据库级联清理），然后整表重拉 */
-  async function remove(id: number) {
+  /** 删除一篇已收录的知识（切片与向量由数据库级联清理），然后整表重拉 */
+  async function removeDocument(id: number) {
     await deleteKnowledgeDocument(id)
+    await load()
+  }
+
+  /**
+   * 删除一条上传记录。
+   *
+   * 连带后果全在后端那一个事务里：记录对应的文档**若还没收录成功**，会一起被删掉
+   * （不收掉的话上传闸门会一直卡着 —— 它数的是 pending + processing 的文档行）；
+   * 已经 ready 的文档绝不触碰，只是记录失去关联，那行的状态变成「已收录后删除」。
+   *
+   * 所以这里要整表重拉而不是只改本地那一行：一次删除可能同时动了两个列表。
+   */
+  async function removeRecord(id: number) {
+    await deleteUploadRecord(id)
     await load()
   }
 
@@ -210,6 +257,8 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     readyDocuments,
     readyTotal,
     uploadRecords,
+    recordTotal,
+    recordAlerts,
     lastFailedRecord,
     activeUpload,
     // 界面状态
@@ -220,9 +269,11 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     isEmpty,
     // 动作
     load,
+    loadRecords,
     loadMore,
     upload,
     preview,
-    remove,
+    removeDocument,
+    removeRecord,
   }
 })

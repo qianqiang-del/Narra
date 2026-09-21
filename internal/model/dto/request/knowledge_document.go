@@ -18,6 +18,9 @@ type KnowledgeIngestFile struct {
 	// SourceURI 来源标识。上传场景里放用户看到的原始文件名，
 	// 而不是服务器上的临时路径 —— 后者对用户没有意义，还会泄露目录结构。
 	SourceURI string `json:"source_uri"`
+	// SizeBytes 原始文件的字节数。只写进上传记录供界面显示"这份文件有多大"，
+	// 收录链路本身不用它；0 表示调用方没提供。
+	SizeBytes int64 `json:"size_bytes"`
 }
 
 // KnowledgeIngestText 是把一段正文直接收录为知识文档的请求。

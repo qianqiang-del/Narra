@@ -36,6 +36,19 @@ interface PageDTO<T> {
 /** 文档处理状态，对应后端 knowledge_documents.status */
 export type KnowledgeDocumentStatus = 'pending' | 'processing' | 'ready' | 'failed'
 
+/**
+ * 上传记录一行上出现的状态徽章，**只有四个**。
+ *
+ * 与数据库里的四个状态不是一一对应：
+ * - `pending` / `processing` 对用户是同一件事（"还没好"），合并成 `processing`；
+ * - `ready` 要再看文档还在不在 —— 记录还在、文档没了就是 `removed`。
+ *
+ * `removed` 不是一个数据库状态，而是"记录还在、当时收录成功的文档已经被删了"
+ * 这个**展示态**：它由「documentId 为空 + status 仍是 ready」推出来。放进这个类型，
+ * 是因为它只活在界面上（文案与配色），不该去污染文档状态的取值。
+ */
+export type KnowledgeBadgeStatus = 'ready' | 'removed' | 'processing' | 'failed'
+
 /** 文档来源，对应数据库上 source_type 的 CHECK 约束 */
 export type KnowledgeSourceType = 'manual' | 'import' | 'api'
 
@@ -71,6 +84,52 @@ export interface KnowledgePage {
 
 export interface KnowledgeDocumentPreview extends KnowledgeDocument {
   content: string
+}
+
+/** 后端 `response.KnowledgeUploadRecord` 的原样形状 */
+interface KnowledgeUploadRecordDTO {
+  id: number
+  document_id: number | null
+  title: string
+  original_name: string
+  size_bytes: number
+  status: string
+  error?: string
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * 上传记录 —— 一次文件投递的流水，**不是一份知识**。
+ *
+ * 与 KnowledgeDocument 的两处关键差别：
+ * - 它包含已经收录成功的那些（记录是"投递"这个动作的历史）；
+ * - 文档被删掉之后记录仍留着，此时 `documentId` 为空、`status` 还是 ready，
+ *   界面上读作「已收录后删除」。
+ */
+export interface KnowledgeUploadRecord {
+  id: number
+  /** 关联文档 ID；为空表示那次上传的成果已经被删了 */
+  documentId: number | null
+  /** 展示标题：优先文档标题，文档没了则回落 originalName（后端算好给前端） */
+  title: string
+  /** 用户看到的原始文件名，始终有值 */
+  originalName: string
+  /** 文件字节数；0 表示未知（回填出来的历史记录拿不到这个信息） */
+  sizeBytes: number
+  status: KnowledgeDocumentStatus
+  /** 失败原因；成功或未结束时为空串 */
+  error: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface UploadRecordPage {
+  list: KnowledgeUploadRecord[]
+  page: number
+  size: number
+  total: number
+  totalPage: number
 }
 
 /** 单次上传的文件大小上限，与后端 controller 的 maxUploadBytes 对齐 */
@@ -161,6 +220,56 @@ export async function fetchKnowledgeDocumentPreview(id: number): Promise<Knowled
 
 export async function deleteKnowledgeDocument(id: number): Promise<void> {
   await request<null>(`/knowledge/documents/${id}`, { method: 'DELETE' })
+}
+
+function toUploadRecord(r: KnowledgeUploadRecordDTO): KnowledgeUploadRecord {
+  return {
+    id: r.id,
+    documentId: r.document_id ?? null,
+    title: r.title,
+    originalName: r.original_name,
+    sizeBytes: r.size_bytes,
+    status: r.status as KnowledgeDocumentStatus,
+    error: r.error ?? '',
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }
+}
+
+/**
+ * 分页拉取上传记录（完整流水，含已收录成功的）。
+ *
+ * 这个接口**没有筛选参数** —— 与文档列表不同，记录不做 status / keyword 筛选。
+ * 抽屉是"最近投递过什么"的一览，前端按 `recordAlerts` 自己挑出要盯的那些。
+ */
+export async function fetchUploadRecords(
+  params: { page?: number; size?: number } = {},
+): Promise<UploadRecordPage> {
+  const search = new URLSearchParams()
+  search.set('page', String(params.page ?? 1))
+  search.set('size', String(params.size ?? 20))
+
+  const data = await request<PageDTO<KnowledgeUploadRecordDTO>>(
+    `/knowledge/upload-records?${search}`,
+  )
+  return {
+    list: data.list.map(toUploadRecord),
+    page: data.page,
+    size: data.size,
+    total: data.total,
+    totalPage: data.total_page,
+  }
+}
+
+/**
+ * 删除一条上传记录。
+ *
+ * 连带后果在后端那一个事务里：对应的文档若还**没收录成功**会被一起删掉（不收掉的话
+ * 上传闸门会一直卡着，因为它数的是 pending + processing 的文档行）；已经 ready 的
+ * 文档绝不触碰，只是记录失去关联、状态变成「已收录后删除」。
+ */
+export async function deleteUploadRecord(id: number): Promise<void> {
+  await request<null>(`/knowledge/upload-records/${id}`, { method: 'DELETE' })
 }
 
 /**

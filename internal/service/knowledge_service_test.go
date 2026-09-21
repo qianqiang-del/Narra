@@ -103,8 +103,50 @@ func (f *fakeIngester) IngestText(ctx context.Context, input rag.TextInput) (rag
 	return f.result, f.err
 }
 
+// fakeUploadRecordStore 是 uploadRecordStore 的内存替身。
+//
+// 只有三个方法：建记录（UploadRecordStore）与状态推进（仓储在事务里顺带做）
+// 都看不见，服务层对记录的职责就只有"列出来"和"删掉它"。
+type fakeUploadRecordStore struct {
+	views   []entity.KnowledgeUploadRecordView
+	total   int64
+	record  *entity.KnowledgeUploadRecord
+	deleted []uint64
+
+	// offset / limit 记录最近一次的查询窗口，供断言分页换算是否透传。
+	offset int
+	limit  int
+}
+
+var _ uploadRecordStore = (*fakeUploadRecordStore)(nil)
+
+func (s *fakeUploadRecordStore) List(ctx context.Context, offset, limit int) ([]entity.KnowledgeUploadRecordView, int64, error) {
+	s.offset, s.limit = offset, limit
+	return s.views, s.total, nil
+}
+
+func (s *fakeUploadRecordStore) GetByID(ctx context.Context, id uint64) (*entity.KnowledgeUploadRecord, error) {
+	if s.record == nil || s.record.ID != id {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return s.record, nil
+}
+
+func (s *fakeUploadRecordStore) DeleteRecord(ctx context.Context, id uint64) error {
+	s.deleted = append(s.deleted, id)
+	return nil
+}
+
 func newTestService(querier *fakeDocumentQuerier, ingestion *fakeIngester) KnowledgeService {
-	return NewKnowledgeService(querier, ingestion)
+	return newTestServiceWithRecords(querier, &fakeUploadRecordStore{}, ingestion)
+}
+
+func newTestServiceWithRecords(
+	querier *fakeDocumentQuerier,
+	records *fakeUploadRecordStore,
+	ingestion *fakeIngester,
+) KnowledgeService {
+	return NewKnowledgeService(querier, records, ingestion)
 }
 
 // TestIngestFileMapsRequestAndResult 校验 DTO 到收录输入、entity 到响应的两次映射。
@@ -378,6 +420,7 @@ func TestSubmitFilePassesThroughWhenIdle(t *testing.T) {
 		Title:      "设计文档",
 		SourceType: testDocumentSource,
 		SourceURI:  "设计.md",
+		SizeBytes:  2048,
 	})
 	if err != nil {
 		t.Fatalf("提交失败: %v", err)
@@ -385,11 +428,122 @@ func TestSubmitFilePassesThroughWhenIdle(t *testing.T) {
 	if ingestion.submitted != 1 {
 		t.Errorf("SubmitFile 调用次数 = %d，期望 1", ingestion.submitted)
 	}
-	want := rag.FileInput{Path: "/tmp/a.md", Title: "设计文档", SourceType: testDocumentSource, SourceURI: "设计.md"}
+	// 字节数也要透传：上传记录靠它显示"这份文件有多大"。
+	want := rag.FileInput{Path: "/tmp/a.md", Title: "设计文档", SourceType: testDocumentSource, SourceURI: "设计.md", SizeBytes: 2048}
 	if ingestion.fileInput != want {
 		t.Errorf("收录输入 = %+v，期望 %+v", ingestion.fileInput, want)
 	}
 	if document.ID != testDocumentID || document.Status != entity.KnowledgeDocumentStatusPending {
 		t.Errorf("响应映射不对: %+v", document)
+	}
+}
+
+// 上传记录的标题优先取关联文档的标题；文档已被删除时回落到原始文件名 ——
+// 记录留着、成果没了，界面据此显示"已收录后删除"。
+func TestListUploadRecordsFallsBackToOriginalName(t *testing.T) {
+	records := &fakeUploadRecordStore{
+		views: []entity.KnowledgeUploadRecordView{
+			{
+				KnowledgeUploadRecord: entity.KnowledgeUploadRecord{
+					BaseModel:    entity.BaseModel{ID: 901},
+					OriginalName: "架构说明.md",
+					Status:       entity.KnowledgeUploadRecordStatusReady,
+					SizeBytes:    2048,
+				},
+				DocumentTitle: "Narra 架构说明",
+			},
+			{
+				KnowledgeUploadRecord: entity.KnowledgeUploadRecord{
+					BaseModel:    entity.BaseModel{ID: 902},
+					OriginalName: "投标文件-技术标.docx",
+					Status:       entity.KnowledgeUploadRecordStatusFailed,
+				},
+				// 文档已经不在了：LEFT JOIN 取不到标题。
+				DocumentTitle: "",
+			},
+		},
+		total: 2,
+	}
+	svc := newTestServiceWithRecords(&fakeDocumentQuerier{}, records, &fakeIngester{})
+
+	out, total, err := svc.ListUploadRecords(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("列表查询失败: %v", err)
+	}
+	if total != 2 || len(out) != 2 {
+		t.Fatalf("total = %d, len(out) = %d，期望都是 2", total, len(out))
+	}
+	if out[0].Title != "Narra 架构说明" {
+		t.Errorf("标题 = %q，期望取关联文档的标题", out[0].Title)
+	}
+	if out[0].SizeBytes != 2048 {
+		t.Errorf("字节数 = %d，期望 2048", out[0].SizeBytes)
+	}
+	if out[1].Title != "投标文件-技术标.docx" {
+		t.Errorf("文档没了时标题 = %q，期望回落到原始文件名", out[1].Title)
+	}
+	if out[0].OriginalName != "架构说明.md" {
+		t.Errorf("原始文件名 = %q，应当始终保留（界面要显示它）", out[0].OriginalName)
+	}
+	// 分页换算与文档列表同一套口径：第 1 页、每页 20 → 偏移 0。
+	if records.offset != 0 || records.limit != 20 {
+		t.Errorf("分页窗口 = (%d, %d)，期望 (0, 20)", records.offset, records.limit)
+	}
+}
+
+// 失败原因从记录自己的 error_message 列取，而不是去解析文档的 metadata。
+func TestListUploadRecordsReportsFailureReason(t *testing.T) {
+	reason := "解析失败：No module named 'scipy'"
+	records := &fakeUploadRecordStore{
+		views: []entity.KnowledgeUploadRecordView{{
+			KnowledgeUploadRecord: entity.KnowledgeUploadRecord{
+				BaseModel:    entity.BaseModel{ID: 902},
+				OriginalName: "产品需求文档.docx",
+				Status:       entity.KnowledgeUploadRecordStatusFailed,
+				ErrorMessage: &reason,
+			},
+		}},
+		total: 1,
+	}
+	svc := newTestServiceWithRecords(&fakeDocumentQuerier{}, records, &fakeIngester{})
+
+	out, _, err := svc.ListUploadRecords(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("列表查询失败: %v", err)
+	}
+	if out[0].Error != reason {
+		t.Errorf("失败原因 = %q，期望 %q", out[0].Error, reason)
+	}
+}
+
+// 删记录时关联的文档可能早就不在了（记录留着、成果被删了）。
+// 那不是错误，是"已收录后删除"这条历史正在被清理。
+func TestDeleteUploadRecordToleratesMissingDocument(t *testing.T) {
+	documentID := uint64(42)
+	records := &fakeUploadRecordStore{record: &entity.KnowledgeUploadRecord{
+		BaseModel:  entity.BaseModel{ID: 903},
+		DocumentID: &documentID,
+	}}
+	// 文档仓储里什么都没有，GetByID 会返回 gorm.ErrRecordNotFound。
+	svc := newTestServiceWithRecords(&fakeDocumentQuerier{}, records, &fakeIngester{})
+
+	if err := svc.DeleteUploadRecord(context.Background(), 903); err != nil {
+		t.Fatalf("文档已不存在时删除记录不该失败: %v", err)
+	}
+	if len(records.deleted) != 1 || records.deleted[0] != 903 {
+		t.Errorf("应当删掉记录 903，实际 %v", records.deleted)
+	}
+}
+
+// 记录不存在时要给出能看懂的说明，而不是把 gorm 的原始错误抛出去。
+func TestDeleteUploadRecordReportsMissingRecord(t *testing.T) {
+	svc := newTestService(&fakeDocumentQuerier{}, &fakeIngester{})
+
+	err := svc.DeleteUploadRecord(context.Background(), 999)
+	if err == nil {
+		t.Fatal("记录不存在时必须报错")
+	}
+	if !strings.Contains(err.Error(), "不存在") {
+		t.Errorf("错误信息应当说明记录不存在，实际: %v", err)
 	}
 }
