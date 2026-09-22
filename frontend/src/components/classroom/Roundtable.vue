@@ -25,6 +25,7 @@ import {
 } from 'reka-ui'
 
 import { cn } from '@/lib/utils'
+import { useProfileStore } from '@/stores/profile'
 import type { Bubble, Participant } from '@/types/classroom'
 
 const props = defineProps<{
@@ -37,7 +38,7 @@ const props = defineProps<{
   participants?: Participant[]
   /** 正在发言的学员 id（高亮描边） */
   speakingAgentId?: string | null
-  /** 用户头像；缺省读 localStorage(narra-profile) 或默认头像 */
+  /** 用户头像；缺省取 profile store 里用户自己挑的那张 */
   userAvatar?: string
   /** 语音识别是否可用；关闭时麦克风按钮置灰 */
   asrEnabled?: boolean
@@ -49,6 +50,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const profileStore = useProfileStore()
 
 const draft = ref('')
 const inputRef = ref<HTMLTextAreaElement | null>(null)
@@ -67,19 +69,7 @@ const bubbleClass: Record<Bubble['from'], string> = {
     'bg-white border-gray-100 text-gray-700 rounded-bl-sm shadow-sm hover:shadow-md cursor-pointer dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200',
 }
 
-const resolvedUserAvatar = computed(() => {
-  if (props.userAvatar) return props.userAvatar
-  try {
-    const raw = localStorage.getItem('narra-profile')
-    if (raw) {
-      const v = JSON.parse(raw)
-      if (v?.avatar) return v.avatar
-    }
-  } catch {
-    /* ignore */
-  }
-  return '/avatars/user.png'
-})
+const resolvedUserAvatar = computed(() => props.userAvatar || profileStore.profile.avatar)
 
 function submit() {
   const text = draft.value.trim()

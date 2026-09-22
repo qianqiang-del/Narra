@@ -50,15 +50,9 @@ interface MaterialItem {
 }
 
 const materials = ref<MaterialItem[]>([])
-const extractor = ref('mineru')
 const materialOpen = ref(false)
 const materialDragging = ref(false)
 const composerRef = ref<HTMLDivElement | null>(null)
-
-const EXTRACTORS = [
-  { id: 'mineru', name: 'MinerU' },
-  { id: 'unpdf', name: 'unpdf' },
-]
 
 function addFiles(files: File[]) {
   for (const f of files) {
@@ -251,18 +245,6 @@ watch(
           v-if="materialOpen"
           class="absolute bottom-full left-0 z-50 mb-2 w-72 rounded-xl border border-border bg-popover p-3 shadow-lg"
         >
-          <div class="mb-2 flex items-center justify-between gap-2">
-            <span class="text-xs font-medium text-muted-foreground/70">{{
-              t('toolbar.documentExtractor')
-            }}</span>
-            <select
-              v-model="extractor"
-              class="h-7 rounded-md border border-input bg-transparent px-1.5 text-xs outline-none"
-            >
-              <option v-for="x in EXTRACTORS" :key="x.id" :value="x.id">{{ x.name }}</option>
-            </select>
-          </div>
-
           <label
             :class="
               cn(

@@ -195,6 +195,8 @@ func (a *App) initDependencies() error {
 	mcpServerRepo := repository.NewMCPServerRepository(a.postgresDB)
 	llmProviderRepo := repository.NewLLMProviderRepository(a.postgresDB)
 	classroomRepo := repository.NewClassroomRepository(a.postgresDB)
+	classroomAgentRepo := repository.NewClassroomAgentRepository(a.postgresDB)
+	txManager := repository.NewTransactionManager(a.postgresDB)
 	sceneRepo := repository.NewSceneRepository(a.postgresDB)
 	sceneSegmentRepo := repository.NewSceneSegmentRepository(a.postgresDB)
 	knowledgeDocumentRepo := repository.NewKnowledgeDocumentRepository(a.postgresDB)
@@ -289,7 +291,7 @@ func (a *App) initDependencies() error {
 		return err
 	}
 	a.worker = workerRuntime
-	classroomSvc := service.NewClassroomService(classroomRepo, llmProviderSvc, queue)
+	classroomSvc := service.NewClassroomService(classroomRepo, classroomAgentRepo, roleRepo, llmProviderSvc, queue, txManager)
 
 	// 对账：队列里已不会继续处理的 generating 课程，归档的判失败、丢了的重投。
 	if err := bootstrap.ReconcileGenerating(context.Background(), classroomDeps, workerRuntime, queue); err != nil {

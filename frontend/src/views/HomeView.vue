@@ -13,6 +13,8 @@ import { useRouter } from 'vue-router'
 import { ArrowUp, Atom, Check, Loader2, Mic } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 
+import { createClassroom } from '@/api/classroom'
+import { ApiError } from '@/api/client'
 import AgentBar from '@/components/home/AgentBar.vue'
 import GenerationToolbar from '@/components/home/GenerationToolbar.vue'
 import GreetingBar from '@/components/home/GreetingBar.vue'
@@ -23,11 +25,13 @@ import TopPillToolbar from '@/components/home/TopPillToolbar.vue'
 import UiTooltip from '@/components/ui/UiTooltip.vue'
 import { cn } from '@/lib/utils'
 import { useLlmStore } from '@/stores/llm'
+import { useProfileStore } from '@/stores/profile'
 import { storeToRefs } from 'pinia'
 
 const { t } = useI18n()
 const router = useRouter()
 const llmStore = useLlmStore()
+const profileStore = useProfileStore()
 const { availableModels } = storeToRefs(llmStore)
 
 const settingsOpen = ref(false)
@@ -43,7 +47,6 @@ const interactiveMode = ref(false)
 const providerId = ref<number | null>(null)
 const modelId = ref('')
 const webSearch = ref(false)
-const extractor = ref('mineru')
 const materials = ref<{ id: string; name: string; size: number }[]>([])
 
 const agentMode = ref<'preset' | 'auto'>('preset')
@@ -55,6 +58,9 @@ const ttsEnabled = ref(true)
  * 这里不能写死音色 ID——池子里那个教师的 voice_id 改了，前端要跟着变。
  */
 const teacherVoice = ref('')
+
+/** AgentBar 实例；每个角色的音色由它自己管，要读它暴露的 roleVoices */
+const agentBarRef = ref<InstanceType<typeof AgentBar> | null>(null)
 
 const hasProvider = computed(() => availableModels.value.length > 0)
 const canSubmit = computed(() => requirement.value.trim().length > 0 && hasProvider.value && providerId.value !== null && modelId.value !== '' && !generating.value)
@@ -95,6 +101,18 @@ function autoGrow() {
 }
 watch(requirement, () => nextTick(autoGrow))
 
+/** 只取已勾选角色的音色；没勾的不发，缺省交给后端用角色默认音色。 */
+function pickedRoleVoices(): Record<string, string> {
+  if (agentMode.value !== 'preset') return {}
+  const voices = agentBarRef.value?.roleVoices ?? {}
+  const picked: Record<string, string> = {}
+  for (const key of selectedRoleIds.value) {
+    const voice = voices[key]
+    if (voice) picked[key] = voice
+  }
+  return picked
+}
+
 async function submit() {
   if (!hasProvider.value) {
     openModelSettings()
@@ -102,19 +120,28 @@ async function submit() {
     return
   }
   if (!canSubmit.value) return
+  const provider = providerId.value
+  if (provider === null) return
   generating.value = true
-  sessionStorage.setItem('narra:generation-config', JSON.stringify({
-    requirement: requirement.value.trim(),
-    llm_provider_id: providerId.value,
-    llm_model_id: modelId.value,
-    web_search: webSearch.value,
-    extractor: extractor.value,
-  }))
-  // 生成本身由课堂页承载，这里先落到预览页/课堂页
-  const id = `c-${Date.now()}`
-  await router.push({ name: 'generation-preview' })
-  generating.value = false
-  void id
+  try {
+    const created = await createClassroom({
+      requirement: requirement.value.trim(),
+      mode: interactiveMode.value ? 'interactive' : 'vocational',
+      llm_provider_id: provider,
+      llm_model_id: modelId.value,
+      web_search: webSearch.value,
+      bio: profileStore.profile.bio.trim(),
+      agent_mode: agentMode.value,
+      role_ids: agentMode.value === 'preset' ? selectedRoleIds.value : [],
+      role_voices: pickedRoleVoices(),
+      teacher_voice: teacherVoice.value,
+    })
+    await router.push({ name: 'classroom', params: { id: String(created.id) } })
+  } catch (error) {
+    toast.error(error instanceof ApiError ? error.message : t('home.generateFailed'))
+  } finally {
+    generating.value = false
+  }
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -177,6 +204,7 @@ function openClassroom(id: string) {
           <GreetingBar />
           <div class="shrink-0 pt-3.5 pr-3">
             <AgentBar
+              ref="agentBarRef"
               v-model:mode="agentMode"
               v-model:selected-ids="selectedRoleIds"
               v-model:tts="ttsEnabled"
@@ -203,7 +231,6 @@ function openClassroom(id: string) {
               v-model:provider-id="providerId"
               v-model:model-id="modelId"
               v-model:web-search="webSearch"
-              v-model:extractor="extractor"
               v-model:materials="materials"
               :available-models="availableModels"
               @configure="openModelSettings"
