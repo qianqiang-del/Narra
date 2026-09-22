@@ -147,7 +147,114 @@ func newTestServiceWithRecords(
 	records *fakeUploadRecordStore,
 	ingestion *fakeIngester,
 ) KnowledgeService {
-	return NewKnowledgeService(querier, records, ingestion)
+	return NewKnowledgeService(querier, records, ingestion, &fakeRetriever{})
+}
+
+// fakeRetriever 是 retriever 的替身：记录最近一次的输入，返回预设的结果或错误。
+type fakeRetriever struct {
+	result rag.RetrieveResult
+	err    error
+
+	// input 记录最近一次收到的检索输入，供断言 DTO 到 rag 的映射是否透传。
+	input rag.RetrieveInput
+}
+
+var _ retriever = (*fakeRetriever)(nil)
+
+func (f *fakeRetriever) Retrieve(ctx context.Context, input rag.RetrieveInput) (rag.RetrieveResult, error) {
+	f.input = input
+	return f.result, f.err
+}
+
+// TestRetrieveMapsRequestAndHits 校验检索的 DTO 映射：请求字段透传，
+// 命中翻成对外结构，其中 source 回落到文档标题（手工录入的文档没有来源标识）。
+func TestRetrieveMapsRequestAndHits(t *testing.T) {
+	similarity := 0.75
+	retrieval := &fakeRetriever{result: rag.RetrieveResult{
+		Model: "bge-m3",
+		Terms: []string{"向量", "检索"},
+		Hits: []rag.Hit{
+			{
+				ChunkID:       11,
+				DocumentID:    testDocumentID,
+				ChunkIndex:    2,
+				Heading:       "排序",
+				Content:       "命中正文",
+				DocumentTitle: "向量检索调研",
+				SourceType:    testDocumentSource,
+				SourceURI:     "向量检索调研.md",
+				Score:         0.031,
+				Similarity:    &similarity,
+				Method:        rag.MethodHybrid,
+			},
+			{
+				ChunkID:       12,
+				DocumentID:    testDocumentID + 1,
+				ChunkIndex:    0,
+				Content:       "手工录入的一段",
+				DocumentTitle: "课堂笔记",
+				SourceType:    entity.KnowledgeDocumentSourceManual,
+				Score:         0.016,
+				Method:        rag.MethodLexical,
+			},
+		},
+	}}
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval)
+
+	result, err := svc.Retrieve(context.Background(), requestdto.KnowledgeRetrieve{Query: "  向量检索 ", TopK: 2})
+	if err != nil {
+		t.Fatalf("检索失败: %v", err)
+	}
+
+	if retrieval.input.Text != "  向量检索 " || retrieval.input.TopK != 2 {
+		t.Fatalf("检索输入没有透传: %+v", retrieval.input)
+	}
+	if result.Model != "bge-m3" || len(result.Terms) != 2 {
+		t.Fatalf("模型与词项没有透传: %+v", result)
+	}
+	if len(result.Results) != 2 {
+		t.Fatalf("命中条数不对: %d", len(result.Results))
+	}
+
+	first := result.Results[0]
+	if first.Source != "向量检索调研.md" || first.Heading != "排序" || first.Method != rag.MethodHybrid {
+		t.Fatalf("第一条命中映射不对: %+v", first)
+	}
+	if first.Similarity == nil || *first.Similarity != similarity {
+		t.Fatalf("相似度没有带出来: %+v", first)
+	}
+
+	second := result.Results[1]
+	if second.Source != "课堂笔记" {
+		t.Fatalf("没有来源标识时应当回落到文档标题，实际是 %q", second.Source)
+	}
+	if second.Similarity != nil {
+		t.Fatalf("纯词法命中不该有相似度，否则 0 与正交就分不开了: %+v", second)
+	}
+}
+
+// TestRetrieveRejectsEmptyQuery 校验空检索词是服务层的可判定错误 ——
+// 接口层要按它翻 400，所以必须在进 rag 之前就拦下来。
+func TestRetrieveRejectsEmptyQuery(t *testing.T) {
+	retrieval := &fakeRetriever{}
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval)
+
+	if _, err := svc.Retrieve(context.Background(), requestdto.KnowledgeRetrieve{Query: "   "}); !errors.Is(err, ErrEmptyQuery) {
+		t.Fatalf("空检索词应当返回 ErrEmptyQuery，实际是 %v", err)
+	}
+	if retrieval.input.Text != "" {
+		t.Fatalf("空检索词不该被转发给检索链路: %+v", retrieval.input)
+	}
+}
+
+// TestRetrieveReportsUnavailableSearcher 校验没接检索能力时给的是一句明确说明，
+// 而不是空指针 —— retriever 可以为 nil（见 service.retriever 的注释）。
+func TestRetrieveReportsUnavailableSearcher(t *testing.T) {
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, nil)
+
+	if _, err := svc.Retrieve(context.Background(), requestdto.KnowledgeRetrieve{Query: "向量检索"}); err == nil {
+		t.Fatal("没接检索能力时应当报错")
+	}
 }
 
 // TestIngestFileMapsRequestAndResult 校验 DTO 到收录输入、entity 到响应的两次映射。

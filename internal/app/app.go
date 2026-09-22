@@ -183,6 +183,7 @@ func (a *App) initDependencies() error {
 	sceneSegmentRepo := repository.NewSceneSegmentRepository(a.postgresDB)
 	knowledgeDocumentRepo := repository.NewKnowledgeDocumentRepository(a.postgresDB)
 	knowledgeUploadRecordRepo := repository.NewKnowledgeUploadRecordRepository(a.postgresDB)
+	knowledgeSearchRepo := repository.NewKnowledgeSearchRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
 	roleSvc := service.NewRoleService(roleRepo)
@@ -238,7 +239,11 @@ func (a *App) initDependencies() error {
 	// uploadDir 必须和上面给 controller、service 的是同一个值，否则删除时的暂存清理会静默失效。
 	a.knowledgeWorker = rag.NewWorker(knowledgeDocumentRepo, knowledgeIngester, uploadDir, 1)
 	a.knowledgeWorker.Start()
-	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, uploadDir)
+	// 检索是收录的另一半门面：两路召回（余弦相似度 + 词项命中）经 RRF 融合，
+	// 编排在 rag.Retriever，服务层只做 DTO 映射。向量模型的登记与索引维护走
+	// embeddingModelRepo —— 检索只在同一模型下比向量，那个"默认模型"由它说了算。
+	knowledgeRetriever := rag.NewRetriever(knowledgeSearchRepo, embeddingModelRepo, embeddingManager)
+	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetriever, uploadDir)
 	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey)
 
 	// ========== 课堂受理 + 生成任务 ==========

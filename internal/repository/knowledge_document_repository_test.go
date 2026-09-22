@@ -370,6 +370,12 @@ func TestKnowledgeListAndCountChunks(t *testing.T) {
 		if err := repo.Create(ctx, document); err != nil {
 			t.Fatalf("创建文档失败: %v", err)
 		}
+		// ReplaceChunks 与 MarkFailed 只接受**处理中**的文档（见 ReplaceChunks 的注释：
+		// 绝不能给一个不在处理中的文档写入切片）。真实链路里这一步由 rag.Ingester
+		// 在切分前做，用例直接调仓储，所以要自己补上。
+		if err := repo.MarkProcessing(ctx, document.ID); err != nil {
+			t.Fatalf("推进状态失败: %v", err)
+		}
 		if err := repo.ReplaceChunks(ctx, document.ID, knowledgeTestReplacement(document.ID, modelID, index+1)); err != nil {
 			t.Fatalf("替换切片失败: %v", err)
 		}
@@ -438,6 +444,9 @@ func TestKnowledgeListFiltersByStatusAndKeyword(t *testing.T) {
 	failed.SourceURI = &failedURI
 	if err := repo.Create(ctx, failed); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
+	}
+	if err := repo.MarkProcessing(ctx, failed.ID); err != nil {
+		t.Fatalf("推进状态失败: %v", err)
 	}
 	if err := repo.MarkFailed(ctx, failed.ID, json.RawMessage(`{"error":"测试失败"}`), "测试失败"); err != nil {
 		t.Fatalf("标记失败状态出错: %v", err)
@@ -536,6 +545,9 @@ func TestKnowledgeCountActiveExcludesFinished(t *testing.T) {
 	failed := knowledgeTestDocument()
 	if err := repo.Create(ctx, failed); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
+	}
+	if err := repo.MarkProcessing(ctx, failed.ID); err != nil {
+		t.Fatalf("推进状态失败: %v", err)
 	}
 	if err := repo.MarkFailed(ctx, failed.ID, json.RawMessage(`{"error":"测试失败"}`), "测试失败"); err != nil {
 		t.Fatalf("标记失败状态出错: %v", err)

@@ -168,7 +168,8 @@ func (s *embeddingSettingService) syncModelRow(ctx context.Context, cfg config.E
 	}
 }
 
-// ensureDefaultModel 把当前生效配置登记进 embedding_models，供知识库写入向量时引用。
+// ensureDefaultModel 把当前生效配置登记进 embedding_models，供知识库写入向量时引用，
+// 并为它补建检索用的向量索引（见 repository.EnsureVectorIndex）。
 //
 // 两张表职责不同：embedding_settings 记"怎么连服务"（地址、密钥、超时），
 // embedding_models 记"这个模型是谁"（名称、维度）。knowledge_embeddings.model_id
@@ -184,7 +185,7 @@ func (s *embeddingSettingService) ensureDefaultModel(ctx context.Context, cfg co
 		return nil
 	}
 
-	_, err := s.modelRepo.EnsureDefault(ctx, entity.EmbeddingModel{
+	model, err := s.modelRepo.EnsureDefault(ctx, entity.EmbeddingModel{
 		Name:     cfg.Model,
 		Provider: entity.EmbeddingProviderOpenAICompatible,
 		// base_url 为空表示"沿用应用的全局 embedding 配置"（见实体注释），
@@ -192,20 +193,33 @@ func (s *embeddingSettingService) ensureDefaultModel(ctx context.Context, cfg co
 		BaseURL:    utils.OptionalString(cfg.BaseURL),
 		Dimensions: int32(cfg.Dimensions),
 	})
-	if err == nil {
-		return nil
+	if err != nil {
+		var mismatch *repository.DimensionsMismatchError
+		if errors.As(err, &mismatch) {
+			return fmt.Errorf(
+				"模型 %s 已按 %d 维登记，本次提交的是 %d 维，而该模型下已经有 %d 个切片向量。"+
+					"就地改维度会让新旧向量归到同一个 model_id 下，检索时维度不一致会直接失败。"+
+					"请改用另一个模型名（例如 %s-1024），或先删除该模型下的向量",
+				mismatch.ModelName, mismatch.Recorded, mismatch.Requested, mismatch.Vectors, mismatch.ModelName,
+			)
+		}
+		return fmt.Errorf("登记向量模型失败: %w", err)
 	}
 
-	var mismatch *repository.DimensionsMismatchError
-	if errors.As(err, &mismatch) {
-		return fmt.Errorf(
-			"模型 %s 已按 %d 维登记，本次提交的是 %d 维，而该模型下已经有 %d 个切片向量。"+
-				"就地改维度会让新旧向量归到同一个 model_id 下，检索时维度不一致会直接失败。"+
-				"请改用另一个模型名（例如 %s-1024），或先删除该模型下的向量",
-			mismatch.ModelName, mismatch.Recorded, mismatch.Requested, mismatch.Vectors, mismatch.ModelName,
+	// 默认模型定下来之后顺手把它的向量索引补上（幂等，维度变了会自动重建）。
+	// 挂在这里是因为这段代码是"换模型 / 改维度"的唯一入口 —— 启动时对齐（LoadActive）
+	// 与设置页保存都从这走，跟着它就不会漏建。
+	//
+	// 失败只让检索退化成顺序扫描、不影响正确性，所以告警即可、不上抛：
+	// 为一条索引把"保存配置"判成失败是本末倒置。
+	if err := s.modelRepo.EnsureVectorIndex(ctx, model); err != nil {
+		logger.Warn("为默认模型建立向量索引失败，知识检索将退化为顺序扫描",
+			zap.String("model", cfg.Model),
+			zap.Int32("dimensions", model.Dimensions),
+			zap.Error(err),
 		)
 	}
-	return fmt.Errorf("登记向量模型失败: %w", err)
+	return nil
 }
 
 // resolveAPIKey 决定这次保存该用哪个密钥，优先级依次是：

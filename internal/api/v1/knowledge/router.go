@@ -30,4 +30,8 @@ func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	records := g.Group("/knowledge/upload-records")
 	records.GET("", c.ListUploadRecords)
 	records.DELETE("/:id", c.DeleteUploadRecord)
+
+	// 检索是第三组资源，与上面两组并列（不进 /knowledge/documents）：它一次跨整库
+	// 召回一批切片，命中的不是某一篇文档，塞进文档组会让"文档的子资源"这个语义说不清。
+	g.POST("/knowledge/retrieve", c.Retrieve)
 }

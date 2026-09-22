@@ -29,4 +29,8 @@ var (
 	// ErrInvalidVector 表示向量为空或含 NaN / Inf。
 	// 它们在 pgvector 的文本字面量里会被写成 "NaN" / "+Inf"，被数据库直接拒掉。
 	ErrInvalidVector = errors.New("向量内容非法")
+
+	// ErrEmptyQuery 表示检索词是空的。
+	// 与 ErrEmptyContent 对偶：那边是"没东西可入库"，这边是"没东西可查"。
+	ErrEmptyQuery = errors.New("检索词不能为空")
 )
