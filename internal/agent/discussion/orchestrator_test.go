@@ -115,6 +115,7 @@ type fixture struct {
 	messages      repository.MessageRepository
 	runs          repository.RunRepository
 	turns         repository.TurnRepository
+	compactions   repository.ContextCompactionRepository
 	tx            repository.TransactionManager
 
 	cleanup func()
@@ -165,6 +166,7 @@ func newFixture(t *testing.T) *fixture {
 		messages:      repository.NewMessageRepository(db),
 		runs:          repository.NewRunRepository(db),
 		turns:         repository.NewTurnRepository(db),
+		compactions:   repository.NewContextCompactionRepository(db),
 		tx:            repository.NewTransactionManager(db),
 	}
 
@@ -177,6 +179,9 @@ func newFixture(t *testing.T) *fixture {
 		db.Where("run_id IN (?)", runIDs).Delete(&entity.AgentTurn{})
 		db.Where("conversation_id = ?", f.conversation.ID).Delete(&entity.OrchestrationRun{})
 		db.Where("conversation_id = ?", f.conversation.ID).Delete(&entity.ConversationMessage{})
+		// 摘要在对话之后才可能存在，删对话时数据库会把它级联带走；这里仍然显式删一次，
+		// 理由和上面一样 —— 清理不该建立在"级联规则没被改过"这个假设上。
+		db.Where("conversation_id = ?", f.conversation.ID).Delete(&entity.ContextCompaction{})
 		db.Where("id = ?", f.conversation.ID).Delete(&entity.ClassroomConversation{})
 		db.Where("classroom_id = ?", f.classroom.ID).Delete(&entity.ClassroomAgent{})
 		if len(f.presetAgentIDs) > 0 {
