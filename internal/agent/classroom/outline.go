@@ -79,8 +79,12 @@ func buildOutlineMessages(classroom *entity.Classroom, config GenerationConfig) 
 	var input strings.Builder
 	input.WriteString("## 用户需求\n")
 	input.WriteString(classroom.Requirement)
-	input.WriteString("\n\n## 课程模式\n")
-	input.WriteString(classroom.Mode)
+	input.WriteString("\n\n## 深度交互\n")
+	if classroom.Mode == entity.ClassroomModeInteractive {
+		input.WriteString("开启")
+	} else {
+		input.WriteString("未开启")
+	}
 	if bio := strings.TrimSpace(config.Bio); bio != "" {
 		input.WriteString("\n\n## 用户简介\n")
 		input.WriteString(bio)

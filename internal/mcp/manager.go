@@ -9,7 +9,9 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 	"narra/pkg/config"
+	"narra/pkg/logger"
 )
 
 type Status string
@@ -46,9 +48,13 @@ type Manager struct {
 	connect  clientFactory
 }
 
-// NewManager 创建空的 MCP 管理器，server 配置通过 LoadFromDB 从数据库加载。
+// NewManager 创建空的 MCP 管理器，server 配置通过 Load 从数据库加载。
 func NewManager(app config.AppConfig) *Manager {
-	return &Manager{app: app, servers: make(map[string]*serverState), connect: defaultClientFactory}
+	return &Manager{
+		app:     app,
+		servers: make(map[string]*serverState),
+		connect: defaultClientFactory,
+	}
 }
 
 // Load replaces the runtime server configuration without opening connections.
@@ -175,7 +181,12 @@ func (m *Manager) RefreshTools(ctx context.Context) (*Registry, error) {
 			}
 			continue
 		}
-		descriptors = append(descriptors, tools...)
+		selected, missing := selectTools(tools, m.enabledToolsFor(id))
+		for _, name := range missing {
+			logger.Warn("MCP server 启用的工具不在发现结果里，已忽略",
+				zap.String("server", id), zap.String("tool", name))
+		}
+		descriptors = append(descriptors, selected...)
 	}
 	registry, err := NewRegistry(descriptors)
 	if err != nil {
@@ -185,6 +196,17 @@ func (m *Manager) RefreshTools(ctx context.Context) (*Registry, error) {
 	m.registry = registry
 	m.mu.Unlock()
 	return registry, nil
+}
+
+// enabledToolsFor 返回指定 server 配置里启用的工具名，空表示该 server 的工具全部启用。
+func (m *Manager) enabledToolsFor(id string) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	state, ok := m.servers[id]
+	if !ok {
+		return nil
+	}
+	return state.config.EnabledTools
 }
 
 // ListTools 返回当前注册表中所有工具的快照副本。

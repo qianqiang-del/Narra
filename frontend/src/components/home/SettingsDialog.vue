@@ -4,12 +4,13 @@
  * 使用左侧导航组织设置项，便于后续扩展更多配置页面。
  */
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
-import { Bot, Database, Monitor, Moon, Palette, Plug, Plus, Sun, Trash2, Wifi, X } from 'lucide-vue-next'
+import { Bot, Database, Monitor, Moon, Palette, Plug, Plus, SlidersHorizontal, Sun, Trash2, Wifi, X } from 'lucide-vue-next'
 import { reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'
 
 import { useTheme, type ThemeMode } from '@/composables/useTheme'
+import type { McpServer } from '@/api/mcp'
 import { useMcpStore } from '@/stores/mcp'
 import { useLlmStore } from '@/stores/llm'
 import LlmSettingsSection from '@/components/home/LlmSettingsSection.vue'
@@ -98,6 +99,75 @@ async function runTest(id: number) {
   } finally {
     testingId.value = null
     testTimer = setTimeout(() => { testResult.value = null }, 5000)
+  }
+}
+
+// 工具白名单：选项来自「测试连接」，不勾的工具不会挂给模型。
+const toolsTargetId = ref<number | null>(null)
+const toolsLoading = ref(false)
+const toolsSaving = ref(false)
+const toolsError = ref('')
+const toolsOptions = ref<string[]>([])
+const toolsDraft = ref<string[]>([])
+
+async function openTools(srv: McpServer) {
+  toolsTargetId.value = srv.id
+  toolsLoading.value = true
+  toolsError.value = ''
+  toolsOptions.value = []
+  toolsDraft.value = []
+  try {
+    const result = await mcpStore.test(srv.id)
+    if (!result.success) {
+      toolsError.value = result.message
+      return
+    }
+    toolsOptions.value = result.tools ?? []
+    if (toolsOptions.value.length === 0) {
+      toolsError.value = t('mcp.noTools')
+      return
+    }
+    // 名单为空表示不限制，默认全勾；已有名单则按名单勾。
+    toolsDraft.value = srv.enabledTools.length
+      ? toolsOptions.value.filter((name) => srv.enabledTools.includes(name))
+      : [...toolsOptions.value]
+  } catch (e) {
+    toolsError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    toolsLoading.value = false
+  }
+}
+
+function closeTools() {
+  toolsTargetId.value = null
+  toolsError.value = ''
+  toolsOptions.value = []
+  toolsDraft.value = []
+}
+
+function toggleTools(srv: McpServer) {
+  if (toolsTargetId.value === srv.id) closeTools()
+  else void openTools(srv)
+}
+
+function toggleTool(name: string) {
+  const index = toolsDraft.value.indexOf(name)
+  if (index >= 0) toolsDraft.value.splice(index, 1)
+  else toolsDraft.value.push(name)
+}
+
+async function saveTools(id: number) {
+  toolsSaving.value = true
+  toolsError.value = ''
+  try {
+    // 全勾等于不限制，存空名单。
+    const all = toolsDraft.value.length === toolsOptions.value.length
+    await mcpStore.edit(id, { enabledTools: all ? [] : [...toolsDraft.value] })
+    closeTools()
+  } catch (e) {
+    toolsError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    toolsSaving.value = false
   }
 }
 
@@ -482,9 +552,8 @@ function openEmbedding() {
             </div>
 
             <div v-else class="space-y-2">
+              <template v-for="srv in mcpServers" :key="srv.id">
               <div
-                v-for="srv in mcpServers"
-                :key="srv.id"
                 class="flex items-center gap-3 rounded-lg border border-border px-4 py-3 transition-colors hover:bg-muted/50"
               >
                 <div class="min-w-0 flex-1">
@@ -498,6 +567,19 @@ function openEmbedding() {
                     {{ srv.endpoint }}
                   </p>
                 </div>
+
+                <!-- 工具白名单 -->
+                <button
+                  type="button"
+                  :class="cn(
+                    'inline-flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors hover:bg-muted hover:text-foreground',
+                    toolsTargetId === srv.id ? 'bg-muted text-foreground' : 'text-muted-foreground'
+                  )"
+                  @click="toggleTools(srv)"
+                >
+                  <SlidersHorizontal class="size-3" />
+                  {{ srv.enabledTools.length ? t('mcp.toolsCount', { n: srv.enabledTools.length }) : t('mcp.tools') }}
+                </button>
 
                 <!-- 测试连接 -->
                 <button
@@ -542,6 +624,50 @@ function openEmbedding() {
                   <Trash2 class="size-3.5" />
                 </button>
               </div>
+
+              <!-- 选工具：不勾的不挂给模型 -->
+              <div
+                v-if="toolsTargetId === srv.id"
+                class="space-y-2 rounded-lg border border-violet-200 bg-violet-50/60 px-4 py-3 dark:border-violet-800 dark:bg-violet-950/30"
+              >
+                <p class="text-xs font-medium">{{ t('mcp.selectTools') }}</p>
+                <p v-if="toolsLoading" class="text-xs text-muted-foreground">{{ t('mcp.loadingTools') }}</p>
+                <p v-else-if="toolsError" class="text-xs text-destructive">{{ toolsError }}</p>
+                <template v-else>
+                  <label
+                    v-for="name in toolsOptions"
+                    :key="name"
+                    class="flex cursor-pointer items-center gap-2 text-xs"
+                  >
+                    <input
+                      type="checkbox"
+                      class="size-3.5 accent-violet-600"
+                      :checked="toolsDraft.includes(name)"
+                      @change="toggleTool(name)"
+                    />
+                    <span class="font-mono">{{ name }}</span>
+                  </label>
+                  <p class="text-[11px] text-muted-foreground">{{ t('mcp.selectToolsHint') }}</p>
+                </template>
+                <div class="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    class="rounded border border-border px-2 py-1 text-xs transition-colors hover:bg-muted"
+                    @click="closeTools"
+                  >
+                    {{ t('common.cancel') }}
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="toolsSaving || toolsLoading || !!toolsError || toolsDraft.length === 0"
+                    class="rounded bg-violet-600 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-violet-700 disabled:opacity-50"
+                    @click="saveTools(srv.id)"
+                  >
+                    {{ toolsSaving ? t('mcp.saving') : t('common.save') }}
+                  </button>
+                </div>
+              </div>
+              </template>
             </div>
 
             <!-- 测试结果 -->

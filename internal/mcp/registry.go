@@ -44,9 +44,30 @@ func NewRegistry(tools []ToolDescriptor) (*Registry, error) {
 	return &Registry{tools: items, byID: byID}, nil
 }
 
-// toolID 生成命名空间格式的工具 ID：mcp.<serverID>.<remoteName>。
+// toolID 生成命名空间格式的工具 ID：mcp_<serverID>_<remoteName>。
+// 大模型接口只接受 [A-Za-z0-9_-]，其余字符一律换成下划线。
 func toolID(serverID, remoteName string) string {
-	return "mcp." + serverID + "." + remoteName
+	return sanitizeToolName("mcp_" + serverID + "_" + remoteName)
+}
+
+// sanitizeToolName 把非 [A-Za-z0-9_-] 的字节换成下划线。
+func sanitizeToolName(name string) string {
+	var builder strings.Builder
+	builder.Grow(len(name))
+	for index := 0; index < len(name); index++ {
+		char := name[index]
+		switch {
+		case char >= 'a' && char <= 'z',
+			char >= 'A' && char <= 'Z',
+			char >= '0' && char <= '9',
+			char == '_',
+			char == '-':
+			builder.WriteByte(char)
+		default:
+			builder.WriteByte('_')
+		}
+	}
+	return builder.String()
 }
 
 // List 返回注册表中所有工具的副本，nil 安全。
@@ -64,4 +85,33 @@ func (r *Registry) Find(id string) (ToolDescriptor, bool) {
 	}
 	tool, ok := r.byID[id]
 	return tool, ok
+}
+
+// selectTools 按启用名单过滤工具，返回保留的工具与名单里没匹配上的名字；名单为空或全是空白表示不过滤。
+func selectTools(tools []ToolDescriptor, enabled []string) ([]ToolDescriptor, []string) {
+	wanted := make(map[string]struct{}, len(enabled))
+	for _, name := range enabled {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			wanted[trimmed] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return tools, nil
+	}
+
+	selected := make([]ToolDescriptor, 0, len(tools))
+	for _, tool := range tools {
+		if _, ok := wanted[tool.RemoteName]; !ok {
+			continue
+		}
+		selected = append(selected, tool)
+		delete(wanted, tool.RemoteName)
+	}
+
+	missing := make([]string, 0, len(wanted))
+	for name := range wanted {
+		missing = append(missing, name)
+	}
+	sort.Strings(missing)
+	return selected, missing
 }

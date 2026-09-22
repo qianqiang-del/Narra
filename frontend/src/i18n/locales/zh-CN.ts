@@ -284,6 +284,12 @@ export default {
     test: '测试连接',
     testing: '测试中...',
     tools: '工具',
+    toolsCount: '工具 {n}',
+    selectTools: '选择要挂给模型的工具',
+    selectToolsHint: '不勾选的工具不会挂给模型；全选等于不限制，彻底停用请关闭这个服务。',
+    loadingTools: '正在获取工具列表...',
+    noTools: '该服务没有返回任何工具',
+    saving: '保存中...',
     empty: '暂无 MCP 服务',
     col: {
       name: '名称',

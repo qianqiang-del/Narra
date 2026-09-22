@@ -17,6 +17,7 @@ type Config struct {
 	Storage        StorageConfig        `mapstructure:"storage"`
 	JWT            JWTConfig            `mapstructure:"jwt"`
 	Log            LogConfig            `mapstructure:"log"`
+	Langfuse       LangfuseConfig       `mapstructure:"langfuse"`
 	CORS           CORSConfig           `mapstructure:"cors"`
 	Worker         WorkerConfig         `mapstructure:"worker"`
 	ConfigPath     string               `mapstructure:"-"`
@@ -69,6 +70,7 @@ type MCPServerConfig struct {
 	StartupTimeout   time.Duration `mapstructure:"startup_timeout"`
 	DiscoveryTimeout time.Duration `mapstructure:"discovery_timeout"`
 	CallTimeout      time.Duration `mapstructure:"call_timeout"`
+	EnabledTools     []string      `mapstructure:"enabled_tools"`
 }
 
 // AppConfig 应用配置
@@ -269,6 +271,28 @@ type LogConfig struct {
 	MaxBackups int    `mapstructure:"max_backups"` // 保留的旧日志文件数量
 	MaxAge     int    `mapstructure:"max_age"`     // 保留旧日志文件的最大天数
 	Compress   bool   `mapstructure:"compress"`    // 是否压缩
+}
+
+// LangfuseConfig 是生成链路观测上报的配置。
+type LangfuseConfig struct {
+	Enabled   bool   `mapstructure:"enabled"`    // 是否把 trace 上报到 Langfuse；关闭时完全不注册回调
+	Host      string `mapstructure:"host"`       // 服务地址，如 https://jp.cloud.langfuse.com
+	PublicKey string `mapstructure:"public_key"` // 公钥；可由环境变量 LANGFUSE_PUBLIC_KEY 覆盖
+	SecretKey string `mapstructure:"secret_key"` // 私钥；可由环境变量 LANGFUSE_SECRET_KEY 覆盖
+}
+
+// Validate 校验 Langfuse 配置，只在启用时校验。
+func (c LangfuseConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.Host) == "" {
+		return fmt.Errorf("langfuse.host 不能为空")
+	}
+	if strings.TrimSpace(c.PublicKey) == "" || strings.TrimSpace(c.SecretKey) == "" {
+		return fmt.Errorf("langfuse 的公钥与私钥都不能为空")
+	}
+	return nil
 }
 
 // CORSConfig CORS 配置

@@ -82,6 +82,12 @@ func Load(configPath string) (*Config, error) {
 	if val := os.Getenv("DOCUMENT_PARSER_OCR_API_KEY"); val != "" {
 		config.DocumentParser.OCRAPIKey = val
 	}
+	if val := os.Getenv("LANGFUSE_PUBLIC_KEY"); val != "" {
+		config.Langfuse.PublicKey = val
+	}
+	if val := os.Getenv("LANGFUSE_SECRET_KEY"); val != "" {
+		config.Langfuse.SecretKey = val
+	}
 
 	if err := config.Embedding.Validate(); err != nil {
 		return nil, fmt.Errorf("向量服务配置无效: %w", err)
@@ -94,6 +100,9 @@ func Load(configPath string) (*Config, error) {
 	}
 	if err := config.Worker.Validate(); err != nil {
 		return nil, fmt.Errorf("后台任务配置无效: %w", err)
+	}
+	if err := config.Langfuse.Validate(); err != nil {
+		return nil, fmt.Errorf("langfuse 配置无效: %w", err)
 	}
 
 	globalConfig = config

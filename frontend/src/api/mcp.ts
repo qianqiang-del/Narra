@@ -13,6 +13,7 @@ interface McpServerDTO {
   startup_timeout: string
   discovery_timeout: string
   call_timeout: string
+  enabled_tools: string[]
   sort_order: number
   created_at: string
   updated_at: string
@@ -30,6 +31,8 @@ export interface McpServer {
   startupTimeout: string
   discoveryTimeout: string
   callTimeout: string
+  /** 挂给模型的工具名（该服务的本地名）；空数组表示不限制、全部启用。 */
+  enabledTools: string[]
   sortOrder: number
   createdAt: string
   updatedAt: string
@@ -64,6 +67,7 @@ function toMcpServer(d: McpServerDTO): McpServer {
     startupTimeout: d.startup_timeout,
     discoveryTimeout: d.discovery_timeout,
     callTimeout: d.call_timeout,
+    enabledTools: d.enabled_tools,
     sortOrder: d.sort_order,
     createdAt: d.created_at,
     updatedAt: d.updated_at,
@@ -100,9 +104,13 @@ export async function createMcpServer(input: CreateMcpServerInput): Promise<McpS
 }
 
 /** 部分更新 MCP 服务。只传需要修改的字段。 */
-export async function updateMcpServer(id: number, input: { enabled?: boolean }): Promise<McpServer> {
+export async function updateMcpServer(
+  id: number,
+  input: { enabled?: boolean; enabledTools?: string[] },
+): Promise<McpServer> {
   const body: Record<string, unknown> = {}
   if (input.enabled !== undefined) body.enabled = input.enabled
+  if (input.enabledTools !== undefined) body.enabled_tools = input.enabledTools
   const d = await request<McpServerDTO>(`/mcp/servers/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(body),

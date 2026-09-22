@@ -93,6 +93,7 @@ func (s *mcpServerService) Create(ctx context.Context, input request.MCPServer) 
 		StartupTimeout:   timeout[0],
 		DiscoveryTimeout: timeout[1],
 		CallTimeout:      timeout[2],
+		EnabledTools:     input.EnabledTools,
 		SortOrder:        input.SortOrder,
 	}
 	if input.APIKey != "" {
@@ -120,6 +121,9 @@ func (s *mcpServerService) Update(ctx context.Context, id uint64, input request.
 	}
 	if input.Enabled != nil {
 		srv.Enabled = *input.Enabled
+	}
+	if input.EnabledTools != nil {
+		srv.EnabledTools = *input.EnabledTools
 	}
 	if err := s.repo.Update(ctx, srv); err != nil {
 		return nil, errors.NewWithErr(errors.CodeInternalError, "更新 MCP 服务失败", err)
@@ -203,6 +207,7 @@ func (s *mcpServerService) toServerConfig(srv *entity.MCPServer) (config.MCPServ
 		StartupTimeout:   srv.StartupTimeout,
 		DiscoveryTimeout: srv.DiscoveryTimeout,
 		CallTimeout:      srv.CallTimeout,
+		EnabledTools:     srv.EnabledTools,
 	}, nil
 }
 
@@ -235,6 +240,7 @@ func (s *mcpServerService) toItem(srv *entity.MCPServer) dto.MCPServerItem {
 		StartupTimeout:   srv.StartupTimeout.String(),
 		DiscoveryTimeout: srv.DiscoveryTimeout.String(),
 		CallTimeout:      srv.CallTimeout.String(),
+		EnabledTools:     srv.EnabledTools,
 		SortOrder:        srv.SortOrder,
 		CreatedAt:        srv.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:        srv.UpdatedAt.Format(time.RFC3339),

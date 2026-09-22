@@ -10,9 +10,12 @@ import (
 	"github.com/eino-contrib/jsonschema"
 )
 
-// EinoTools 将 MCP 注册表中的工具转换为 Eino 的 BaseTool 列表。
-func (m *Manager) EinoTools(ctx context.Context) ([]tool.BaseTool, error) {
+// EinoTools 将 MCP 注册表中的工具转换为 Eino 的 BaseTool 列表；webSearch 为假时不挂任何工具。
+func (m *Manager) EinoTools(ctx context.Context, webSearch bool) ([]tool.BaseTool, error) {
 	_ = ctx
+	if !webSearch {
+		return nil, nil
+	}
 	descriptors := m.ListTools()
 	result := make([]tool.BaseTool, 0, len(descriptors))
 	for _, descriptor := range descriptors {
