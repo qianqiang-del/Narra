@@ -13,7 +13,7 @@ import (
 //go:embed prompts
 var promptFS embed.FS
 
-// 改文件名要同步改 prompt_test.go 的 TestPromptFilesExist。
+// 文件名写错会在包初始化时 panic（走 mustPromptFile），跑一次测试就能发现。
 const (
 	promptDirRoles      = "prompts/roles"
 	promptFileNarration = "prompts/tasks/narration.md"
@@ -89,6 +89,16 @@ func BuildSystemPrompt(a entity.PresetAgent, task PromptTask) (string, bool) {
 	}
 
 	s := joinSections(roleHead, role, t.body)
+	return strings.NewReplacer("{{agentName}}", a.Name, "{{persona}}", a.Persona).Replace(s), true
+}
+
+// BuildRoleIdentity 拼一个角色的身份框架（框架+大类规范+persona 注入），不含任务指令，由调用方接圆桌发言层。
+func BuildRoleIdentity(a entity.PresetAgent) (string, bool) {
+	role, ok := roleLayer[a.RoleType]
+	if !ok {
+		return "", false
+	}
+	s := joinSections(roleHead, role)
 	return strings.NewReplacer("{{agentName}}", a.Name, "{{persona}}", a.Persona).Replace(s), true
 }
 

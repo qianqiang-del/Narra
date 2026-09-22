@@ -16,7 +16,7 @@ func NewClassroomRepository(db *gorm.DB) ClassroomRepository {
 
 // Create 新建一条课程记录。
 func (r *classroomRepository) Create(ctx context.Context, classroom *entity.Classroom) error {
-	return r.db.WithContext(ctx).Create(classroom).Error
+	return conn(ctx, r.db).Create(classroom).Error
 }
 
 // FindByID 按 ID 读取课程，取不到返回错误。

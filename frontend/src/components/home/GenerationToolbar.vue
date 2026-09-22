@@ -29,7 +29,6 @@ const { t } = useI18n()
 const providerId = defineModel<number | null>('providerId', { default: null })
 const modelId = defineModel<string>('modelId', { default: '' })
 const webSearch = defineModel<boolean>('webSearch', { default: false })
-const extractor = defineModel<string>('extractor', { default: 'mineru' })
 const materials = defineModel<{ id: string; name: string; size: number }[]>('materials', {
   default: () => [],
 })
@@ -69,11 +68,6 @@ const filteredProviders = computed(() => {
 })
 
 const activeModels = computed(() => currentProvider.value?.models ?? [])
-
-const EXTRACTORS = [
-  { id: 'mineru', name: 'MinerU' },
-  { id: 'unpdf', name: 'unpdf' },
-]
 
 function toggle(menu: typeof openMenu.value) {
   openMenu.value = openMenu.value === menu ? null : menu
@@ -247,18 +241,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         v-if="openMenu === 'material'"
         class="absolute bottom-full left-0 z-50 mb-2 w-72 rounded-xl border border-border bg-popover p-3 shadow-lg"
       >
-        <div class="mb-2 flex items-center justify-between gap-2">
-          <span class="text-xs font-medium text-muted-foreground/70">{{
-            t('toolbar.documentExtractor')
-          }}</span>
-          <select
-            v-model="extractor"
-            class="h-7 rounded-md border border-input bg-transparent px-1.5 text-xs outline-none"
-          >
-            <option v-for="x in EXTRACTORS" :key="x.id" :value="x.id">{{ x.name }}</option>
-          </select>
-        </div>
-
         <label
           :class="
             cn(
