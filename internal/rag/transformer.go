@@ -19,9 +19,8 @@ import (
 // 输出用 schema.Document 表示每个切片：Content 是切片正文，MetaData 带上回填知识库
 // 需要的两个字段（见下面的键），DocumentsToChunks 是它的逆操作。
 //
-// ⚠️ 目前它还没接进收录链路：第四步把"切分 → 向量化 → 落库"排成 compose.Chain 时才用得上。
-// 现在硬接进去只会多一次 Chunk ↔ Document 的往返，不产生任何收益；
-// 等价性由 TestMarkdownChunkerMatchesSplit 保证，不会与 Split 漂移。
+// ⚠️ 收录链路经 splitMarkdown 走这条路径（见下），所以它不是一个"写完没人用"的适配层：
+// 切分只有一条实现路径，与将来 Eino 流水线里消费的 Transformer 是同一个对象。
 const (
 	// ChunkIndexMetaKey 是切片序号的元数据键（从 0 开始、同一父文档内连续）。
 	// 名字与 knowledge_chunks.chunk_index 对齐：排障时一眼能对上，也省得再想一套命名。
@@ -119,6 +118,23 @@ func DocumentsToChunks(documents []*schema.Document) ([]Chunk, error) {
 		})
 	}
 	return chunks, nil
+}
+
+// splitMarkdown 是收录链路用的切分入口：走 Eino 的 document.Transformer 切一遍，
+// 再折回本模块的 Chunk。
+//
+// 为什么不直接调 Split：切分只留一条实现路径（见文件注释），适配器也就不会成为
+// "写完没人调用"的死代码 —— 那种代码在真需要它的那天，往往已经和调用方的期待对不上了。
+// 代价是一次 Chunk → schema.Document → Chunk 的往返，纯内存、无 IO。
+//
+// 返回的错误只可能来自 DocumentsToChunks（元数据契约被改坏）—— 那是内部一致性问题，
+// 冒泡到收录链路会以 stage=chunk 落库，正好指认是切分这一环。
+func splitMarkdown(ctx context.Context, markdown string, options ChunkOptions) ([]Chunk, error) {
+	documents, err := NewMarkdownChunker(options).Transform(ctx, []*schema.Document{{Content: markdown}})
+	if err != nil {
+		return nil, fmt.Errorf("切分文档失败: %w", err)
+	}
+	return DocumentsToChunks(documents)
 }
 
 // chunkIndexFrom 读切片序号，读不到或不是合法序号时报错。

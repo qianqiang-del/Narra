@@ -430,7 +430,10 @@ func (i *Ingester) ingestMarkdown(
 	}
 
 	chunkStarted := time.Now().UTC()
-	chunks := Split(markdown, ChunkOptions{})
+	chunks, err := splitMarkdown(ctx, markdown, ChunkOptions{})
+	if err != nil {
+		return i.failIngest(ctx, document, "chunk", err)
+	}
 	if len(chunks) == 0 {
 		return i.failIngest(ctx, document, "chunk",
 			fmt.Errorf("%w: 切分没有产出任何切片，正文可能只有空白字符", ErrEmptyContent))

@@ -397,6 +397,13 @@ func TestIngestFileStoresChunksAndVectors(t *testing.T) {
 		if len(chunk.Metadata) == 0 || chunk.Metadata[0] != '{' {
 			t.Errorf("第 %d 片的 metadata 应当是 JSON 对象，实际 %s", index, chunk.Metadata)
 		}
+		// 标题要一路带到入库结构里：正文全部落在标题之下，丢了这个字段，
+		// 检索命中后就再也说不出"这段来自哪一节"。
+		if chunk.Heading == nil {
+			t.Errorf("第 %d 片缺少章节标题", index)
+		} else if index == 0 && *chunk.Heading != "数据库设计" {
+			t.Errorf("第一片的章节标题 = %q，期望 %q", *chunk.Heading, "数据库设计")
+		}
 
 		vectorRow := replacement.Embeddings[index]
 		if vectorRow.ModelID != testModelID {
