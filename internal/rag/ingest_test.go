@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -40,6 +41,12 @@ const (
 // 它只有五个方法 —— 接口窄的好处在这里很直观：替身不需要实现列表、计数、删除，
 // 那些方法收录链路根本调不到。
 type fakeDocumentStore struct {
+	// mu 只保护下面两个计数器：心跳与周期回收由后台 goroutine 调用，
+	// 用例在主 goroutine 上读，没有它 -race 会报数据竞争。
+	mu         sync.Mutex
+	touchCount int
+	resetCalls int
+
 	created    *entity.KnowledgeDocument
 	replaced   *entity.ChunkReplacement
 	metadata   json.RawMessage
@@ -117,7 +124,30 @@ func (s *fakeDocumentStore) Claim(ctx context.Context, id uint64) (bool, error) 
 }
 
 func (s *fakeDocumentStore) ResetStale(ctx context.Context, olderThan time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resetCalls++
 	return nil
+}
+
+// Touch 记录心跳次数。真仓储做的是推 updated_at，替身只需要"被叫过几次"。
+func (s *fakeDocumentStore) Touch(ctx context.Context, id uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.touchCount++
+	return nil
+}
+
+func (s *fakeDocumentStore) touchCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.touchCount
+}
+
+func (s *fakeDocumentStore) staleResets() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resetCalls
 }
 
 // Requeue 把这一行改回 pending。替身没有真的状态机，把失败现场清掉、
@@ -537,12 +567,16 @@ func TestIngestFileFailsWhenEmbeddingFails(t *testing.T) {
 // 用它而不是 errors.New：要验的正是"解析器的错误怎么折成给用户看的一句话"，
 // 换成普通错误就绕开了那条路径，只有真的 *documentparser.Error 才走得进去。
 type stubParser struct {
-	err error
+	err    error
+	result *documentparser.Result
 }
 
 var _ documentparser.Parser = (*stubParser)(nil)
 
 func (p *stubParser) Parse(context.Context, documentparser.Request) (*documentparser.Result, error) {
+	if p.result != nil {
+		return p.result, nil
+	}
 	return nil, p.err
 }
 
@@ -910,5 +944,82 @@ func TestVectorLiteralFormatsAndRejectsBadValues(t *testing.T) {
 	}
 	if _, err := vectorLiteral([]float32{float32(math.Inf(1))}); !errors.Is(err, ErrInvalidVector) {
 		t.Errorf("Inf 必须被拦下，实际: %v", err)
+	}
+}
+
+// OCR 有页失败时正文不完整：必须整篇失败，不能把缺页的文档标成 ready。
+//
+// 脚本对单页失败只打标记、不中断整篇（见 documentparser.Page）—— 那是对的，
+// 但 Go 侧不接这道检查的话，用户会拿到一篇状态正常、内容却少了几页的文档：
+// 那几页检索不到，界面上也看不出任何异常。
+func TestIngestFileFailsOnFailedOCRPages(t *testing.T) {
+	store := &fakeDocumentStore{}
+	parser := &stubParser{result: &documentparser.Result{
+		Markdown: "# 扫描件\n\n第一页有字。",
+		Pages: []documentparser.Page{
+			{Number: 1, Text: "第一页有字。"},
+			{Number: 2, Failed: true},
+			{Number: 3, Failed: true},
+		},
+	}}
+	ingester := newIngesterWithParser(store, parser)
+
+	// 后缀必须落到 Python 解析器上：md / txt 走纯文本解析器，压根不会调到这里。
+	path := writeTempFile(t, "扫描件.docx", "内容由桩决定")
+
+	_, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	if err == nil {
+		t.Fatal("有 OCR 失败页时必须失败，不能静默入库")
+	}
+
+	var parseErr *documentparser.Error
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("应当返回带稳定错误码的解析器错误，实际: %v", err)
+	}
+	if parseErr.Code != documentparser.CodeOCRFailedPages {
+		t.Errorf("错误码 = %q，期望 %q", parseErr.Code, documentparser.CodeOCRFailedPages)
+	}
+
+	if store.status() != entity.KnowledgeDocumentStatusFailed {
+		t.Errorf("状态 = %q，期望 failed", store.status())
+	}
+	if store.replaced != nil {
+		t.Error("失败时不该写入任何切片")
+	}
+	if !strings.Contains(store.failReason, "第 2、3 页") {
+		t.Errorf("给用户看的原因应当带上失败页码，实际 %q", store.failReason)
+	}
+
+	var payload struct {
+		Stage     string `json:"stage"`
+		ErrorCode string `json:"error_code"`
+	}
+	if err := json.Unmarshal(store.failMeta, &payload); err != nil {
+		t.Fatalf("失败现场不是合法 JSON: %v", err)
+	}
+	if payload.Stage != "parse" {
+		t.Errorf("失败阶段 = %q，期望 parse", payload.Stage)
+	}
+	if payload.ErrorCode != documentparser.CodeOCRFailedPages {
+		t.Errorf("metadata 里的错误码 = %q，期望 %q", payload.ErrorCode, documentparser.CodeOCRFailedPages)
+	}
+}
+
+// 页码列表过长时折叠，避免长文档的报错刷屏。
+func TestFormatPageNumbersFoldsLongLists(t *testing.T) {
+	if got := formatPageNumbers([]int{3, 7, 12}); got != "第 3、7、12 页" {
+		t.Errorf("短列表 = %q，期望 %q", got, "第 3、7、12 页")
+	}
+
+	pages := make([]int, 0, 15)
+	for number := 1; number <= 15; number++ {
+		pages = append(pages, number)
+	}
+	got := formatPageNumbers(pages)
+	if !strings.Contains(got, "共 15 页失败") {
+		t.Errorf("长列表应当折叠并给出总数，实际 %q", got)
+	}
+	if strings.Contains(got, "11、") {
+		t.Errorf("超过上限的页码不该逐一列出，实际 %q", got)
 	}
 }

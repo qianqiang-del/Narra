@@ -333,6 +333,8 @@ export default {
     last: {
       title: 'Most recent upload',
       processing: 'Parsing / embedding — the next upload unlocks when it finishes',
+      preparing:
+        'Preparing the parser environment: {progress} (the first upload downloads dependencies and may take a while; you can close this window)',
       failedHint: 'You can retry this one as is; if it fails again, check the parser environment',
       retryUnavailable: 'The document from this upload has been deleted, so it cannot be retried',
       idle: 'Nothing in progress — you can upload.',
@@ -368,6 +370,9 @@ export default {
       unsupported: 'Only {formats} are supported; convert other formats to Markdown or PDF first.',
       tooLarge: 'The file exceeds the {limit} MB limit.',
       clear: 'Remove the selected file',
+      parserSetup:
+        'Parsing this file type needs a one-time parser environment setup (downloading the interpreter and dependencies), which can take several minutes. You can close this window — it keeps running in the background.',
+      parserPreparing: 'Preparing the parser environment: {progress}',
     },
     list: {
       empty: 'No knowledge base yet — upload one to get started.',

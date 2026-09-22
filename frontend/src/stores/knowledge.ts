@@ -5,12 +5,14 @@ import {
   fetchKnowledgeDocuments,
   fetchKnowledgeDocument,
   fetchKnowledgeDocumentPreview,
+  fetchKnowledgeParserStatus,
   deleteKnowledgeDocument,
   deleteUploadRecord,
   fetchUploadRecords,
   retryKnowledgeDocument,
   uploadKnowledgeFile,
   type KnowledgeDocument,
+  type KnowledgeParserStatus,
   type KnowledgeUploadRecord,
 } from '@/api/knowledge'
 
@@ -46,6 +48,15 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   /** 轮询上限。一份大文档解析几分钟很正常，但不能无限等 */
   const POLL_TIMEOUT_MS = 15 * 60 * 1000
+
+  /**
+   * 环境准备连续多久没有进展就算卡住。
+   *
+   * 首次上传时后端可能在准备解析环境，这一步本身就可能超过 POLL_TIMEOUT_MS ——
+   * 它不该被算成"这份文档处理超时"（否则提示刚出现，界面就先报超时，而后台一切正常）。
+   * 判据不是"正在准备"就无限等，而是"进度还在变"：连续这么久没有推进才视为卡住。
+   */
+  const PREPARE_STALL_MS = 10 * 60 * 1000
 
   /** 主页数据：已收录的文档。按页从服务端取回后依次累加 */
   const readyDocuments = ref<KnowledgeDocument[]>([])
@@ -83,6 +94,22 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   /** 本次上传的文档，供新增弹层的"最近一次上传"卡片显示进度 */
   const activeUpload = ref<KnowledgeDocument | null>(null)
+
+  /**
+   * 解析环境状态，供"首次上传需要先准备环境"的提示使用。
+   *
+   * 失败静默：它只是提示，探测不到就当不知道 —— 不该因为一次状态探测失败把上传拦住。
+   * 环境备好之后 ready 为真，提示自然消失，前端不需要自己记"是不是第一次"。
+   */
+  const parserStatus = ref<KnowledgeParserStatus | null>(null)
+
+  async function loadParserStatus() {
+    try {
+      parserStatus.value = await fetchKnowledgeParserStatus()
+    } catch {
+      /* 提示用，探测失败不影响上传 */
+    }
+  }
 
   /** 搜索关键字，匹配标题与原始文件名（由服务端做模糊匹配） */
   const keyword = ref('')
@@ -206,10 +233,45 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    * "处理中"，而 uploading 一直为真，用户连下一份都传不了。
    */
   async function pollUntilSettled(document: KnowledgeDocument): Promise<KnowledgeDocument> {
-    const deadline = Date.now() + POLL_TIMEOUT_MS
+    let deadline = Date.now() + POLL_TIMEOUT_MS
     let current = document
+
+    // 首次上传时后端在准备解析环境（可能十几分钟），这段等待不该吃掉"处理超时"的窗口。
+    // 判据是"进度还在变"（见 PREPARE_STALL_MS）；准备结束后窗口从头算。
+    let lastProgress = ''
+    let progressChangedAt = Date.now()
+    let wasPreparing = false
+
     while (current.status === 'pending' || current.status === 'processing') {
-      if (Date.now() >= deadline) throw new Error('文档处理超时，请稍后刷新查看状态')
+      // 只在"还没问过"或"能力开着但环境没好"时问：
+      // 环境备好之后（或压根没开解析能力）这个接口就没必要再打了。
+      const unknown = parserStatus.value === null
+      const pendingSetup = parserStatus.value?.enabled === true && !parserStatus.value.ready
+      if (unknown || pendingSetup) {
+        await loadParserStatus()
+      }
+
+      if (parserStatus.value?.preparing) {
+        const progress = parserStatus.value.progress
+        if (progress !== lastProgress) {
+          lastProgress = progress
+          progressChangedAt = Date.now()
+        }
+        if (Date.now() - progressChangedAt >= PREPARE_STALL_MS) {
+          throw new Error('解析环境准备似乎卡住了，请稍后刷新查看状态')
+        }
+        wasPreparing = true
+      } else {
+        if (wasPreparing) {
+          // 准备刚结束：之前那段时间是环境准备，不是这一份文档的处理时长
+          wasPreparing = false
+          deadline = Date.now() + POLL_TIMEOUT_MS
+        }
+        if (Date.now() >= deadline) {
+          throw new Error('文档处理超时，请稍后刷新查看状态')
+        }
+      }
+
       await new Promise((resolve) => setTimeout(resolve, 1000))
       current = await fetchKnowledgeDocument(current.id)
       activeUpload.value = current
@@ -312,6 +374,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     recordAlerts,
     lastFailedRecord,
     activeUpload,
+    parserStatus,
     // 界面状态
     loading,
     uploading,
@@ -322,6 +385,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     load,
     loadRecords,
     loadMore,
+    loadParserStatus,
     upload,
     retry,
     preview,

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -20,8 +22,19 @@ const (
 	CodeOCREngineInvalid   = "PARSER_OCR_ENGINE_INVALID"
 	CodeFailed             = "PARSER_FAILED"
 	CodeRuntimeUnavailable = "PARSER_RUNTIME_UNAVAILABLE"
+	CodePrepareTimeout     = "PARSER_PREPARE_TIMEOUT"
 	CodeTimeout            = "PARSER_TIMEOUT"
 	CodeEncodingInvalid    = "PARSER_ENCODING_INVALID"
+
+	// CodeTooManyOCRPages 由脚本报出：需要 OCR 的页数超过单次上限。
+	// 它是为"别让一份几百页的扫描件把 worker 占满整个解析预算"设的闸门：
+	// 超限时快速失败（这是用户可自己解决的——拆文件或调大上限），
+	// 而不是跑到超时才被杀、然后重试再来一遍。
+	CodeTooManyOCRPages = "PARSER_TOO_MANY_OCR_PAGES"
+
+	// CodeOCRFailedPages 由 Go 侧在解析成功后按 pages 里的 failed 标记产出：
+	// 有页 OCR 失败意味着正文不完整，宁可整篇失败也不静默少页（见 rag.ocrCoverageError）。
+	CodeOCRFailedPages = "PARSER_OCR_PARTIAL_FAILED"
 )
 
 const (
@@ -92,6 +105,12 @@ func defaultUserMessage(code string) string {
 		return "OCR 引擎配置有误"
 	case CodeRuntimeUnavailable:
 		return "文档解析环境不可用"
+	case CodePrepareTimeout:
+		return "文档解析环境准备超时"
+	case CodeTooManyOCRPages:
+		return "需要 OCR 的页数超过上限"
+	case CodeOCRFailedPages:
+		return "部分页面 OCR 失败，正文不完整"
 	case CodeTimeout:
 		return "文档解析超时"
 	case CodeEncodingInvalid:
@@ -248,11 +267,21 @@ type Request struct {
 }
 
 // Status 描述解析能力的就绪状态。
+//
+// Enabled 与 Ready 是两件事，前端要分开读：
+//   - Enabled=false：配置里就没开解析能力，PDF / Office 这类文件根本没有解析器可走；
+//   - Enabled=true 且 Ready=false：能力开着，但环境还没备好 —— 首次上传时后端会现场
+//     用 uv 下载解释器与依赖（分钟级），Preparing/Progress 说的就是这段时间。
+//
+// 不分开的话，前端只能把"没启用"和"正在装"说成同一句话，而用户该做的事完全不同。
 type Status struct {
-	Ready  bool   `json:"ready"`
-	Source string `json:"source,omitempty"`
-	Python string `json:"python,omitempty"`
-	Reason string `json:"reason,omitempty"`
+	Enabled   bool   `json:"enabled"`
+	Ready     bool   `json:"ready"`
+	Source    string `json:"source,omitempty"`
+	Python    string `json:"python,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Preparing bool   `json:"preparing,omitempty"`
+	Progress  string `json:"progress,omitempty"`
 }
 
 // Parser 是文档解析能力的最小接口。
@@ -272,8 +301,17 @@ type PythonParser struct {
 	resolver *Resolver
 	runner   commandRunner
 
-	mu      sync.Mutex
-	runtime *Runtime
+	// prepareMu 只串行化"准备环境"这件事，不保护状态读取。
+	//
+	// 准备是分钟级的（首次要下载解释器与依赖），而 /parser/status 会被前端在上传
+	// 期间反复调用 —— 两者共用一把锁的话，状态接口会跟着挂满整个准备时长，而前端
+	// 恰恰要靠它显示"正在准备环境"。所以状态读写走独立的 stateMu，且只做快照。
+	prepareMu sync.Mutex
+
+	stateMu   sync.RWMutex // 保护下面三个字段
+	runtime   *Runtime
+	preparing bool
+	progress  string
 }
 
 // 编译期锚定接口，避免以后改签名时悄悄漂移。
@@ -298,27 +336,73 @@ func (p *PythonParser) Config() Config {
 // 首次调用可能耗时数分钟（要下载解释器与依赖），所以允许在后台调用并通过 onProgress
 // 汇报进度 —— 千万不要把它放在 HTTP 请求路径上同步等。
 func (p *PythonParser) Prepare(ctx context.Context, onProgress func(string)) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.runtime != nil {
+	if p.currentRuntime() != nil {
 		return nil
 	}
-	resolved, err := p.resolver.Resolve(ctx, onProgress)
-	if err != nil {
+
+	p.prepareMu.Lock()
+	defer p.prepareMu.Unlock()
+	if p.currentRuntime() != nil { // 等锁期间别人已经准备好
+		return nil
+	}
+
+	// 进度无论调用方要不要都先记进状态里：/parser/status 靠它回答"装到哪一步了"。
+	// onProgress 是给同一个进程内的其他调用方（例如日志）用的。
+	report := func(message string) {
+		p.setProgress(true, message)
+		if onProgress != nil {
+			onProgress(message)
+		}
+	}
+	p.setProgress(true, "开始准备文档解析环境")
+	defer p.setProgress(false, "")
+
+	// 准备单独计时：它跑在解析之前、与解析共用调用链，没有上限的话一次卡住的
+	// uv pip install 就能把 worker 的整轮调度停住（见 Config.PrepareTimeout）。
+	prepareCtx, cancel := context.WithTimeout(ctx, p.cfg.PrepareTimeout)
+	defer cancel()
+
+	resolved, err := p.resolver.Resolve(prepareCtx, report)
+	switch {
+	case err == nil:
+		p.setRuntime(resolved)
+		return nil
+	case errors.Is(ctx.Err(), context.Canceled):
+		// 上层取消（例如服务关停）：原样上抛，别包装成准备失败 ——
+		// worker 据此走"不落终态、等周期回收"的分支。
+		return ctx.Err()
+	case ctx.Err() != nil || errors.Is(prepareCtx.Err(), context.DeadlineExceeded):
+		// 自己的墙钟到点（或上层给了一个更早的死线）。
+		return &Error{
+			Code:    CodePrepareTimeout,
+			Message: fmt.Sprintf("文档解析环境准备超时（超过 %s），请检查网络或 PyPI 镜像配置", p.cfg.PrepareTimeout),
+		}
+	default:
 		return err
 	}
-	p.runtime = resolved
-	return nil
 }
 
-// Status 返回就绪状态，供健康检查探活。
-func (p *PythonParser) Status(ctx context.Context) Status {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.runtime == nil {
-		return Status{Ready: false, Source: "python", Reason: "运行环境尚未准备；首次解析时会自动准备"}
+// Status 返回就绪状态，供健康检查与前端提示使用。
+//
+// 它永远秒回：准备过程跑在 prepareMu 后面，这里只读一份快照 —— 否则首次上传的
+// 十几分钟里，前端连"正在准备"都问不出来。
+func (p *PythonParser) Status(context.Context) Status {
+	runtime, preparing, progress := p.snapshot()
+	if runtime == nil {
+		reason := "运行环境尚未准备；首次解析时会自动准备"
+		if preparing {
+			reason = "正在准备文档解析环境：" + progress
+		}
+		return Status{
+			Enabled:   true,
+			Ready:     false,
+			Source:    "python",
+			Reason:    reason,
+			Preparing: preparing,
+			Progress:  progress,
+		}
 	}
-	return Status{Ready: true, Source: p.runtime.Source, Python: p.runtime.Python}
+	return Status{Enabled: true, Ready: true, Source: runtime.Source, Python: runtime.Python}
 }
 
 // Parse 调用脚本解析一个文件。
@@ -366,6 +450,10 @@ func (p *PythonParser) Parse(ctx context.Context, req Request) (result *Result, 
 		"--ocr-engine", firstNonEmpty(req.OCREngine, p.cfg.OCREngine),
 		"--work-dir", workDir,
 	}
+	if p.cfg.MaxOCRPages > 0 {
+		// 超过上限由脚本快速失败，而不是跑到解析超时被杀（见 CodeTooManyOCRPages）。
+		args = append(args, "--max-ocr-pages", strconv.Itoa(p.cfg.MaxOCRPages))
+	}
 	if apiURL := firstNonEmpty(req.OCRAPIBaseURL, p.cfg.OCRAPIBaseURL); apiURL != "" {
 		args = append(args, "--ocr-api-url", apiURL)
 	}
@@ -375,7 +463,12 @@ func (p *PythonParser) Parse(ctx context.Context, req Request) (result *Result, 
 
 	stdout, stderr, err := p.runner.Run(parseCtx, "", p.pythonEnv(req), python, args...)
 	if err != nil {
-		if parseCtx.Err() != nil {
+		switch {
+		case errors.Is(ctx.Err(), context.Canceled):
+			// 上层取消（服务关停）：不冒充超时，把取消原样上抛，
+			// 让 worker 走"不落终态、等周期回收"的分支（见 rag.failIngest）。
+			return nil, ctx.Err()
+		case parseCtx.Err() != nil:
 			return nil, &Error{
 				Code:    CodeTimeout,
 				Message: fmt.Sprintf("文档解析超时（%s），文件: %s", p.cfg.ParseTimeout, filepath.Base(req.Path)),
@@ -414,12 +507,40 @@ func (p *PythonParser) Parse(ctx context.Context, req Request) (result *Result, 
 }
 
 func (p *PythonParser) pythonPath() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.runtime == nil {
+	runtime := p.currentRuntime()
+	if runtime == nil {
 		return ""
 	}
-	return p.runtime.Python
+	return runtime.Python
+}
+
+// currentRuntime / setRuntime / setProgress / snapshot 是状态读写的唯一入口。
+//
+// 锁的次序固定为 prepareMu → stateMu（只有 Prepare 同时持有两把），
+// 别反着来。
+func (p *PythonParser) currentRuntime() *Runtime {
+	p.stateMu.RLock()
+	defer p.stateMu.RUnlock()
+	return p.runtime
+}
+
+func (p *PythonParser) setRuntime(runtime *Runtime) {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	p.runtime = runtime
+}
+
+func (p *PythonParser) setProgress(preparing bool, progress string) {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	p.preparing = preparing
+	p.progress = progress
+}
+
+func (p *PythonParser) snapshot() (*Runtime, bool, string) {
+	p.stateMu.RLock()
+	defer p.stateMu.RUnlock()
+	return p.runtime, p.preparing, p.progress
 }
 
 // pythonEnv 传给脚本的环境变量。
@@ -448,27 +569,31 @@ type wireError struct {
 //
 // 脚本正常时只往 stdout 打一行 JSON，但第三方库（docling 等）往 stdout 打日志的概率不为零，
 // 所以从后往前找第一个"看起来是解析结果"的 JSON 对象，而不是直接解析整段输出。
+//
+// 逐行扫描而不是 bytes.Split：解析产物可能有几十 MB（一本几百页的扫描件），
+// Split 会为每一行建一个切片头，逐行转成 string 更是把整段输出又拷一遍。
 func parseStdout(stdout []byte) (*Result, bool) {
-	lines := bytes.Split(stdout, []byte{'\n'})
-	for index := len(lines) - 1; index >= 0; index-- {
-		text := strings.TrimSpace(string(lines[index]))
+	var found *Result
+	forEachLineReverse(stdout, func(line []byte) bool {
+		text := bytes.TrimSpace(line)
 		if !isJSONObject(text) {
-			continue
+			return true
 		}
 		var probe map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(text), &probe); err != nil {
-			continue
+		if err := json.Unmarshal(text, &probe); err != nil {
+			return true
 		}
 		if !looksLikeResult(probe) {
-			continue
+			return true
 		}
 		var result Result
-		if err := json.Unmarshal([]byte(text), &result); err != nil {
-			continue
+		if err := json.Unmarshal(text, &result); err != nil {
+			return true
 		}
-		return &result, true
-	}
-	return nil, false
+		found = &result
+		return false
+	})
+	return found, found != nil
 }
 
 // errorFromOutput 提取脚本的错误协议。
@@ -477,20 +602,41 @@ func parseStdout(stdout []byte) (*Result, bool) {
 // 所以两个流都要看。
 func errorFromOutput(stdout, stderr []byte) *Error {
 	for _, stream := range [][]byte{stdout, stderr} {
-		lines := bytes.Split(stream, []byte{'\n'})
-		for index := len(lines) - 1; index >= 0; index-- {
-			text := strings.TrimSpace(string(lines[index]))
+		var found *Error
+		forEachLineReverse(stream, func(line []byte) bool {
+			text := bytes.TrimSpace(line)
 			if !isJSONObject(text) {
-				continue
+				return true
 			}
 			var wire wireError
-			if err := json.Unmarshal([]byte(text), &wire); err != nil || wire.Code == "" {
-				continue
+			if err := json.Unmarshal(text, &wire); err != nil || wire.Code == "" {
+				return true
 			}
-			return &Error{Code: wire.Code, Message: wire.Message, Stderr: tail(string(stderr), stderrTailBytes)}
+			found = &Error{Code: wire.Code, Message: wire.Message, Stderr: tail(string(stderr), stderrTailBytes)}
+			return false
+		})
+		if found != nil {
+			return found
 		}
 	}
 	return nil
+}
+
+// forEachLineReverse 从最后一行往前逐行回调；visit 返回 false 表示提前停止。
+//
+// 全程只借用原始切片，不复制、不建行切片 —— 调用方都在大输出上跑。
+func forEachLineReverse(data []byte, visit func(line []byte) bool) {
+	end := len(data)
+	for end > 0 {
+		start := bytes.LastIndexByte(data[:end], '\n') + 1
+		if !visit(data[start:end]) {
+			return
+		}
+		if start == 0 {
+			return
+		}
+		end = start - 1 // 跳过换行本身
+	}
 }
 
 // looksLikeResult 判断一行 JSON 是否是脚本的解析结果。
@@ -504,7 +650,7 @@ func looksLikeResult(probe map[string]json.RawMessage) bool {
 	return ok
 }
 
-func isJSONObject(text string) bool {
+func isJSONObject(text []byte) bool {
 	return len(text) >= 2 && text[0] == '{' && text[len(text)-1] == '}'
 }
 

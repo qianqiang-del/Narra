@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -165,6 +166,10 @@ type FileTaskStore interface {
 
 	// Claim 把一条 pending 文档抢成 processing；返回 false 表示这条已经被别的执行者抢走了。
 	Claim(context.Context, uint64) (bool, error)
+
+	// Touch 推进 processing 文档的 updated_at，作为"任务还活着"的心跳。
+	// 周期 ResetStale 靠它把"真僵尸"与"跑得慢的正常任务"区分开，见 Worker.startHeartbeat。
+	Touch(context.Context, uint64) error
 
 	// ResetStale 把 updated_at 早于 olderThan 的 processing 打回 pending，
 	// 用来回收上一个进程遗留的僵尸任务。
@@ -338,6 +343,11 @@ func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResul
 	// 在这一步之后会失效。等对象存储落地，改成"先上传图片、回填 URL、再删目录"。
 	defer func() { _ = result.Cleanup() }()
 
+	// 有页 OCR 失败时正文不完整，宁可整篇失败也不静默入库（Cleanup 已经挂上，临时目录照删）。
+	if err := ocrCoverageError(result); err != nil {
+		return i.failIngest(ctx, document, "parse", err)
+	}
+
 	// 调用方没指定标题时，用正文的首个一级标题代替文件名：
 	// 文件名常带版本号和日期（"架构说明_2026-09-17_v3.md"），
 	// 而一级标题是作者给这篇文档起的正式名字，在列表页里可读得多。
@@ -372,6 +382,11 @@ func (i *Ingester) processExistingFile(ctx context.Context, document *entity.Kno
 		return i.failIngest(ctx, document, "parse", err)
 	}
 	defer func() { _ = result.Cleanup() }()
+
+	// 与 IngestFile 同一条守卫：缺页的文档不能标 ready。
+	if err := ocrCoverageError(result); err != nil {
+		return i.failIngest(ctx, document, "parse", err)
+	}
 	title := document.Title
 	if strings.TrimSpace(input.Title) == "" {
 		title = preferHeadingTitle(title, result.Markdown)
@@ -549,6 +564,19 @@ func (i *Ingester) failIngest(
 	stage string,
 	cause error,
 ) (IngestResult, error) {
+	// 取消不是失败，也不该留下 failed。两层原因：
+	//  1) ctx 已取消时 MarkFailed 多半也写不进去（事务的 BeginTx 直接返回 ctx.Err），
+	//     文档会停在 processing —— 记一条"已失败"只会误导排障；
+	//  2) 即使写得进去，把一次关服记成文档失败也是错的，用户会以为文件有问题。
+	// 直接返回，让 worker 的周期 ResetStale 重新入队。
+	if errors.Is(cause, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		logger.Info("收录被取消，不写终态，等待周期回收重新入队",
+			zap.Uint64("document_id", document.ID),
+			zap.String("stage", stage),
+		)
+		return IngestResult{Document: document}, cause
+	}
+
 	reason := userFacingReason(cause)
 	fields := map[string]any{
 		"stage":        stage,
@@ -565,7 +593,12 @@ func (i *Ingester) failIngest(
 		payload = json.RawMessage(`{"error":"记录失败原因时出错"}`)
 	}
 
-	if err := i.store.MarkFailed(ctx, document.ID, payload, reason); err != nil {
+	// 写失败现场用独立预算的 ctx：真正的失败可能正好撞上关服（ctx 被取消），
+	// 那时用任务 ctx 会把这次失败现场一起丢掉。5 秒足够一次 UPDATE。
+	writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := i.store.MarkFailed(writeCtx, document.ID, payload, reason); err != nil {
 		// 这一步失败不影响给用户的答复，但会让文档停在中间状态，必须留下日志。
 		logger.Error("知识文档标记失败状态时出错，文档可能停在中间状态",
 			zap.Uint64("document_id", document.ID),
@@ -753,4 +786,40 @@ func parserName(result *documentparser.Result) string {
 		return name
 	}
 	return "unknown"
+}
+
+// maxPageNumbersInReason 报错里最多列几个失败页码，其余折叠成"共 N 页失败"。
+const maxPageNumbersInReason = 10
+
+// ocrCoverageError 把"有页 OCR 失败"变成一次明确的解析失败。
+//
+// 脚本对单页失败不中断整篇，只把 failed 标在 pages 上（见 documentparser.Page）——
+// 那是对的，但后果是结果可能缺页。这里必须拦一道：宁可整篇 failed 让用户重试，
+// 也不能把缺页的文档静默标成 ready —— 后者检索不到那些页的内容，而界面上看不出任何异常。
+// 失败时原件已归档，重试路径完整（API OCR 的网络抖动重试一次往往就好了）。
+func ocrCoverageError(result *documentparser.Result) error {
+	failed := result.OCRFailedPages()
+	if len(failed) == 0 {
+		return nil
+	}
+	return &documentparser.Error{
+		Code: documentparser.CodeOCRFailedPages,
+		Message: fmt.Sprintf("OCR 未能识别部分页面（%s），正文不完整；请重试，若持续失败请检查扫描质量或 OCR 配置",
+			formatPageNumbers(failed)),
+	}
+}
+
+// formatPageNumbers 把页码列成"第 3、7、12 页"；超过上限时折叠，避免长文档的报错刷屏。
+func formatPageNumbers(pages []int) string {
+	limit := len(pages)
+	suffix := ""
+	if limit > maxPageNumbersInReason {
+		limit = maxPageNumbersInReason
+		suffix = fmt.Sprintf(" 等，共 %d 页失败", len(pages))
+	}
+	parts := make([]string, limit)
+	for index := 0; index < limit; index++ {
+		parts[index] = strconv.Itoa(pages[index])
+	}
+	return "第 " + strings.Join(parts, "、") + " 页" + suffix
 }

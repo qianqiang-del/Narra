@@ -77,7 +77,7 @@ func ParserFor(path string, python Parser) (Parser, error) {
 }
 
 func (p *PlainTextParser) Status(context.Context) Status {
-	return Status{Ready: true, Source: plainParserName, Reason: "纯文本格式直接读取，不依赖 Python 运行时"}
+	return Status{Enabled: true, Ready: true, Source: plainParserName, Reason: "纯文本格式直接读取，不依赖 Python 运行时"}
 }
 
 // Parse 读出文件内容，原样作为 Markdown 返回。
@@ -94,7 +94,9 @@ func (p *PlainTextParser) Parse(ctx context.Context, req Request) (*Result, erro
 		return nil, &Error{Code: CodeFileNotFound, Message: "待解析文件不存在: " + path}
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, &Error{Code: CodeTimeout, Message: "解析已取消或超时: " + err.Error()}
+		// 取消/超时不是"解析失败"：原样上抛，让上层凭 errors.Is(err, context.Canceled)
+		// 判定该不该落终态。包成 CodeTimeout 会把一次关服记成解析失败。
+		return nil, err
 	}
 
 	info, err := os.Stat(path)

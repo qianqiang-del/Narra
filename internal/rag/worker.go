@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,6 +30,27 @@ const unusablePathReason = "上传暂存文件不存在或路径无效"
 // 需要被反查：磁盘上捡到一份 upload.pptx，看目录名就知道它属于哪一篇、该不该清。
 const failedDirName = "failed"
 
+// 后台任务的节奏参数。刻意不做成配置：它们是"任务多久算死了"的内部一致性约束，
+// 三个值互相咬合（心跳 < 判定阈值，扫描周期与心跳同量级），调错会直接导致误杀
+// 或回收不及时。测试通过 Worker 上的同名字段缩短它们。
+const (
+	// defaultPollInterval 轮询 pending 的间隔。上传之后最多一秒就被接手。
+	defaultPollInterval = time.Second
+
+	// defaultHeartbeatEvery 处理期间推 updated_at 的间隔。
+	defaultHeartbeatEvery = 30 * time.Second
+
+	// defaultStaleAfter 超过这么久没有心跳的 processing 行会被打回 pending。
+	//
+	// 它只需要覆盖"心跳间隔 + DB 抖动 + 一轮调度的余量"，不需要覆盖最长任务 ——
+	// 这正是心跳的意义：进程被 kill 后心跳立刻消失，3 分钟就能回收，
+	// 而阈值不会误伤正在慢慢跑的长任务（它们一直在报到）。
+	defaultStaleAfter = 3 * time.Minute
+
+	// defaultStaleResetEvery 周期回收的执行间隔。
+	defaultStaleResetEvery = time.Minute
+)
+
 // Worker 是文件收录的后台执行者。
 //
 // 它把"上传"和"解析"拆成两件事：HTTP 请求只负责落盘并建一条 pending 行
@@ -47,10 +69,22 @@ type Worker struct {
 	ingester    *Ingester
 	uploadRoot  string // 上传根目录（pending/ 待处理、failed/ 失败归档都在它下面）；只碰这个目录下的文件
 	concurrency int
-	stop        chan struct{}
-	done        chan struct{}
-	once        sync.Once
-	cancel      context.CancelFunc // Stop 时用它中断正在跑的解析与向量化
+
+	// 节奏参数。零值由 NewWorker 补成 defaultXxx；测试可以调小它们，
+	// 否则心跳与周期回收要跑分钟级才能观察到。
+	pollInterval    time.Duration
+	heartbeatEvery  time.Duration
+	staleAfter      time.Duration
+	staleResetEvery time.Duration
+
+	// ctx 与 cancel 在构造时就建好，run 只负责使用。
+	// 这样 Stop 与 run 之间不存在"谁先写"的竞争（旧实现里 cancel 是 run 赋值、Stop 读取）。
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	stop chan struct{}
+	done chan struct{}
+	once sync.Once
 }
 
 // NewWorker 创建 worker。concurrency 小于 1 时按 1 处理：
@@ -59,7 +93,21 @@ func NewWorker(store FileTaskStore, ingester *Ingester, uploadRoot string, concu
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	return &Worker{store: store, ingester: ingester, uploadRoot: uploadRoot, concurrency: concurrency, stop: make(chan struct{}), done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Worker{
+		store:           store,
+		ingester:        ingester,
+		uploadRoot:      uploadRoot,
+		concurrency:     concurrency,
+		pollInterval:    defaultPollInterval,
+		heartbeatEvery:  defaultHeartbeatEvery,
+		staleAfter:      defaultStaleAfter,
+		staleResetEvery: defaultStaleResetEvery,
+		ctx:             ctx,
+		cancel:          cancel,
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
+	}
 }
 
 // Start 在后台协程里启动轮询循环，立即返回。
@@ -70,19 +118,16 @@ func (w *Worker) Start() {
 // Stop 停止轮询，并等待正在跑的任务收尾。
 //
 // 两步：close(stop) 让循环不再取新任务；cancel() 让正在解析或向量化的任务
-// 从 ctx 上收到中断。ctx 超时不算错误路径上的意外 —— 它只表示"没等完"，
-// 服务退出不该被一个卡住的上游请求无限拖住。once 保证重复调用只关一次 channel。
+// 从 ctx 上收到中断。被取消的任务不会落成 failed（见 Ingester.failIngest），
+// 它会停在 processing，由周期 ResetStale 在下次启动后打回 pending 重跑。
 //
-// ⚠️ 已知短板：cancel 由 run 写入、这里读取，两处没有同步。
-// 触发窗口只在启动瞬间（run 还没来得及赋值就 Stop），进程退出路径上很难碰上，
-// 但本机没有 gcc、跑不了 -race，所以没有实测背书。要彻底干净，
-// 应该在 NewWorker 里就建好 ctx 与 cancel，让 run 只负责使用。
+// ctx 超时不算错误路径上的意外 —— 它只表示"没等完"：调用方应当把它当成
+// "可能留下 processing 行"的告警，并且在那之后才关数据库。
+// once 保证重复调用只关一次 channel。
 func (w *Worker) Stop(ctx context.Context) error {
 	w.once.Do(func() {
 		close(w.stop)
-		if w.cancel != nil {
-			w.cancel()
-		}
+		w.cancel()
 	})
 	select {
 	case <-w.done:
@@ -94,28 +139,34 @@ func (w *Worker) Stop(ctx context.Context) error {
 
 // run 是轮询循环。
 //
-// 启动时先做一次 ResetStale：上一个进程如果是在处理中退出的（崩溃、被 kill），
-// 那批行会永远停在 processing，此后再没有任何人会碰它们。把超过 15 分钟没有更新过的
-// processing 打回 pending 让它们重新入队 —— 这个阈值取得远大于单篇的正常耗时，
-// 不会误伤正在跑的长任务。
+// 回收分两处：启动时先清一次上一个进程留下的僵尸行（崩溃、被 kill 时它们永远
+// 停在 processing），之后在循环里周期再清 —— 只做启动那一次是不够的：
+// 如果进程很快重启，那些刚被更新过的行还"不够旧"，会被启动检查漏掉，
+// 而循环里再没有第二次机会，它们就只能等到下一次重启。
 //
 // 循环节奏是"处理一轮、等一秒"（第一个 tick 前先跑一轮，所以启动后能立刻接手
 // 上一次遗留的任务）。空库时每秒一次的查询代价可以忽略，而上传之后最多一秒
 // 就会被接手，用户感知不到延迟。
 func (w *Worker) run() {
 	defer close(w.done)
-	runCtx, cancel := context.WithCancel(context.Background())
-	w.cancel = cancel
-	defer cancel()
-	_ = w.store.ResetStale(runCtx, time.Now().Add(-15*time.Minute))
-	ticker := time.NewTicker(time.Second)
+
+	_ = w.store.ResetStale(w.ctx, time.Now().Add(-w.staleAfter))
+
+	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
+	lastReset := time.Now()
+
 	for {
-		w.process(runCtx)
+		w.process(w.ctx)
 		select {
 		case <-w.stop:
 			return
 		case <-ticker.C:
+		}
+
+		if time.Since(lastReset) >= w.staleResetEvery {
+			_ = w.store.ResetStale(w.ctx, time.Now().Add(-w.staleAfter))
+			lastReset = time.Now()
 		}
 	}
 }
@@ -155,7 +206,9 @@ func (w *Worker) process(ctx context.Context) {
 // 成败对暂存文件的处置不同：
 //   - 成功：内容已经进库，原件没有用了，删掉整个暂存目录；
 //   - 失败：原件**留下来**并归档到 failed/<文档ID>/ —— 它是重试的输入，
-//     删掉就等于把"重试这一份"的能力一起删了，用户只能重新上传一遍。
+//     删掉就等于把"重试这一份"的能力一起删了，用户只能重新上传一遍；
+//   - 取消（服务关停）：既不归档也不落终态，原件留在暂存目录不动 ——
+//     这一行很快会被周期 ResetStale 打回 pending，下次处理还要原样用它。
 func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocument) {
 	path := uploadPath(document.Metadata)
 	if path == "" || !w.isUnderRoot(path) {
@@ -164,11 +217,22 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 		return
 	}
 
-	if _, err := w.ingester.processExistingFile(ctx, &document, FileInput{
+	stopHeartbeat := w.startHeartbeat(ctx, document.ID)
+	_, err := w.ingester.processExistingFile(ctx, &document, FileInput{
 		Path:      path,
 		Title:     taskTitle(document.Metadata, document.Title),
 		SourceURI: sourceURI(document),
-	}); err != nil {
+	})
+	stopHeartbeat()
+
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			logger.Info("收录任务被取消，暂存文件保留等待周期回收",
+				zap.Uint64("document_id", document.ID),
+				zap.String("path", path),
+			)
+			return
+		}
 		// 界面上只显示一句中文摘要（failIngest 写进 metadata 的 error 键），
 		// 完整诊断（错误码 + stderr 原文）躺在 metadata 的 error_detail 里。
 		// 这里再留一条日志：排障时不该为了看一句 traceback 去翻某一行文档的 JSON。
@@ -181,6 +245,41 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 		return
 	}
 	w.discardStagedFile(path)
+}
+
+// startHeartbeat 在任务存续期间持续推 updated_at，返回一个停止函数。
+//
+// 它的存在让周期 ResetStale 的阈值可以从"必须大于最慢的任务"降到"心跳间隔的两三倍"：
+// 进程被 kill、goroutine 消失时心跳立即停，几分钟后行就被回收 ——
+// 不需要等下一次进程重启，也不需要把阈值调到几十分钟。
+//
+// ⚠️ 契约：今后任何新增的长阶段都必须跑在这个 ctx 下（或同样有报活），
+// 否则会被 ResetStale 当成僵尸误杀。
+func (w *Worker) startHeartbeat(ctx context.Context, id uint64) func() {
+	ticker := time.NewTicker(w.heartbeatEvery)
+	done := make(chan struct{})
+	var once sync.Once
+
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				// 关停时 ctx 已取消，心跳失败是预期内的，不必记 Warn
+				if err := w.store.Touch(ctx, id); err != nil && ctx.Err() == nil {
+					logger.Warn("收录心跳失败", zap.Uint64("document_id", id), zap.Error(err))
+				}
+			}
+		}
+	}()
+
+	return func() {
+		once.Do(func() {
+			ticker.Stop()
+			close(done)
+		})
+	}
 }
 
 // archiveStagedFile 把失败的原件从暂存目录挪到 failed/<文档ID>/，再把新位置写回 metadata。
