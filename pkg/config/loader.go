@@ -36,6 +36,12 @@ func Load(configPath string) (*Config, error) {
 	// 文档解析：解释器与依赖由 Go 侧自动准备（见 pkg/documentparser）。脚本自身没有超时控制，
 	// 而 CPU 上跑版面模型是分钟级的，所以这里必须给足；OCR 默认走本地，不外发文档内容。
 	v.SetDefault("document_parser.timeout", "10m")
+	// 准备环境（uv 下载解释器与依赖）单独计时，不蹭解析那 10 分钟：正常安装就要十几分钟。
+	// 它必须有值 —— 没上限的 uv pip install 卡住会把 worker 整轮调度停摆，且上传入口永久 409。
+	v.SetDefault("document_parser.prepare_timeout", "20m")
+	// OCR 是逐页推理：页数不设限时，一份几百页的扫描件会把唯一的 worker 占满整个解析预算
+	// （期间上传入口 409），而且大概率撞超时、重试又从第 1 页重来。超限快速失败。
+	v.SetDefault("document_parser.max_ocr_pages", 100)
 	v.SetDefault("document_parser.python_version", "3.12")
 	v.SetDefault("document_parser.ocr_engine", "rapidocr")
 	v.SetDefault("storage.upload_dir", "data/uploads")

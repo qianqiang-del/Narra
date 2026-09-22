@@ -723,3 +723,204 @@ func TestPythonScriptOCRsScannedPagesInMixedPDF(t *testing.T) {
 		t.Fatalf("第 2 页应当带上 OCR 文本: %+v", result.Pages[1])
 	}
 }
+
+// blockingRunner 在第一次被调用时通知，然后一直等到 ctx 结束 ——
+// 模拟"uv 装依赖时卡住"。
+type blockingRunner struct{ started chan struct{} }
+
+func (b *blockingRunner) Run(ctx context.Context, _ string, _ []string, _ string, _ ...string) ([]byte, []byte, error) {
+	close(b.started)
+	<-ctx.Done()
+	return nil, nil, ctx.Err()
+}
+
+// newBlockedPrepareParser 造一个"准备阶段会一直卡住"的解析器：
+// 脚本与依赖清单是真文件（过配置校验），uv 路径指向一个存在的占位文件，
+// 真正的命令执行被阻塞 runner 接管（注：准备走 resolver 的 runner，
+// 解析脚本才走 parser.runner）。
+func newBlockedPrepareParser(t *testing.T, prepareTimeout time.Duration) (*PythonParser, *blockingRunner) {
+	t.Helper()
+
+	script, requirements := fakeScript(t, "print('{}')")
+	uvPath := filepath.Join(t.TempDir(), "uv")
+	writeFile(t, uvPath, "stub")
+
+	parser, err := NewPythonParser(Config{
+		ScriptPath:     script,
+		Requirements:   requirements,
+		RuntimeDir:     t.TempDir(), // 空目录：确保不会走"随包运行时"而绕过 provision
+		EnvDir:         t.TempDir(),
+		UVPath:         uvPath,
+		PrepareTimeout: prepareTimeout,
+	})
+	if err != nil {
+		t.Fatalf("构造解析器失败: %v", err)
+	}
+
+	blocker := &blockingRunner{started: make(chan struct{})}
+	parser.resolver.runner = blocker
+	return parser, blocker
+}
+
+// 准备环境期间 Status 必须立刻给出"正在准备"，而不是跟在 Prepare 后面一起挂住。
+//
+// 这是前端"首次上传需先配置环境"提示的数据来源：那段时间可能十几分钟，若状态接口
+// 被同一个锁顶住，前端连这句话都问不出来。
+func TestStatusReportsPreparingWithoutBlocking(t *testing.T) {
+	parser, blocker := newBlockedPrepareParser(t, 0) // 0 走默认 20 分钟
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- parser.Prepare(ctx, nil) }()
+
+	select {
+	case <-blocker.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("准备流程没有开始")
+	}
+
+	statusCh := make(chan Status, 1)
+	go func() { statusCh <- parser.Status(context.Background()) }()
+	select {
+	case status := <-statusCh:
+		if !status.Enabled {
+			t.Error("解析能力是开着的，Enabled 应当为真")
+		}
+		if status.Ready {
+			t.Error("环境还没准备好，不该报 ready")
+		}
+		if !status.Preparing {
+			t.Error("应当报告正在准备环境")
+		}
+		if status.Progress == "" {
+			t.Error("应当带上当前准备进度")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Status 被准备过程阻塞了")
+	}
+
+	cancel()
+	<-done
+
+	if status := parser.Status(context.Background()); status.Preparing {
+		t.Error("准备结束后不该还挂着 Preparing")
+	}
+}
+
+// 准备阶段必须有墙钟上限：卡住的 uv pip install 会把 worker 的整轮调度停住
+// （见 rag.Worker.process 的 group.Wait），该行永远 processing、上传入口跟着 409。
+// 到点必须返回一个可辨认的错误码，而不是无限等。
+func TestPrepareTimesOut(t *testing.T) {
+	parser, _ := newBlockedPrepareParser(t, 50*time.Millisecond)
+
+	err := parser.Prepare(context.Background(), nil)
+
+	var prepareErr *Error
+	if !errors.As(err, &prepareErr) {
+		t.Fatalf("应当返回解析器错误，实际: %v", err)
+	}
+	if prepareErr.Code != CodePrepareTimeout {
+		t.Fatalf("错误码 = %q，期望 %q", prepareErr.Code, CodePrepareTimeout)
+	}
+	if parser.currentRuntime() != nil {
+		t.Error("超时后不该缓存半成品运行时，下次解析必须重新准备")
+	}
+}
+
+// 关停取消与超时是两回事：取消必须原样上抛 context.Canceled，
+// 让 worker 走"不落终态、等周期回收"的分支，而不是记成一次环境准备失败。
+func TestPrepareCanceledIsNotReportedAsTimeout(t *testing.T) {
+	parser, blocker := newBlockedPrepareParser(t, time.Minute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- parser.Prepare(ctx, nil) }()
+
+	select {
+	case <-blocker.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("准备流程没有开始")
+	}
+	cancel()
+
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消应当原样上抛 context.Canceled，实际: %v", err)
+	}
+	var prepareErr *Error
+	if errors.As(err, &prepareErr) {
+		t.Fatalf("取消不该被包装成解析器错误: %v", prepareErr)
+	}
+}
+
+// 结果行没有结尾换行时也要能取到（脚本用 print 保证有，但日志噪声可能改变行尾）。
+func TestParseStdoutAcceptsLineWithoutTrailingNewline(t *testing.T) {
+	stdout := []byte("INFO docling: loading layout model\n{\"markdown\":\"# 标题\"}")
+	result, ok := parseStdout(stdout)
+	if !ok {
+		t.Fatal("末行没有换行时也应当能解析出结果")
+	}
+	if result.Markdown != "# 标题" {
+		t.Fatalf("markdown 不对: %q", result.Markdown)
+	}
+}
+
+// CRLF 行尾不能把 \r 带进 JSON 解析（Windows 上的日志库有时这么写）。
+func TestParseStdoutHandlesCRLF(t *testing.T) {
+	stdout := []byte("INFO: ready\r\n{\"markdown\":\"# 标题\"}\r\n")
+	result, ok := parseStdout(stdout)
+	if !ok {
+		t.Fatal("CRLF 行尾应当被当作空白处理")
+	}
+	if result.Markdown != "# 标题" {
+		t.Fatalf("markdown 不对: %q", result.Markdown)
+	}
+
+	found := errorFromOutput([]byte("{\"error_code\":\"PARSER_FAILED\",\"error_message\":\"boom\"}\r\n"), nil)
+	if found == nil || found.Code != CodeFailed {
+		t.Fatalf("错误协议在 CRLF 下也应当可识别，实际: %+v", found)
+	}
+}
+
+// 逐行反扫要覆盖首行、末行与空输入这几个边界。
+func TestForEachLineReverseVisitsAllLines(t *testing.T) {
+	var lines []string
+	forEachLineReverse([]byte("a\nbb\nccc"), func(line []byte) bool {
+		lines = append(lines, string(line))
+		return true
+	})
+	if got := strings.Join(lines, ","); got != "ccc,bb,a" {
+		t.Errorf("反扫顺序 = %q，期望 ccc,bb,a", got)
+	}
+
+	lines = nil
+	forEachLineReverse([]byte("a\nbb\nccc\n"), func(line []byte) bool {
+		// 结尾换行会多出一个空段（与 bytes.Split 的行为一致），跳过它。
+		if text := strings.TrimSpace(string(line)); text != "" {
+			lines = append(lines, text)
+		}
+		return true
+	})
+	if got := strings.Join(lines, ","); got != "ccc,bb,a" {
+		t.Errorf("带结尾换行时 = %q，期望 ccc,bb,a", got)
+	}
+
+	lines = nil
+	forEachLineReverse(nil, func(line []byte) bool {
+		lines = append(lines, string(line))
+		return true
+	})
+	if len(lines) != 0 {
+		t.Errorf("空输入不该产生任何行，实际 %v", lines)
+	}
+
+	// visit 返回 false 时提前停止
+	count := 0
+	forEachLineReverse([]byte("1\n2\n3\n4"), func([]byte) bool {
+		count++
+		return count < 2
+	})
+	if count != 2 {
+		t.Errorf("提前停止应当只访问 2 行，实际 %d", count)
+	}
+}

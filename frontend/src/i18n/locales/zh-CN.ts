@@ -329,6 +329,7 @@ export default {
     last: {
       title: '最近一次上传',
       processing: '解析 / 向量化中，完成后即可上传下一份',
+      preparing: '正在准备解析环境：{progress}（首次上传需要下载依赖，可能较慢，可关闭窗口等待）',
       failedHint: '可以直接重试这一份；若仍然失败，检查后端的解析环境',
       retryUnavailable: '这次投递的文档已被删除，无法重试',
       idle: '暂无进行中的任务，可以上传。',
@@ -364,6 +365,9 @@ export default {
       unsupported: '只支持 {formats}；其它格式请先转成 Markdown 或 PDF 再上传。',
       tooLarge: '文件超过 {limit} MB 上限。',
       clear: '移除已选文件',
+      parserSetup:
+        '首次解析这类文件需要先准备解析环境（下载解释器与依赖），可能需要几分钟到十几分钟。上传后可以关掉这个窗口，处理会在后台继续。',
+      parserPreparing: '正在准备解析环境：{progress}',
     },
     list: {
       empty: '还没有已收录的知识库，先上传一份试试。',

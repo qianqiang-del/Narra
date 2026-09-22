@@ -19,7 +19,7 @@ import (
 //
 // 按消费方分三组：
 //   - 收录链路（rag.DocumentStore）：Create / GetByID / MarkProcessing / MarkFailed / ReplaceChunks
-//   - 后台任务队列（rag.FileTaskStore）：SetMetadata / SetUploadPath / ListPending / Claim / ResetStale / Requeue / MarkFailed
+//   - 后台任务队列（rag.FileTaskStore）：SetMetadata / SetUploadPath / ListPending / Claim / Touch / ResetStale / Requeue / MarkFailed
 //   - 查询与删除（service）：List / GetByID / CountChunksByDocument / Delete
 //
 // MarkFailed 被前两组共用，所以它在两处都出现。
@@ -85,8 +85,13 @@ type KnowledgeDocumentRepository interface {
 	Claim(ctx context.Context, id uint64) (bool, error)
 
 	// ResetStale 把 updated_at 早于 olderThan 且仍在 processing 的文档打回 pending。
-	// 用于回收上一个进程留下的僵尸任务：进程在处理中退出后，那些行没有任何人会再碰。
+	// 用于回收僵尸任务：进程在处理中退出后，那些行没有任何人会再碰。
+	// Worker 在启动时与轮询循环里周期调用它（阈值与心跳间隔配套，见实现的 Touch）。
 	ResetStale(ctx context.Context, olderThan time.Time) error
+
+	// Touch 只把 processing 文档的 updated_at 推到当前时刻，作为任务心跳。
+	// 它不参与状态机：行不是 processing（被删、已 ready、已被回收）时影响 0 行，不报错。
+	Touch(ctx context.Context, id uint64) error
 
 	// Requeue 把一行 failed 文档改回 pending 重新排队，并清掉上一次的失败现场，
 	// 同一个事务里把上传记录也置回 pending（见实现）。这是"原地重试"的写入口。

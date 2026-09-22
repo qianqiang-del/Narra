@@ -9,6 +9,9 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"narra/internal/model/entity"
+	"narra/pkg/documentparser"
 )
 
 // 这里只测 archiveStagedFile —— 它是"失败原件留下来"的实现处，而重试完全建立在
@@ -163,5 +166,121 @@ func TestWorkerArchivesReplacesPreviousArchive(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("归档目录里应当只有一份文件，实际 %d 份", len(entries))
+	}
+}
+
+// cancelParser 在 Parse 里一直等到 ctx 被取消 —— 模拟"服务关停时正在跑的任务"。
+type cancelParser struct{ started chan struct{} }
+
+func (p *cancelParser) Parse(ctx context.Context, _ documentparser.Request) (*documentparser.Result, error) {
+	close(p.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *cancelParser) Status(context.Context) documentparser.Status {
+	return documentparser.Status{Enabled: true, Ready: true, Source: "cancel-stub"}
+}
+
+var _ documentparser.Parser = (*cancelParser)(nil)
+
+// 心跳是周期回收的前提：任务存续期间必须持续推 updated_at，停掉之后立即停止。
+func TestHeartbeatTouchesUntilStopped(t *testing.T) {
+	store := &fakeDocumentStore{}
+	worker := NewWorker(store, nil, t.TempDir(), 1)
+	worker.heartbeatEvery = 5 * time.Millisecond
+
+	stop := worker.startHeartbeat(context.Background(), testDocumentID)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) && store.touchCalls() < 3 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	stop()
+
+	if got := store.touchCalls(); got < 3 {
+		t.Fatalf("心跳应当至少被调用 3 次，实际 %d", got)
+	}
+
+	stopped := store.touchCalls()
+	time.Sleep(30 * time.Millisecond)
+	if got := store.touchCalls(); got != stopped {
+		t.Errorf("停止之后心跳不该继续：%d → %d", stopped, got)
+	}
+}
+
+// 周期回收：僵尸任务不能只在启动时清一次 —— 进程快速重启时，启动检查会漏掉
+// "还不够旧"的行，而循环里如果没有第二次机会，它们就只能等下一次重启。
+func TestWorkerResetsStalePeriodically(t *testing.T) {
+	store := &fakeDocumentStore{}
+	worker := NewWorker(store, nil, t.TempDir(), 1)
+	worker.pollInterval = 5 * time.Millisecond
+	worker.staleResetEvery = 10 * time.Millisecond
+
+	worker.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = worker.Stop(ctx)
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && store.staleResets() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := store.staleResets(); got < 2 {
+		t.Fatalf("周期回收应当至少执行 2 次（启动 1 次 + 循环里至少 1 次），实际 %d", got)
+	}
+}
+
+// 关停取消不是失败：不写失败现场、不归档原件，这一行留给周期回收重新入队。
+func TestProcessOneKeepsStagedFileOnCancel(t *testing.T) {
+	root := t.TempDir()
+	store := &fakeDocumentStore{}
+	parser := &cancelParser{started: make(chan struct{})}
+	ingester := newIngesterWithParser(store, parser)
+	worker := NewWorker(store, ingester, root, 1)
+
+	// 后缀必须是"需要 Python 解析器"的：md / txt 会走纯文本解析器，绕过这个桩。
+	directory := filepath.Join(root, "pending", "1")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatalf("创建暂存目录失败: %v", err)
+	}
+	staged := filepath.Join(directory, "upload.docx")
+	if err := os.WriteFile(staged, []byte("内容由桩决定"), 0o644); err != nil {
+		t.Fatalf("写入暂存文件失败: %v", err)
+	}
+
+	metadata, err := json.Marshal(map[string]any{"upload_path": staged, "explicit_title": true})
+	if err != nil {
+		t.Fatalf("构造 metadata 失败: %v", err)
+	}
+	document := entity.KnowledgeDocument{
+		Title:    "被取消的文档",
+		Status:   entity.KnowledgeDocumentStatusProcessing,
+		Metadata: metadata,
+	}
+	document.ID = testDocumentID
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.processOne(ctx, document)
+	}()
+
+	select {
+	case <-parser.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("解析没有开始，用例前提不成立")
+	}
+	cancel()
+	<-done
+
+	if store.failMeta != nil {
+		t.Errorf("取消不该写失败现场，实际: %s", store.failMeta)
+	}
+	if _, err := os.Stat(staged); err != nil {
+		t.Errorf("取消时原件应当留在原地等待回收，实际 stat: %v", err)
 	}
 }

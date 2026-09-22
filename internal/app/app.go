@@ -269,21 +269,23 @@ func newDocumentParser(cfg *config.Config) documentparser.Parser {
 	}
 
 	parser, err := documentparser.NewPythonParser(documentparser.Config{
-		Enabled:       true,
-		PythonPath:    cfg.DocumentParser.PythonPath,
-		RuntimeDir:    cfg.DocumentParser.RuntimeDir,
-		EnvDir:        cfg.DocumentParser.EnvDir,
-		ScriptPath:    cfg.DocumentParser.ScriptPath,
-		Requirements:  cfg.DocumentParser.Requirements,
-		UVPath:        cfg.DocumentParser.UVPath,
-		PythonVersion: cfg.DocumentParser.PythonVersion,
-		IndexURL:      cfg.DocumentParser.IndexURL,
-		ParseTimeout:  cfg.DocumentParser.Timeout,
-		OCREngine:     cfg.DocumentParser.OCREngine,
-		OCRAPIBaseURL: cfg.DocumentParser.OCRAPIBaseURL,
-		OCRAPIKey:     cfg.DocumentParser.OCRAPIKey,
-		OCRAPIModel:   cfg.DocumentParser.OCRAPIModel,
-		WorkDir:       cfg.DocumentParser.WorkDir,
+		Enabled:        true,
+		PythonPath:     cfg.DocumentParser.PythonPath,
+		RuntimeDir:     cfg.DocumentParser.RuntimeDir,
+		EnvDir:         cfg.DocumentParser.EnvDir,
+		ScriptPath:     cfg.DocumentParser.ScriptPath,
+		Requirements:   cfg.DocumentParser.Requirements,
+		UVPath:         cfg.DocumentParser.UVPath,
+		PythonVersion:  cfg.DocumentParser.PythonVersion,
+		IndexURL:       cfg.DocumentParser.IndexURL,
+		ParseTimeout:   cfg.DocumentParser.Timeout,
+		PrepareTimeout: cfg.DocumentParser.PrepareTimeout,
+		MaxOCRPages:    cfg.DocumentParser.MaxOCRPages,
+		OCREngine:      cfg.DocumentParser.OCREngine,
+		OCRAPIBaseURL:  cfg.DocumentParser.OCRAPIBaseURL,
+		OCRAPIKey:      cfg.DocumentParser.OCRAPIKey,
+		OCRAPIModel:    cfg.DocumentParser.OCRAPIModel,
+		WorkDir:        cfg.DocumentParser.WorkDir,
 	})
 	if err != nil {
 		logger.Warn("文档解析器初始化失败，PDF / Office 格式暂时无法收录；md 与 txt 不受影响",
@@ -356,11 +358,15 @@ func (a *App) gracefulShutdown() {
 		logger.Error("服务器关闭失败", zap.Error(err))
 	}
 
-	// 关闭路由连接
+	// worker 用独立预算：取消之后它还要把在飞的任务收尾（解析子进程被杀、心跳停掉），
+	// 这一步需要自己的时长，不能蹭上面那个已经被 server.Shutdown 用掉一截的 5s。
+	// 而且必须在关数据库之前完成 —— 否则在飞任务的收尾会打在已经关闭的连接上。
 	if a.knowledgeWorker != nil {
-		if err := a.knowledgeWorker.Stop(ctx); err != nil {
-			logger.Error("知识库 worker 关闭失败", zap.Error(err))
+		workerCtx, workerCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		if err := a.knowledgeWorker.Stop(workerCtx); err != nil {
+			logger.Error("知识库 worker 未在预算内停稳，可能留下 processing 行（下次启动会回收）", zap.Error(err))
 		}
+		workerCancel()
 	}
 
 	if a.router != nil {

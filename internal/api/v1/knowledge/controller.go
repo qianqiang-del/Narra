@@ -58,7 +58,9 @@ func NewController(svc service.KnowledgeService, uploadDir string, parser docume
 // 非 nil 时交给解析器自己探测（例如 Python 运行时和依赖是否就绪）。
 func (c *Controller) ParserStatus(ctx *gin.Context) {
 	if c.parser == nil {
-		response.Success(ctx, documentparser.Status{Ready: false, Reason: "document parser is disabled"})
+		// Enabled=false 与"没准备好"是两件事：前者是配置里就没开，
+		// 前端据此提示的是"这类文件暂时没法解析"，而不是"首次上传要等一会儿"。
+		response.Success(ctx, documentparser.Status{Enabled: false, Ready: false, Reason: "document parser is disabled"})
 		return
 	}
 	response.Success(ctx, c.parser.Status(ctx.Request.Context()))

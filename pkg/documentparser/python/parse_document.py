@@ -119,6 +119,13 @@ def _extract_pdf_text(path: Path) -> tuple[str, list[dict[str, Any]], list[int]]
     除 markdown 与逐页文本外，还返回"没有文字层但含图片"的页号 —— 那才是真正需要
     OCR 的扫描页。没有文字层也没有图片的页（章节分隔之类的空白页）不算在内：对它们
     跑 OCR 只会白白加载一次 OCR 依赖，结果同样是空的。
+
+    图片检测用 ``get_image_info()`` 而不是 ``get_images()``：前者返回"页面上实际显示的
+    图片"，连内联图片、嵌在 Form XObject 里的都算 —— 那些正是会让扫描页被漏检、
+    进而静默丢内容的形态。``get_images()`` 只看页资源字典里的 Image XObject。
+
+    残留的已知短板：把文字转成曲线的矢量页（无文字层、无图片）仍会被当成空白页跳过。
+    这类页面没有便宜的检测办法，且把它们一律送去 OCR 会把装饰性的空白页也识别出噪声。
     """
     import fitz
 
@@ -132,7 +139,7 @@ def _extract_pdf_text(path: Path) -> tuple[str, list[dict[str, Any]], list[int]]
             pages.append({"number": number, "text": text})
             if text:
                 texts.append(f"<!-- page:{number} -->\n{text}")
-            elif page.get_images(full=True):
+            elif page.get_image_info():
                 scanned_pages.append(number)
     finally:
         pdf.close()
@@ -264,6 +271,21 @@ def _convert_with_docling(
     return markdown
 
 
+def _too_many_ocr_pages(count: int, limit: int) -> ParserError:
+    """需要 OCR 的页数超限时的错误。
+
+    设这道闸门是为了别让一份几百页的扫描件占满整个解析预算：它是逐页推理，
+    页数不设限时大概率撞上解析超时被杀，而重试又是从第 1 页重来 —— 永远过不去。
+    快速失败反而把动作交给用户：拆文件，或者调大上限（同时要调大 timeout）。
+    """
+    return ParserError(
+        "PARSER_TOO_MANY_OCR_PAGES",
+        f"这份 PDF 有 {count} 页需要 OCR，超过单次上限 {limit} 页；"
+        "请先拆分文件，或调大 document_parser.max_ocr_pages"
+        "（调大时记得同时调大 document_parser.timeout）",
+    )
+
+
 def _parse_pdf(
     path: Path,
     result: ParseResult,
@@ -271,6 +293,7 @@ def _parse_pdf(
     api_base_url: str,
     api_key: str,
     api_model: str,
+    max_ocr_pages: int = 0,
 ) -> str:
     """逐页决定走文字层还是 OCR。
 
@@ -285,6 +308,8 @@ def _parse_pdf(
     # 整份都没有文字层：纯扫描件，走整份 OCR。这里刻意不看图片检测结果 ——
     # 扫描件的图片嵌入方式五花八门，一旦漏检就会让整份文档静默变成空内容。
     if not text_pages:
+        if max_ocr_pages > 0 and len(pages) > max_ocr_pages:
+            raise _too_many_ocr_pages(len(pages), max_ocr_pages)
         markdown, result.pages, parser = _run_pdf_ocr(
             path, ocr_engine, api_base_url, api_key, api_model
         )
@@ -310,6 +335,8 @@ def _parse_pdf(
         return text_markdown
 
     # 混合型：文字层 + 只对扫描页做 OCR，再按页号合并回原始顺序
+    if max_ocr_pages > 0 and len(scanned_pages) > max_ocr_pages:
+        raise _too_many_ocr_pages(len(scanned_pages), max_ocr_pages)
     _, ocr_pages, parser = _run_pdf_ocr(
         path, ocr_engine, api_base_url, api_key, api_model, scanned_pages
     )
@@ -349,6 +376,7 @@ def parse_path(
     api_key: str = "",
     api_model: str = "",
     work_dir: str = "",
+    max_ocr_pages: int = 100,
 ) -> ParseResult:
     """Parse one supported file without writing protocol output."""
     if not path.is_file():
@@ -371,7 +399,7 @@ def parse_path(
             result.metadata["parser"] = "docling"
         elif suffix == ".pdf":
             result.markdown = _parse_pdf(
-                path, result, ocr_engine, api_base_url, api_key, api_model
+                path, result, ocr_engine, api_base_url, api_key, api_model, max_ocr_pages
             )
         elif suffix in IMAGE_EXTENSIONS:
             if ocr_engine == "api":
@@ -412,6 +440,12 @@ def main() -> None:
         default="",
         help="图片导出根目录；留空则新建系统临时目录（默认不写回输入文件所在目录）",
     )
+    parser.add_argument(
+        "--max-ocr-pages",
+        type=int,
+        default=100,
+        help="单次解析允许 OCR 的页数上限；超过则快速失败（0 表示不限）",
+    )
     args = parser.parse_args()
     try:
         result = parse_path(
@@ -421,6 +455,7 @@ def main() -> None:
             args.ocr_api_key,
             args.ocr_api_model,
             args.work_dir,
+            args.max_ocr_pages,
         )
     except ParserError as exc:
         fail(exc.code, exc.message)

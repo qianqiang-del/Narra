@@ -23,6 +23,22 @@ const (
 	defaultPythonVersion = "3.12"
 	// defaultParseTimeout 单次解析超时。CPU 上跑版面模型是分钟级的，所以给得比较宽。
 	defaultParseTimeout = 10 * time.Minute
+	// defaultPrepareTimeout 单次环境准备（下载解释器 + 建 venv + 装依赖）的墙钟上限。
+	//
+	// 正常安装就是分钟级的（实测 uv pip install 约 15 分钟），所以给足余量；但必须有，
+	// 因为准备跑在解析之前、与解析共用一条调用链：一次卡住的 uv pip install 会把
+	// worker 的整轮调度停在 group.Wait 上（见 rag.Worker.process），
+	// 该行永远 processing、上传入口跟着永久 409。
+	defaultPrepareTimeout = 20 * time.Minute
+
+	// defaultMaxOCRPages 单次解析允许 OCR 的页数上限。
+	//
+	// 扫描页是一页一次推理（或一次网络往返），页数不设限时一份几百页的扫描件会：
+	//  1) 把唯一的 worker 占满整个解析预算 —— 期间所有人上传都是 409；
+	//  2) 大概率撞上解析超时被杀，而重试是从第 1 页重来，永远过不去。
+	// 超限快速失败（错误码 PARSER_TOO_MANY_OCR_PAGES），把"该拆文件"这件事直接告诉用户。
+	// 100 页按本地小模型的速度大致是几分钟，留得出余量给后续的切分与向量化。
+	defaultMaxOCRPages = 100
 
 	scriptName       = "parse_document.py"
 	requirementsName = "requirements.txt"
@@ -54,6 +70,12 @@ type Config struct {
 	IndexURL string
 	// ParseTimeout 单次解析超时，必须为正。
 	ParseTimeout time.Duration
+	// PrepareTimeout 单次环境准备（uv 下载解释器与依赖）的墙钟上限，必须为正。
+	// 它只约束"准备"这一段，不含解析；超时会杀掉 uv 进程并按准备失败报错。
+	PrepareTimeout time.Duration
+	// MaxOCRPages 单次解析允许 OCR 的页数上限，必须为正。
+	// 超过时脚本快速失败（PARSER_TOO_MANY_OCR_PAGES），避免一份大扫描件占满解析预算。
+	MaxOCRPages int
 	// OCREngine 见 OCREngineXxx 常量。
 	OCREngine string
 	// OCRAPIBaseURL / OCRAPIKey / OCRAPIModel 仅在 OCREngine 为 api 时使用。
@@ -88,6 +110,12 @@ func (c Config) WithDefaults() Config {
 	if c.ParseTimeout <= 0 {
 		c.ParseTimeout = defaultParseTimeout
 	}
+	if c.PrepareTimeout <= 0 {
+		c.PrepareTimeout = defaultPrepareTimeout
+	}
+	if c.MaxOCRPages <= 0 {
+		c.MaxOCRPages = defaultMaxOCRPages
+	}
 	if strings.TrimSpace(c.OCREngine) == "" {
 		c.OCREngine = OCREngineRapidOCR
 	}
@@ -110,6 +138,12 @@ func (c Config) Validate() error {
 	}
 	if c.ParseTimeout <= 0 {
 		return fmt.Errorf("document_parser.timeout 必须大于 0")
+	}
+	if c.PrepareTimeout <= 0 {
+		return fmt.Errorf("document_parser.prepare_timeout 必须大于 0")
+	}
+	if c.MaxOCRPages <= 0 {
+		return fmt.Errorf("document_parser.max_ocr_pages 必须大于 0")
 	}
 
 	switch c.OCREngine {

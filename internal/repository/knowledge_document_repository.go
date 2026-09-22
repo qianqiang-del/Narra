@@ -79,10 +79,30 @@ func (r *knowledgeDocumentRepository) Claim(ctx context.Context, id uint64) (boo
 // 判据用 updated_at 而不是新增一列"开始处理时间"：Claim 与 MarkProcessing 都是
 // 走 GORM 的 map 更新，会自动刷新 updated_at，所以它天然就是"最后一次有人动过"的时刻。
 // 代价是别处不能再用 UpdateColumn 之类的写法绕过 autoUpdateTime，否则这里会误判。
+// （唯一的例外是 Touch：它就是显式地"只推时间"，见那里的说明。）
+//
+// 判据的阈值必须与心跳间隔配套：Worker 处理期间每 30s 调一次 Touch，
+// 所以 3 分钟的阈值既能很快收敛真僵尸，又不会误杀跑得慢的正常任务。
 func (r *knowledgeDocumentRepository) ResetStale(ctx context.Context, olderThan time.Time) error {
 	return r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).
 		Where("status = ? AND updated_at < ?", entity.KnowledgeDocumentStatusProcessing, olderThan).
 		Updates(map[string]any{"status": entity.KnowledgeDocumentStatusPending}).Error
+}
+
+// Touch 把 processing 文档的 updated_at 推到当前时刻，作为"任务还活着"的心跳。
+//
+// 与 ResetStale 是一对：一个负责报活，一个负责回收没报活的。心跳停掉（进程被 kill、
+// goroutine 消失）之后，行在 staleAfter 内就会变"旧"，被周期 ResetStale 捡回去 ——
+// 不需要等下一次进程重启。
+//
+// 用 UpdateColumn + 显式时间：要的正是"只改这一列"。带 status 条件是防御：
+// 行已被删、或已经被 ResetStale 打回 pending 时，这里影响 0 行且不报错 ——
+// 心跳不该把任何状态改回去。
+func (r *knowledgeDocumentRepository) Touch(ctx context.Context, id uint64) error {
+	return r.db.WithContext(ctx).
+		Model(&entity.KnowledgeDocument{}).
+		Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusProcessing).
+		UpdateColumn("updated_at", time.Now().UTC()).Error
 }
 
 // Delete 硬删除一篇文档，切片与向量由外键 ON DELETE CASCADE 带走。

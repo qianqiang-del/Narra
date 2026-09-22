@@ -190,21 +190,23 @@ func (c TTSConfig) Validate() error {
 // 使用者机器上不需要预装 Python：解释器与依赖要么随发布包携带（runtime_dir），
 // 要么首次运行时用 uv 自动准备（env_dir），要么由使用者指定已有环境（python_path）。
 type DocumentParserConfig struct {
-	Enabled       bool          `mapstructure:"enabled"`        // 是否启用文档解析能力
-	PythonPath    string        `mapstructure:"python_path"`    // 已有解释器路径；留空则走三级自动解析
-	RuntimeDir    string        `mapstructure:"runtime_dir"`    // 随包携带的运行时目录；留空取 <程序目录>/python-runtime
-	EnvDir        string        `mapstructure:"env_dir"`        // uv 现建的环境目录；留空取 <用户缓存>/narra/documentparser-env
-	ScriptPath    string        `mapstructure:"script_path"`    // parse_document.py 路径；留空自动查找
-	Requirements  string        `mapstructure:"requirements"`   // 依赖清单；留空取脚本同目录的 requirements.txt
-	UVPath        string        `mapstructure:"uv_path"`        // uv 路径；留空按 随包目录 → 程序目录 → PATH 查找
-	PythonVersion string        `mapstructure:"python_version"` // uv 要准备的解释器版本，如 3.12
-	IndexURL      string        `mapstructure:"index_url"`      // PyPI 镜像；国内首次准备依赖时建议配置
-	Timeout       time.Duration `mapstructure:"timeout"`        // 单次解析超时
-	OCREngine     string        `mapstructure:"ocr_engine"`     // rapidocr（本地，默认）或 api（会把图片外发）
-	OCRAPIBaseURL string        `mapstructure:"ocr_api_base_url"`
-	OCRAPIKey     string        `mapstructure:"ocr_api_key"`
-	OCRAPIModel   string        `mapstructure:"ocr_api_model"`
-	WorkDir       string        `mapstructure:"work_dir"` // 图片导出根目录；留空用系统临时目录
+	Enabled        bool          `mapstructure:"enabled"`         // 是否启用文档解析能力
+	PythonPath     string        `mapstructure:"python_path"`     // 已有解释器路径；留空则走三级自动解析
+	RuntimeDir     string        `mapstructure:"runtime_dir"`     // 随包携带的运行时目录；留空取 <程序目录>/python-runtime
+	EnvDir         string        `mapstructure:"env_dir"`         // uv 现建的环境目录；留空取 <用户缓存>/narra/documentparser-env
+	ScriptPath     string        `mapstructure:"script_path"`     // parse_document.py 路径；留空自动查找
+	Requirements   string        `mapstructure:"requirements"`    // 依赖清单；留空取脚本同目录的 requirements.txt
+	UVPath         string        `mapstructure:"uv_path"`         // uv 路径；留空按 随包目录 → 程序目录 → PATH 查找
+	PythonVersion  string        `mapstructure:"python_version"`  // uv 要准备的解释器版本，如 3.12
+	IndexURL       string        `mapstructure:"index_url"`       // PyPI 镜像；国内首次准备依赖时建议配置
+	Timeout        time.Duration `mapstructure:"timeout"`         // 单次解析超时
+	PrepareTimeout time.Duration `mapstructure:"prepare_timeout"` // 首次环境准备（下载解释器与依赖）的墙钟上限
+	MaxOCRPages    int           `mapstructure:"max_ocr_pages"`   // 单次解析允许 OCR 的页数上限
+	OCREngine      string        `mapstructure:"ocr_engine"`      // rapidocr（本地，默认）或 api（会把图片外发）
+	OCRAPIBaseURL  string        `mapstructure:"ocr_api_base_url"`
+	OCRAPIKey      string        `mapstructure:"ocr_api_key"`
+	OCRAPIModel    string        `mapstructure:"ocr_api_model"`
+	WorkDir        string        `mapstructure:"work_dir"` // 图片导出根目录；留空用系统临时目录
 }
 
 // documentParserOCREngines 是允许写进 document_parser.ocr_engine 的值。只有一个也照样做白名单。
@@ -242,6 +244,12 @@ func (c DocumentParserConfig) Validate() error {
 
 	if c.Timeout <= 0 {
 		return fmt.Errorf("document_parser.timeout 必须大于 0")
+	}
+	if c.PrepareTimeout <= 0 {
+		return fmt.Errorf("document_parser.prepare_timeout 必须大于 0")
+	}
+	if c.MaxOCRPages <= 0 {
+		return fmt.Errorf("document_parser.max_ocr_pages 必须大于 0")
 	}
 
 	return nil

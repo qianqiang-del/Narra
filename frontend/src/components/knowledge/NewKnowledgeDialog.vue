@@ -18,12 +18,12 @@ import {
   DialogRoot,
   DialogTitle,
 } from 'reka-ui'
-import { AlertCircle, FileText, Loader2, RotateCw, Upload, X } from 'lucide-vue-next'
-import { computed, ref } from 'vue'
+import { AlertCircle, FileText, Info, Loader2, RotateCw, Upload, X } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
 
-import { MAX_UPLOAD_BYTES, SUPPORTED_EXTENSIONS } from '@/api/knowledge'
+import { MAX_UPLOAD_BYTES, SUPPORTED_EXTENSIONS, needsDocumentParser } from '@/api/knowledge'
 import { useKnowledgeStore } from '@/stores/knowledge'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -57,6 +57,26 @@ const canRetry = computed(() => Boolean(failed.value?.documentId))
 const selectedSize = computed(() =>
   selectedFile.value ? `${(selectedFile.value.size / 1024 / 1024).toFixed(1)} MB` : '',
 )
+
+/**
+ * "首次上传需要先准备解析环境"的提醒是否出现。
+ *
+ * 三个条件缺一不可：选中的文件确实要用 Python 解析器；后端说解析能力开着；环境还没备好。
+ * 环境备好之后 ready 为真，提示自然消失 —— 不需要前端自己记"这是不是第一次"。
+ *
+ * enabled=false（配置里就没开）时不提示：那不是"要等一会儿"，是这份文件根本解析不了，
+ * 该给的是一句不同的说明，别混进"首次较慢"里。
+ */
+const parserHint = computed(() => {
+  const status = store.parserStatus
+  if (!selectedFile.value || !needsDocumentParser(selectedFile.value.name)) return false
+  return status !== null && status.enabled && !status.ready
+})
+
+// 每次打开弹层都刷新一次环境状态：上次关掉之后环境可能已经装好了。
+watch(open, (visible) => {
+  if (visible) void store.loadParserStatus()
+})
 
 /**
  * 先在前端挡两道：扩展名与大小。
@@ -210,6 +230,23 @@ async function retryFailed() {
           </button>
         </div>
 
+        <!--
+          首次上传这类文件要先把解析环境装出来（后端用 uv 现场下载解释器与依赖，
+          分钟级）。不提醒的话，用户只会看到"处理中"长时间不动，以为卡死了。
+        -->
+        <div
+          v-if="parserHint"
+          class="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          <Info class="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            <template v-if="store.parserStatus?.preparing">
+              {{ t('knowledge.upload.parserPreparing', { progress: store.parserStatus.progress }) }}
+            </template>
+            <template v-else>{{ t('knowledge.upload.parserSetup') }}</template>
+          </span>
+        </div>
+
         <!-- 标题（可选）与提交 -->
         <div class="mt-3 flex items-center gap-2">
           <input
@@ -248,7 +285,11 @@ async function retryFailed() {
                   >
                     {{ t('knowledge.status.processing') }}
                   </span>
-                  <span>{{ t('knowledge.last.processing') }}</span>
+                  <!-- 首次上传：后端此时在准备解析环境，进度条要能对应上，否则这条一直停着像卡死 -->
+                  <span v-if="store.parserStatus?.preparing">
+                    {{ t('knowledge.last.preparing', { progress: store.parserStatus.progress }) }}
+                  </span>
+                  <span v-else>{{ t('knowledge.last.processing') }}</span>
                 </p>
               </div>
             </div>
