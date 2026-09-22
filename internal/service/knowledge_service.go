@@ -95,6 +95,21 @@ type fileRetrier interface {
 	Retry(ctx context.Context, id uint64) (bool, error)
 }
 
+// retriever 是本服务对检索能力的最小依赖面。
+//
+// 与 ingester 同一个路数：服务层负责 HTTP 面（DTO 进、DTO 出），检索链路本身归
+// internal/rag。它由 *rag.Retriever 提供，但**不是** ingester 的一部分 ——
+// 收录与检索是两个对象、两种负载（一个吃上游额度，一个吃数据库），合在一起
+// 会让"上传很慢"与"检索很慢"看起来像同一件事。
+//
+// 可以是 nil：检索能力没接上（或测试里不关心它）时服务照常提供收录与列表，
+// 只有 Retrieve 会返回一句明确的"知识检索不可用"。与 parser 可以为 nil 同一个理由：
+// 不因为一块能力缺位就拦住整个服务。
+type retriever interface {
+	// Retrieve 两路召回并融合出 top_k 条命中，见 rag.Retriever。
+	Retrieve(ctx context.Context, input rag.RetrieveInput) (rag.RetrieveResult, error)
+}
+
 // ErrIngestBusy 表示知识库正在收录另一份文件，此刻不接受新的上传。
 //
 // 它是**可判定的**：接口层据此把"忙"翻译成 409，而不是和参数错误一起塞进 400 ——
@@ -111,6 +126,12 @@ var ErrRetryNotFailed = errors.New("这份文档不是失败状态，不需要�
 // 它和上面两个的区别在处置方式：用户能做的是**重新上传**这份文件，
 // 而不是等一会儿再点一次。所以文案里要把这句话说出来。
 var ErrStagedFileMissing = errors.New("这次上传的原始文件已不在服务器上，请重新上传")
+
+// ErrEmptyQuery 表示检索词是空的。
+//
+// 在服务层拦一道而不是只靠 rag：接口层要按"参数错了"翻成 400，而它不该为了认一个
+// 哨兵值去 import internal/rag（那是运行时模块，接口层只认服务层的错误口径）。
+var ErrEmptyQuery = errors.New("检索词不能为空")
 
 // SubmitFile 把一份文件交给后台收录，建好 pending 行就返回。
 //
@@ -225,6 +246,7 @@ type knowledgeService struct {
 	documents documentQuerier
 	records   uploadRecordStore
 	ingester  ingester
+	retriever retriever
 	uploadDir string
 
 	// ingestMu 让"查活跃任务 + 建 pending 行"在单个进程内是原子的。
@@ -237,15 +259,22 @@ var _ KnowledgeService = (*knowledgeService)(nil)
 
 // NewKnowledgeService 创建知识库服务。
 //
-// uploadDir 是可选参数（早期调用点只传两个依赖）：它必须与 controller、worker
-// 用同一个值 —— 删除文档时靠它判断一条记录的 upload_path 是否可信。
-// 不传（空串）时 isUploadPath 恒为 false，清理动作整体跳过，删除功能不受影响。
-func NewKnowledgeService(documents documentQuerier, records uploadRecordStore, ingester ingester, uploadDirs ...string) KnowledgeService {
+// retriever 可以传 nil（见 retriever 的说明）。uploadDir 是可选参数（早期调用点只传
+// 两个依赖）：它必须与 controller、worker 用同一个值 —— 删除文档时靠它判断一条记录的
+// upload_path 是否可信。不传（空串）时 isUploadPath 恒为 false，清理动作整体跳过，
+// 删除功能不受影响。
+func NewKnowledgeService(documents documentQuerier, records uploadRecordStore, ingester ingester, retriever retriever, uploadDirs ...string) KnowledgeService {
 	uploadDir := ""
 	if len(uploadDirs) > 0 {
 		uploadDir = uploadDirs[0]
 	}
-	return &knowledgeService{documents: documents, records: records, ingester: ingester, uploadDir: uploadDir}
+	return &knowledgeService{
+		documents: documents,
+		records:   records,
+		ingester:  ingester,
+		retriever: retriever,
+		uploadDir: uploadDir,
+	}
 }
 
 // IngestFile 收录一份文件，并把结果翻成对外的文档结构。
@@ -463,6 +492,41 @@ func (s *knowledgeService) Delete(ctx context.Context, id uint64) error {
 	return nil
 }
 
+// Retrieve 检索知识库，返回最相关的切片。
+//
+// 这是 MCP 契约 rag_retrieve 的进程内入口（见 docs/modules/agent-mcp-tools.md）：
+// { query, top_k } → { results: [{content, source, score}] }。本层多给几列
+// （标题、章节、命中方式、相似度）方便界面显示与调参，MCP 适配层按需取用即可。
+//
+// 检索词在这里校验而不是全丢给 rag：接口层要按"参数错了"翻 400，而它只认服务层的
+// 错误口径（见 ErrEmptyQuery）。rag 那边同样有一道，供不经服务层的调用方（MCP）兜底。
+func (s *knowledgeService) Retrieve(
+	ctx context.Context,
+	input requestdto.KnowledgeRetrieve,
+) (responsedto.KnowledgeRetrieveResult, error) {
+	if s.retriever == nil {
+		return responsedto.KnowledgeRetrieveResult{}, fmt.Errorf("知识检索不可用")
+	}
+	if strings.TrimSpace(input.Query) == "" {
+		return responsedto.KnowledgeRetrieveResult{}, ErrEmptyQuery
+	}
+
+	result, err := s.retriever.Retrieve(ctx, rag.RetrieveInput{Text: input.Query, TopK: input.TopK})
+	if err != nil {
+		return responsedto.KnowledgeRetrieveResult{}, err
+	}
+
+	hits := make([]responsedto.KnowledgeHit, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		hits = append(hits, toHitResponse(hit))
+	}
+	return responsedto.KnowledgeRetrieveResult{
+		Model:   result.Model,
+		Terms:   result.Terms,
+		Results: hits,
+	}, nil
+}
+
 // ListUploadRecords 分页返回上传记录 —— 文件投递的历史流水，含已经收录成功的那些。
 //
 // 它与 List 是两份不同的东西：List 列的是**资产**（能参与检索的文档），
@@ -618,6 +682,29 @@ func (s *knowledgeService) isUploadPath(path string) bool {
 // document 为 nil 时返回零值：收录链路在"连文档行都没建起来"的情况下会返回空结果
 // （例如路径为空、来源类型非法），那种时候响应体没有内容可填，但调用方拿到的
 // 错误信息是完整的。
+// toHitResponse 把一条命中翻成对外结构。
+//
+// source 取来源标识（原始文件名等），没有来源标识的手工录入文档回落到标题 ——
+// MCP 契约里这一列回答的是"这条内容从哪来"，空着就等于没回答。
+func toHitResponse(hit rag.Hit) responsedto.KnowledgeHit {
+	source := hit.SourceURI
+	if source == "" {
+		source = hit.DocumentTitle
+	}
+	return responsedto.KnowledgeHit{
+		ChunkID:    hit.ChunkID,
+		DocumentID: hit.DocumentID,
+		Title:      hit.DocumentTitle,
+		ChunkIndex: hit.ChunkIndex,
+		Heading:    hit.Heading,
+		Content:    hit.Content,
+		Source:     source,
+		Score:      hit.Score,
+		Similarity: hit.Similarity,
+		Method:     hit.Method,
+	}
+}
+
 func toDocumentResponse(document *entity.KnowledgeDocument, chunks int) responsedto.KnowledgeDocument {
 	if document == nil {
 		return responsedto.KnowledgeDocument{}

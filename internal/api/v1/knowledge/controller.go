@@ -288,6 +288,35 @@ func (c *Controller) Delete(ctx *gin.Context) {
 	response.SuccessWithMessage(ctx, "文档已删除", nil)
 }
 
+// Retrieve 检索知识库，返回最相关的切片。
+//
+// 用 POST 而不是 GET：检索词是一句自然语言，塞进查询串会被长度与编码问题反复咬
+// （长句、引号、& 都要转义），而 body 没有这些麻烦。它也不挂在 /documents 下面 ——
+// 检索一次跨整库召回一批切片，命中的不是某一篇文档，与 documents / upload-records
+// 是三组并列的资源。
+//
+// 错误分两类：参数类（检索词为空）翻 400，其余是检索链路自身的失败
+// （向量服务没配好、两路召回都查不动）翻 500 —— 降级规则在 rag.Retriever 里，
+// 能走到这里说明两条召回路都没给出结果，失败原因已经带上来了。
+func (c *Controller) Retrieve(ctx *gin.Context) {
+	var input requestdto.KnowledgeRetrieve
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		response.BadRequest(ctx, "请求格式无效，需要 query")
+		return
+	}
+
+	result, err := c.svc.Retrieve(ctx.Request.Context(), input)
+	if err != nil {
+		if errors.Is(err, service.ErrEmptyQuery) {
+			response.BadRequest(ctx, err.Error())
+			return
+		}
+		response.InternalError(ctx, err.Error())
+		return
+	}
+	response.Success(ctx, result)
+}
+
 // queryInt 读一个整数查询参数，缺失或非法时用默认值。
 // 分页参数给默认值比报错合适：列表页第一次打开本来就不会带上它们。
 func queryInt(ctx *gin.Context, name string, fallback int) int {

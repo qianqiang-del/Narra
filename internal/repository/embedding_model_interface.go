@@ -32,6 +32,16 @@ type EmbeddingModelRepository interface {
 	//
 	// 只读，不改任何状态：调用方拿到它只是为了知道"新向量该挂在哪个 model_id 下"。
 	GetDefault(ctx context.Context) (*entity.EmbeddingModel, error)
+
+	// EnsureVectorIndex 为该模型的向量补建 HNSW 余弦索引（幂等，维度变了会自愈重建）。
+	//
+	// 建的是 knowledge_embeddings 上的索引，却挂在这里：索引按模型分片
+	// （WHERE model_id = ?，维度也来自模型行），而"谁是默认模型"只有本仓储知道。
+	// 它返回错误而不是自己告警 —— 建索引失败只影响检索速度、不影响正确性，
+	// 是否值得打断调用方（例如保存配置）由调用方判断。
+	//
+	// ⚠️ 必须在事务外调用：CREATE INDEX CONCURRENTLY 不能跑在事务块里。
+	EnsureVectorIndex(ctx context.Context, model *entity.EmbeddingModel) error
 }
 
 // DimensionsMismatchError 表示同名模型请求的维度与已登记值不一致。

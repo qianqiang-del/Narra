@@ -105,6 +105,11 @@ func TestUploadRecordStatusSyncsWithDocument(t *testing.T) {
 	document := uploadRecordTestDocument(t, tx, entity.KnowledgeDocumentStatusPending)
 	record := uploadRecordTestRecord(t, tx, document.ID)
 
+	// ReplaceChunks 与 MarkFailed 只接受**处理中**的文档（见 ReplaceChunks 的注释），
+	// 真实链路里这一步由 rag.Ingester 做，用例直接调仓储，所以要自己补上。
+	if err := documents.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("推进状态失败: %v", err)
+	}
 	if err := documents.ReplaceChunks(ctx, document.ID, knowledgeTestReplacement(document.ID, modelID, 2)); err != nil {
 		t.Fatalf("替换切片失败: %v", err)
 	}
@@ -123,6 +128,9 @@ func TestUploadRecordStatusSyncsWithDocument(t *testing.T) {
 	// 失败路径。
 	failing := uploadRecordTestDocument(t, tx, entity.KnowledgeDocumentStatusPending)
 	failingRecord := uploadRecordTestRecord(t, tx, failing.ID)
+	if err := documents.MarkProcessing(ctx, failing.ID); err != nil {
+		t.Fatalf("推进状态失败: %v", err)
+	}
 	if err := documents.MarkFailed(ctx, failing.ID, json.RawMessage(`{"stage":"embed"}`), "上游返回 429"); err != nil {
 		t.Fatalf("标记失败状态出错: %v", err)
 	}
@@ -140,6 +148,9 @@ func TestUploadRecordStatusSyncsWithDocument(t *testing.T) {
 
 	// 手动录入（没有上传记录）走同一条路径时不该报错，也不该改到别人的记录。
 	manual := uploadRecordTestDocument(t, tx, entity.KnowledgeDocumentStatusPending)
+	if err := documents.MarkProcessing(ctx, manual.ID); err != nil {
+		t.Fatalf("推进状态失败: %v", err)
+	}
 	if err := documents.MarkFailed(ctx, manual.ID, json.RawMessage(`{"stage":"chunk"}`), "空正文"); err != nil {
 		t.Fatalf("没有记录时标记失败不该出错: %v", err)
 	}
@@ -159,6 +170,9 @@ func TestUploadRecordDeleteKeepsReadyDocument(t *testing.T) {
 	modelID := knowledgeTestModelID(t, tx)
 	document := uploadRecordTestDocument(t, tx, entity.KnowledgeDocumentStatusPending)
 	record := uploadRecordTestRecord(t, tx, document.ID)
+	if err := documents.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("推进状态失败: %v", err)
+	}
 	if err := documents.ReplaceChunks(ctx, document.ID, knowledgeTestReplacement(document.ID, modelID, 2)); err != nil {
 		t.Fatalf("替换切片失败: %v", err)
 	}
@@ -191,6 +205,9 @@ func TestUploadRecordDeleteCascadesUnfinishedDocument(t *testing.T) {
 	// 顺手验证级联删除把切片也带走了。
 	document := uploadRecordTestDocument(t, tx, entity.KnowledgeDocumentStatusPending)
 	record := uploadRecordTestRecord(t, tx, document.ID)
+	if err := documents.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("推进状态失败: %v", err)
+	}
 	if err := documents.ReplaceChunks(ctx, document.ID, knowledgeTestReplacement(document.ID, modelID, 2)); err != nil {
 		t.Fatalf("替换切片失败: %v", err)
 	}
@@ -221,6 +238,9 @@ func TestUploadRecordSurvivesDocumentDeletion(t *testing.T) {
 	modelID := knowledgeTestModelID(t, tx)
 	document := uploadRecordTestDocument(t, tx, entity.KnowledgeDocumentStatusPending)
 	record := uploadRecordTestRecord(t, tx, document.ID)
+	if err := documents.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("推进状态失败: %v", err)
+	}
 	if err := documents.ReplaceChunks(ctx, document.ID, knowledgeTestReplacement(document.ID, modelID, 1)); err != nil {
 		t.Fatalf("替换切片失败: %v", err)
 	}
