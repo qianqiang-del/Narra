@@ -1,11 +1,13 @@
-import { request } from './client'
+import { ApiError, CODE_STREAM, request, streamEvents } from './client'
 
 /**
  * 知识库文档接口。
  *
  * 后端是异步收录：上传请求只做落盘与建行，返回时文档是 pending，解析与向量化由
- * 后台 worker 推进。进度靠 `fetchKnowledgeDocument(id)` 轮询 status 拿
- * （见 stores/knowledge.ts）。上传接口本身很快 —— 实测几百毫秒返回。
+ * 后台 worker 推进。进度靠 `watchKnowledgeDocument(id)` 订阅 SSE 拿
+ * （流里同时带文档状态与解析环境准备进度，见 stores/knowledge.ts）；
+ * 单篇详情 `fetchKnowledgeDocument` 仍然可用，是流的兜底与一次性查询入口。
+ * 上传接口本身很快 —— 实测几百毫秒返回。
  */
 
 /** 后端 `response.KnowledgeDocument` 的原样形状 */
@@ -204,7 +206,10 @@ export interface KnowledgeParserStatus {
  * （见后端 PythonParser 的 stateMu 说明）。
  */
 export async function fetchKnowledgeParserStatus(): Promise<KnowledgeParserStatus> {
-  const d = await request<KnowledgeParserStatusDTO>('/knowledge/documents/parser/status')
+  return toParserStatus(await request<KnowledgeParserStatusDTO>('/knowledge/documents/parser/status'))
+}
+
+function toParserStatus(d: KnowledgeParserStatusDTO): KnowledgeParserStatus {
   return {
     enabled: d.enabled === true,
     ready: d.ready === true,
@@ -275,6 +280,49 @@ export async function fetchKnowledgeDocuments(
 /** 取单篇文档。查不到时后端返回业务错误，由 request 抛 ApiError。 */
 export async function fetchKnowledgeDocument(id: number): Promise<KnowledgeDocument> {
   return toDocument(await request<KnowledgeDocumentDTO>(`/knowledge/documents/${id}`))
+}
+
+/** 进度流上的事件名，与后端 controller 的 eventDocument / eventParser / eventError 对齐 */
+const STREAM_DOCUMENT = 'document'
+const STREAM_PARSER = 'parser'
+const STREAM_ERROR = 'error'
+
+export interface KnowledgeDocumentStreamHandlers {
+  /** 文档快照，形状与 fetchKnowledgeDocument 相同；有变化才推 */
+  onDocument?: (document: KnowledgeDocument) => void
+  /** 解析环境状态，形状与 fetchKnowledgeParserStatus 相同；有变化才推 */
+  onParser?: (status: KnowledgeParserStatus) => void
+}
+
+/**
+ * 订阅一篇文档的收录进度（SSE）。
+ *
+ * 服务端在文档走到终态（ready / failed）时推完最后一帧就关流，本函数随之正常返回；
+ * 中途失败（文档被删等）以 error 事件给出原因，这里翻成 ApiError 抛出。
+ * `signal` 供调用方超时或主动放弃时断开流用 —— 断开后服务端下一次写就能发现。
+ */
+export async function watchKnowledgeDocument(
+  id: number,
+  handlers: KnowledgeDocumentStreamHandlers = {},
+  signal?: AbortSignal,
+): Promise<void> {
+  for await (const message of streamEvents(`/knowledge/documents/${id}/events`, signal)) {
+    switch (message.event) {
+      case STREAM_DOCUMENT:
+        handlers.onDocument?.(toDocument(JSON.parse(message.data) as KnowledgeDocumentDTO))
+        break
+      case STREAM_PARSER:
+        handlers.onParser?.(toParserStatus(JSON.parse(message.data) as KnowledgeParserStatusDTO))
+        break
+      case STREAM_ERROR: {
+        const payload = JSON.parse(message.data) as { message?: string }
+        throw new ApiError(CODE_STREAM, payload.message || '进度推送已中断')
+      }
+      default:
+        // 未知事件名忽略：服务端以后可以加新帧，老前端不该因此崩掉。
+        break
+    }
+  }
 }
 
 export async function fetchKnowledgeDocumentPreview(id: number): Promise<KnowledgeDocumentPreview> {
@@ -359,8 +407,8 @@ export async function uploadKnowledgeFile(file: File, title?: string): Promise<K
  * 让一条收录失败的文档重新排队：后端复用服务器上留下的原件再跑一遍。
  *
  * 不收新文件 —— 失败时原件已经被归档在服务器上，所以这里没有 body。
- * 返回的文档是 pending，调用方接着轮询 `fetchKnowledgeDocument` 看进度，
- * 流程与上传之后完全一样（重试与上传在前端共用同一段轮询）。
+ * 返回的文档是 pending，调用方接着订阅 `watchKnowledgeDocument` 看进度，
+ * 流程与上传之后完全一样（重试与上传在前端共用同一段等待）。
  *
  * 后端在"现在不能重试"时回 409：已经不是失败态、后台正忙着收别的、
  * 或者原件已经不在服务器上（那种只能重新上传）。都不是请求写错了。

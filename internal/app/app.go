@@ -260,6 +260,19 @@ func (a *App) initDependencies() error {
 	// embeddingModelRepo —— 检索只在同一模型下比向量，那个"默认模型"由它说了算。
 	knowledgeRetriever := rag.NewRetriever(knowledgeSearchRepo, embeddingModelRepo, embeddingManager)
 	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetriever, uploadDir)
+
+	// 内置工具 rag_retrieve：把知识库检索直接挂给 Eino agent（见 internal/mcp/knowledge_tool.go）。
+	// 注册点在这里而不是 NewManager 那边，是因为工具的实现依赖知识库服务 ——
+	// 装配顺序天然把它排在后面，而 mcpManager 是指针，课堂 worker 后面才建，拿到的就是含它的工具集。
+	// 这两步失败都是装配错误（依赖为空、工具重名），直接让启动失败，不留给运行时才发现。
+	ragRetrieveTool, err := internalmcp.NewKnowledgeRetrieveTool(knowledgeSvc)
+	if err != nil {
+		return fmt.Errorf("创建知识库检索工具失败: %w", err)
+	}
+	if err := a.mcpManager.RegisterLocalTool(ragRetrieveTool); err != nil {
+		return fmt.Errorf("注册知识库检索工具失败: %w", err)
+	}
+
 	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey)
 
 	// ========== 课堂受理 + 生成任务 ==========

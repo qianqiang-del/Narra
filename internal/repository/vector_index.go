@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -25,6 +24,13 @@ func vectorIndexName(modelID uint64) string {
 	return fmt.Sprintf("knowledge_embeddings_model_%d_hnsw_idx", modelID)
 }
 
+// ErrVectorIndexUnsupported 表示这个模型的维度建不出 HNSW 索引（超过 pgvector 的上限）。
+//
+// 单独一个哨兵值是因为它与"建索引失败"要分开对待：这是模型的**长期属性** ——
+// 不会被修好，检索也照常正确（走精确顺序扫描），所以调用方应当提示而不是告警。
+// 其余的失败（DDL 权限、数据库故障）才是异常。
+var ErrVectorIndexUnsupported = errors.New("模型维度超过向量索引上限")
+
 // maxHNSWDimensions 是 pgvector 的 HNSW 索引对单列的维度上限（含）。
 //
 // 这是 pgvector 的硬限制，不是配置项：超过它**建不出索引** —— 数据库只回一句
@@ -45,11 +51,41 @@ func hnswDimensionLimitError(model *entity.EmbeddingModel) error {
 	}
 	if int(model.Dimensions) > maxHNSWDimensions {
 		return fmt.Errorf(
-			"模型 %s 是 %d 维，超过 pgvector 的 HNSW 上限 %d 维，建不了向量索引；"+
+			"%w：模型 %s 是 %d 维，超过 pgvector 的 HNSW 上限 %d 维，建不了向量索引；"+
 				"检索会走精确顺序扫描（结果不受影响，向量多时会慢）",
-			model.Name, model.Dimensions, maxHNSWDimensions)
+			ErrVectorIndexUnsupported, model.Name, model.Dimensions, maxHNSWDimensions)
 	}
 	return nil
+}
+
+// vectorIndexAction 是 EnsureVectorIndex 对"同名索引"要采取的处置。
+type vectorIndexAction int
+
+const (
+	// indexActionCreate 没有同名索引，正常建。
+	indexActionCreate vectorIndexAction = iota
+	// indexActionKeep 已有同名且**有效**的索引，维度也对得上，什么都不用做。
+	indexActionKeep
+	// indexActionRebuild 同名索引在，但不能用，必须删掉重建。
+	indexActionRebuild
+)
+
+// vectorIndexDisposition 判断同名索引该怎么处置。
+//
+// 纯函数（不碰数据库）是刻意的：真库里造一条**无效索引**很麻烦（要让一次
+// CREATE INDEX CONCURRENTLY 中途失败），而这正是最该被测到的边界 —— 见过一次真实事故：
+// 一次建索引失败留下 indisvalid = false 的空壳占着名字，之后每次 IF NOT EXISTS 都直接跳过，
+// 索引再也建不出来，而且没有任何报错，表现为"检索就是慢，说不出为什么"。
+func vectorIndexDisposition(definition string, valid bool, dimensions int32) vectorIndexAction {
+	if strings.TrimSpace(definition) == "" {
+		return indexActionCreate
+	}
+	// 有效期与维度都要过：无效的索引规划器永远不会用，维度对不上的索引（模型改过维度）
+	// 用的又是另一个表达式。两者都只能删掉重建。
+	if valid && strings.Contains(definition, fmt.Sprintf("vector(%d)", dimensions)) {
+		return indexActionKeep
+	}
+	return indexActionRebuild
 }
 
 // EnsureVectorIndex 为该模型的向量补建 HNSW 余弦索引，幂等。
@@ -58,7 +94,7 @@ func hnswDimensionLimitError(model *entity.EmbeddingModel) error {
 // 并逐行算余弦距离 —— 几万条向量时检索会从毫秒级退化到秒级，而这种退化**没有任何报错**，
 // 表现为"知识库检索越来越慢"。所以索引要由服务自己补齐，而不是留一段需要手工执行的 SQL。
 //
-// 三条设计约束：
+// 四条设计约束：
 //
 //   - 建成**部分**索引（WHERE model_id = ?）：不同模型的向量维度可能不同，pgvector 的
 //     索引必须建在单一维度上；部分索引还能让索引只覆盖这一个模型的行，一直很小。
@@ -71,30 +107,38 @@ func hnswDimensionLimitError(model *entity.EmbeddingModel) error {
 //     所以它单独返回错误，由调用方决定告警 —— 不该把一次"保存配置"判成失败。
 //     维度超过 pgvector 的 HNSW 上限（maxHNSWDimensions）就属于这种情况，
 //     那是建不出索引的，报错要说清"结果不受影响，只是会慢"（见 hnswDimensionLimitError）。
-//
-// 维度自愈：模型的维度可能被改过（该模型下还没有向量时允许改，见 checkDimensionsChange），
-// 旧索引建在 `embedding::vector(旧维度)` 这个表达式上，而检索用的是另一个表达式，
-// 规划器永远不会选它 —— 留着只是白吃写入开销。所以发现索引定义里的维度对不上时，
-// 删掉重建，而不是带着一条死索引继续跑。
+//   - 自愈：维度变过（该模型下还没有向量时允许改，见 checkDimensionsChange）或上次建到
+//     一半失败的索引都不能留 —— 前者规划器不会选，后者规划器不会用，而且都会因为占着
+//     名字让 `IF NOT EXISTS` 永远跳过。两者的处置相同：删掉重建（见 vectorIndexDisposition）。
 func (r *embeddingModelRepository) EnsureVectorIndex(ctx context.Context, model *entity.EmbeddingModel) error {
-	if err := hnswDimensionLimitError(model); err != nil {
-		return err
+	if model == nil || model.ID == 0 {
+		return fmt.Errorf("向量索引需要一个已落库的模型")
 	}
 	name := vectorIndexName(model.ID)
 
-	definition, err := r.currentVectorIndexDef(ctx, name)
+	definition, valid, err := r.currentVectorIndex(ctx, name)
 	if err != nil {
 		return err
 	}
-	if definition != "" {
-		if strings.Contains(definition, fmt.Sprintf("vector(%d)", model.Dimensions)) {
-			return nil // 已经按当前维度建好了，什么都不用做
+
+	// 超过 HNSW 上限的模型建不出索引 —— 但同名残留要清掉：它只可能是上次失败留下的
+	// 无效索引（有效索引在这种维度下根本建不出来），留着会让库里看起来"有索引"。
+	if err := hnswDimensionLimitError(model); err != nil {
+		if definition != "" {
+			if dropErr := r.dropVectorIndex(ctx, name); dropErr != nil {
+				// 清理失败也不能盖掉真正的原因：调用方要看到的是"为什么建不了索引"。
+				return fmt.Errorf("%w；另外清理同名残留索引失败: %v", err, dropErr)
+			}
 		}
-		// 维度对不上（例如 1536 → 3072）：旧索引已经不可能被检索用上。
-		// 用名字判断维度而不是比对整条定义：pg_get_indexdef 的输出带 schema 限定与
-		// 自动加的括号，逐字比对会随着 PostgreSQL 版本变化而误判。
-		if err := r.db.WithContext(ctx).Exec("DROP INDEX CONCURRENTLY IF EXISTS " + name).Error; err != nil {
-			return fmt.Errorf("删除维度已过期的向量索引 %s 失败: %w", name, err)
+		return err
+	}
+
+	switch vectorIndexDisposition(definition, valid, model.Dimensions) {
+	case indexActionKeep:
+		return nil
+	case indexActionRebuild:
+		if err := r.dropVectorIndex(ctx, name); err != nil {
+			return err
 		}
 	}
 
@@ -108,21 +152,35 @@ func (r *embeddingModelRepository) EnsureVectorIndex(ctx context.Context, model 
 	return nil
 }
 
-// currentVectorIndexDef 取同名索引的定义，索引不存在时返回空串。
-//
-// 查 pg_indexes 而不是去试 CREATE INDEX IF NOT EXISTS：后者在"索引存在但维度过期"时
-// 什么都不做，正好绕过了这里要解决的问题。
-func (r *embeddingModelRepository) currentVectorIndexDef(ctx context.Context, name string) (string, error) {
-	var definition string
-	err := r.db.WithContext(ctx).Raw(
-		"SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ?",
-		name,
-	).Row().Scan(&definition)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+// dropVectorIndex 删掉同名索引。与建索引同一个约束：CONCURRENTLY 不能跑在事务里，
+// 所以调用方必须在事务外调它（见 EnsureVectorIndex）。
+func (r *embeddingModelRepository) dropVectorIndex(ctx context.Context, name string) error {
+	if err := r.db.WithContext(ctx).Exec("DROP INDEX CONCURRENTLY IF EXISTS " + name).Error; err != nil {
+		return fmt.Errorf("删除向量索引 %s 失败: %w", name, err)
 	}
-	if err != nil {
-		return "", fmt.Errorf("查询向量索引 %s 的定义失败: %w", name, err)
-	}
-	return definition, nil
+	return nil
 }
+
+// currentVectorIndex 取同名索引的定义与有效性；索引不存在时是空串与 false。
+//
+// 查 pg_index 而不是 pg_indexes 视图：有效性（indisvalid）只在前者里，
+// 而"有索引但无效"正是要处理的两种情况之一。比较范围限定在当前 schema。
+func (r *embeddingModelRepository) currentVectorIndex(ctx context.Context, name string) (string, bool, error) {
+	var row struct {
+		Definition string
+		Valid      bool
+	}
+	err := r.db.WithContext(ctx).Raw(`
+SELECT pg_get_indexdef(i.indexrelid) AS definition, i.indisvalid AS valid
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relname = ? AND n.nspname = current_schema()`, name).Scan(&row).Error
+	if err != nil {
+		return "", false, fmt.Errorf("查询向量索引 %s 的定义失败: %w", name, err)
+	}
+	return row.Definition, row.Valid, nil
+}
+
+// 索引的读取在 currentVectorIndex（见上），这里曾经用 pg_indexes 取定义 —— 那个视图里
+// 没有 indisvalid，看不到"有索引但无效"这一种，而它恰恰是最难查的一种。

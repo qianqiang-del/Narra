@@ -44,7 +44,7 @@ const records = computed(() => store.uploadRecords)
  * 别写 `overflow-y: scroll`（那会让传播失效，这句锁就成了空操作）；槽位常驻交给
  * `scrollbar-gutter: stable`，所以锁与解锁都不会横向位移。
  *
- * 对账：记录是后台在改的（上传还在轮询、别处可能刚删过东西），而抽屉多半是关着
+ * 对账：记录是后台在改的（上传还在处理、别处可能刚删过东西），而抽屉多半是关着
  * 的时候数据变旧。拉失败就用手上这份，不要因为一次刷新失败把抽屉清空。
  */
 watch(open, async (isOpen) => {

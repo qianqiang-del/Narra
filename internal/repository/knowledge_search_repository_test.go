@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -362,6 +363,40 @@ func TestEnsureVectorIndexExplainsDimensionCeiling(t *testing.T) {
 			t.Fatalf("错误说明里应当提到 %q，实际是 %v", want, err)
 		}
 	}
+	// 调用方要靠这个哨兵值把"模型维度就这样"与"建索引真失败了"分开：
+	// 前者提示（Info），后者告警（Warn）。
+	if !errors.Is(err, ErrVectorIndexUnsupported) {
+		t.Fatalf("错误应当包装 ErrVectorIndexUnsupported: %v", err)
+	}
+}
+
+// TestVectorIndexDisposition 校验同名索引的处置规则 —— 尤其是**无效索引必须重建**：
+// 一次建索引失败留下的空壳会占着名字，让之后的 `IF NOT EXISTS` 永远跳过，
+// 索引再也建不出来且没有任何报错。真库里造这种索引很麻烦，所以规则被提成了纯函数。
+func TestVectorIndexDisposition(t *testing.T) {
+	const dimensions = int32(1536)
+	example := "CREATE INDEX x ON public.knowledge_embeddings USING hnsw (((embedding)::vector(1536)) vector_cosine_ops) WHERE (model_id = 6)"
+	outdated := "CREATE INDEX x ON public.knowledge_embeddings USING hnsw (((embedding)::vector(3072)) vector_cosine_ops) WHERE (model_id = 6)"
+
+	cases := []struct {
+		name       string
+		definition string
+		valid      bool
+		want       vectorIndexAction
+	}{
+		{"没有索引时新建", "", false, indexActionCreate},
+		{"有效且维度一致的索引保留", example, true, indexActionKeep},
+		{"维度过期的索引要重建", outdated, true, indexActionRebuild},
+		{"无效索引即使维度一致也要重建", example, false, indexActionRebuild},
+		{"无效且维度过期同样重建", outdated, false, indexActionRebuild},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := vectorIndexDisposition(testCase.definition, testCase.valid, dimensions); got != testCase.want {
+				t.Fatalf("处置判断不对: got=%d want=%d", got, testCase.want)
+			}
+		})
+	}
 }
 
 // TestEnsureVectorIndexCreatesAndIsIdempotent 校验索引建得出来、重复建无副作用，
@@ -388,9 +423,12 @@ func TestEnsureVectorIndexCreatesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("建向量索引失败: %v", err)
 	}
 
-	definition, err := repo.currentVectorIndexDef(context.Background(), name)
+	definition, valid, err := repo.currentVectorIndex(context.Background(), name)
 	if err != nil {
 		t.Fatalf("查询索引定义失败: %v", err)
+	}
+	if !valid {
+		t.Fatalf("刚建好的索引应当是有效的: %q", definition)
 	}
 	if !strings.Contains(definition, "hnsw") || !strings.Contains(definition, "vector_cosine_ops") {
 		t.Fatalf("索引应当是 HNSW 余弦索引: %q", definition)
@@ -402,7 +440,7 @@ func TestEnsureVectorIndexCreatesAndIsIdempotent(t *testing.T) {
 	if err := repo.EnsureVectorIndex(context.Background(), model); err != nil {
 		t.Fatalf("重复建索引应当是幂等的: %v", err)
 	}
-	after, err := repo.currentVectorIndexDef(context.Background(), name)
+	after, _, err := repo.currentVectorIndex(context.Background(), name)
 	if err != nil {
 		t.Fatalf("查询索引定义失败: %v", err)
 	}
@@ -434,7 +472,7 @@ func TestEnsureVectorIndexRebuildsOnDimensionChange(t *testing.T) {
 		t.Fatalf("按新维度重建失败: %v", err)
 	}
 
-	definition, err := repo.currentVectorIndexDef(context.Background(), name)
+	definition, _, err := repo.currentVectorIndex(context.Background(), name)
 	if err != nil {
 		t.Fatalf("查询索引定义失败: %v", err)
 	}

@@ -17,6 +17,9 @@ import (
 )
 
 // ToolSource 提供 Eino 工具，webSearch 表示本次生成是否允许联网搜索。
+//
+// webSearch 只关系**远端**工具（V1 是联网搜索）；内置工具（知识库检索）与它无关，
+// 始终会返回，闸门与理由见 internal/mcp/adapter.go 的 EinoTools。
 type ToolSource interface {
 	EinoTools(ctx context.Context, webSearch bool) ([]tool.BaseTool, error)
 }
@@ -37,7 +40,9 @@ type runtime struct {
 	tools     []tool.BaseTool
 }
 
-// newRuntime 读配置 → 解密 → 建模型 → 定工具集。allowSearch 为假时不挂搜索服务的工具。
+// newRuntime 读配置 → 解密 → 建模型 → 定工具集。
+//
+// allowSearch 为假时不挂**远端**工具（V1 是联网搜索）；内置工具（知识库检索）不受它影响。
 func newRuntime(ctx context.Context, deps Deps, providerID uint64, modelID string, allowSearch bool) (*runtime, error) {
 	if deps.Providers == nil {
 		return nil, fmt.Errorf("建运行时：缺少大模型配置仓储")
