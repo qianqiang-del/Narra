@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"narra/internal/model/entity"
+	"narra/pkg/logger"
 )
 
 // 与数据库列对应的长度上限，超长按字符截断。
@@ -79,36 +82,42 @@ type narrationSegment struct {
 	Text       string `json:"text"`
 }
 
-// parseOutline 解析并校验大纲。
+// parseOutline 解析并校验大纲；单页不合规就丢弃并记日志，不影响其余页面。
 func parseOutline(raw string) (*outlinePlan, error) {
 	var plan outlinePlan
 	if err := unmarshalLoose(raw, &plan); err != nil {
-		return nil, fmt.Errorf("大纲不是合法 JSON: %w", err)
+		return nil, fmt.Errorf("解析大纲 JSON 失败: %w", err)
 	}
 
 	plan.Title = truncateRunes(strings.TrimSpace(plan.Title), maxClassroomTitleRunes)
 	if plan.Title == "" {
 		return nil, fmt.Errorf("大纲缺少课程标题")
 	}
-	if len(plan.Scenes) == 0 {
-		return nil, fmt.Errorf("大纲里一页都没有")
-	}
 
-	for index := range plan.Scenes {
-		scene := &plan.Scenes[index]
+	scenes := make([]scenePlan, 0, len(plan.Scenes))
+	for page, scene := range plan.Scenes {
 		scene.Type = strings.TrimSpace(scene.Type)
 		if _, ok := allowedSceneTypes[scene.Type]; !ok {
-			return nil, fmt.Errorf("第 %d 页的类型 %q 不在允许范围内（slide / quiz / interactive / pbl）", index+1, scene.Type)
+			logger.Warn("大纲有一页的类型不在允许范围内，已丢弃",
+				zap.Int("page", page+1), zap.String("type", scene.Type))
+			continue
 		}
 		scene.Title = truncateRunes(strings.TrimSpace(scene.Title), maxSceneTitleRunes)
 		if scene.Title == "" {
-			return nil, fmt.Errorf("第 %d 页缺少标题", index+1)
+			logger.Warn("大纲有一页缺标题，已丢弃", zap.Int("page", page+1))
+			continue
 		}
 		scene.Brief = strings.TrimSpace(scene.Brief)
 		if scene.Brief == "" {
-			scene.Brief = scene.Title
+			logger.Warn("大纲有一页没写 brief，段二将拿不到这一页的内容依据", zap.Int("page", page+1))
 		}
+		scenes = append(scenes, scene)
 	}
+
+	if len(scenes) == 0 {
+		return nil, fmt.Errorf("大纲里没有一页可用")
+	}
+	plan.Scenes = scenes
 	return &plan, nil
 }
 

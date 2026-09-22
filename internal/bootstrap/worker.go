@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cloudwego/eino-ext/callbacks/langfuse"
 	"github.com/hibiken/asynq"
 	"go.uber.org/zap"
 
@@ -95,6 +96,10 @@ func BuildWorker(deps classroom.Deps, cfg *config.Config) (service.JobQueue, *Wo
 		classroomID, err := worker.DecodeClassroomGenerate(payload)
 		if err != nil {
 			return worker.Permanent(err)
+		}
+		// 同一门课的重试归到同一条 session，便于在 Langfuse 里按课堂查。
+		if cfg.Langfuse.Enabled {
+			ctx = langfuse.SetTrace(ctx, langfuse.WithSessionID(fmt.Sprintf("%d", classroomID)))
 		}
 		if err := classroom.Generate(ctx, deps, classroomID); err != nil {
 			logger.Error("课堂生成失败",

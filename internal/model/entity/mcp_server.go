@@ -16,6 +16,7 @@ type MCPServer struct {
 	StartupTimeout   time.Duration `gorm:"column:startup_timeout;not null;comment:启动超时，单位纳秒（Go time.Duration，10000000000 即 10 秒）" json:"startup_timeout"`
 	DiscoveryTimeout time.Duration `gorm:"column:discovery_timeout;not null;comment:拉取工具列表的超时，单位纳秒" json:"discovery_timeout"`
 	CallTimeout      time.Duration `gorm:"column:call_timeout;not null;comment:单次工具调用的超时，单位纳秒" json:"call_timeout"`
+	EnabledTools     []string      `gorm:"column:enabled_tools;type:jsonb;not null;default:'[]';serializer:json;comment:允许挂给模型的工具名（该服务的本地名）；空数组表示不过滤，本服务全部工具都启用" json:"enabled_tools"`
 	SortOrder        int           `gorm:"column:sort_order;not null;default:0;comment:列表展示顺序，越小越靠前" json:"sort_order"`
 }
 

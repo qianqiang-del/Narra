@@ -16,9 +16,9 @@ import (
 	"narra/pkg/llm"
 )
 
-// ToolSource 提供 Eino 工具，*internalmcp.Manager 满足它。
+// ToolSource 提供 Eino 工具，webSearch 表示本次生成是否允许联网搜索。
 type ToolSource interface {
-	EinoTools(ctx context.Context) ([]tool.BaseTool, error)
+	EinoTools(ctx context.Context, webSearch bool) ([]tool.BaseTool, error)
 }
 
 // Deps 是生成课堂需要的外部依赖。
@@ -37,7 +37,7 @@ type runtime struct {
 	tools     []tool.BaseTool
 }
 
-// newRuntime 读配置 → 解密 → 建模型 → 定工具集。allowSearch 决定要不要挂联网搜索工具。
+// newRuntime 读配置 → 解密 → 建模型 → 定工具集。allowSearch 为假时不挂搜索服务的工具。
 func newRuntime(ctx context.Context, deps Deps, providerID uint64, modelID string, allowSearch bool) (*runtime, error) {
 	if deps.Providers == nil {
 		return nil, fmt.Errorf("建运行时：缺少大模型配置仓储")
@@ -75,15 +75,13 @@ func newRuntime(ctx context.Context, deps Deps, providerID uint64, modelID strin
 		return nil, fmt.Errorf("建运行时：创建 Eino 适配器失败: %w", err)
 	}
 
-	// V1 的 MCP 里只配联网搜索，所以允许联网就给全部工具。
 	var tools []tool.BaseTool
-	if allowSearch {
-		if deps.Tools == nil {
-			return nil, fmt.Errorf("建运行时：需要联网但没有工具来源")
-		}
-		if tools, err = deps.Tools.EinoTools(ctx); err != nil {
+	if deps.Tools != nil {
+		if tools, err = deps.Tools.EinoTools(ctx, allowSearch); err != nil {
 			return nil, fmt.Errorf("建运行时：获取 MCP 工具失败: %w", err)
 		}
+	} else if allowSearch {
+		return nil, fmt.Errorf("建运行时：需要联网但没有工具来源")
 	}
 
 	return &runtime{chatModel: chatModel, tools: tools}, nil

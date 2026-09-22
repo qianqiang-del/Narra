@@ -288,6 +288,12 @@ export default {
     test: 'Test connection',
     testing: 'Testing...',
     tools: 'Tools',
+    toolsCount: 'Tools {n}',
+    selectTools: 'Select tools exposed to the model',
+    selectToolsHint: 'Unchecked tools are not exposed to the model. Selecting all means unrestricted; disable the server to stop using it.',
+    loadingTools: 'Loading tools...',
+    noTools: 'This server returned no tools',
+    saving: 'Saving...',
     empty: 'No MCP servers',
     col: {
       name: 'Name',

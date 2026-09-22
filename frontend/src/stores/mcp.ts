@@ -57,7 +57,10 @@ export const useMcpStore = defineStore('mcp', () => {
     return server
   }
 
-  async function edit(id: number, input: { enabled?: boolean }): Promise<McpServer> {
+  async function edit(
+    id: number,
+    input: { enabled?: boolean; enabledTools?: string[] },
+  ): Promise<McpServer> {
     const server = await updateMcpServer(id, input)
     await refresh()
     return server

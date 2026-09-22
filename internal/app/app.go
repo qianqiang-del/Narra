@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cloudwego/eino-ext/callbacks/langfuse"
+	"github.com/cloudwego/eino/callbacks"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -41,6 +43,7 @@ type App struct {
 	mcpManager      *internalmcp.Manager
 	worker          *bootstrap.WorkerRuntime
 	knowledgeWorker *rag.Worker
+	langfuseFlush   func()
 }
 
 // NewApp 创建应用实例
@@ -172,6 +175,19 @@ func (a *App) initDatabase() error {
 // 顺序是 db → repository → service → router，每一层只拿到它下面那一层。
 // 数据库连接在 initDatabase 里已经建好，这里只往下传。
 func (a *App) initDependencies() error {
+	// 观测：必须在任何 graph 跑起来之前注册（AppendGlobalHandlers 不是线程安全的）。
+	if a.cfg.Langfuse.Enabled {
+		handler, flusher := langfuse.NewLangfuseHandler(&langfuse.Config{
+			Host:      a.cfg.Langfuse.Host,
+			PublicKey: a.cfg.Langfuse.PublicKey,
+			SecretKey: a.cfg.Langfuse.SecretKey,
+			Name:      "narra",
+		})
+		callbacks.AppendGlobalHandlers(handler)
+		a.langfuseFlush = flusher
+		logger.Info("Langfuse 观测已启用", zap.String("host", a.cfg.Langfuse.Host))
+	}
+
 	// ========== 创建 Repository ==========
 	roleRepo := repository.NewRoleRepository(a.postgresDB)
 	embeddingSettingRepo := repository.NewEmbeddingSettingRepository(a.postgresDB)
@@ -393,6 +409,11 @@ func (a *App) gracefulShutdown() {
 		if err := a.mcpManager.Close(ctx); err != nil {
 			logger.Error("关闭 MCP 连接失败", zap.Error(err))
 		}
+	}
+
+	// 把缓冲里的 trace 刷出去；进程退出后没发出去的事件就丢了。
+	if a.langfuseFlush != nil {
+		a.langfuseFlush()
 	}
 
 	// 关闭数据库连接
