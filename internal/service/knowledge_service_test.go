@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -545,5 +546,37 @@ func TestDeleteUploadRecordReportsMissingRecord(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "不存在") {
 		t.Errorf("错误信息应当说明记录不存在，实际: %v", err)
+	}
+}
+
+// 清理暂存目录时的边界：只有"比上传根目录深两层的文件"才允许删它的父目录。
+//
+// 放宽到根目录的直接子文件时，filepath.Dir 就是根目录本身，
+// RemoveAll 会把整棵上传目录（包括其他正在处理的原件）一起清空 ——
+// 而 upload_path 来自 metadata，写入者不受约束。
+func TestRemovableStagingDir(t *testing.T) {
+	root := t.TempDir()
+	svc := &knowledgeService{uploadDir: root}
+	outside := t.TempDir()
+
+	cases := map[string]bool{
+		filepath.Join(root, "pending", "1789807643538534200", "upload.pdf"): true,
+		filepath.Join(root, "failed", "7", "upload.docx"):                   true,
+		filepath.Join(root, "upload.md"):                                    false,
+		filepath.Join(root, "pending", "upload.md"):                         false,
+		filepath.Join(root, "failed"):                                       false,
+		root:                                                                false,
+		filepath.Join(outside, "pending", "1", "upload.md"):                 false,
+	}
+	for path, want := range cases {
+		if got := svc.removableStagingDir(path); got != want {
+			t.Errorf("removableStagingDir(%q) = %v，期望 %v", path, got, want)
+		}
+	}
+
+	// uploadDir 为空（早期调用点没传）时一律不清理，避免误删。
+	empty := &knowledgeService{}
+	if empty.removableStagingDir(filepath.Join(root, "pending", "1", "upload.md")) {
+		t.Error("uploadDir 为空时不该放行任何清理")
 	}
 }

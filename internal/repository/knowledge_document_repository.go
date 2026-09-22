@@ -249,6 +249,11 @@ func (r *knowledgeDocumentRepository) MarkProcessing(ctx context.Context, id uin
 // 两行必须一起改：文档状态是给主页看的，记录状态是给上传记录抽屉看的 ——
 // 只改一处会让同一件事在两个界面上说法不同。
 //
+// 只处理**仍在 processing** 的文档：带 status 条件而不是裸 id，是为了不覆盖
+// 别人已经推进到的状态。最典型的场景是用户在后台处理期间把这条记录（连同文档）
+// 删掉了 —— 此时 UPDATE 影响 0 行，这里直接返回错误让事务回滚，
+// 不写任何失败现场（那行已经不存在了）。调用方（rag.failIngest）会记一条日志。
+//
 // metadata 是合并写回而不是整份覆盖。这张表的 metadata 同时装着两件事：
 // "这一次失败长什么样"（stage / error / failed_at，由收录链路写）与
 // "收录这份文件的输入"（upload_path 指向磁盘上的原件、explicit_title 记着标题要不要
@@ -276,8 +281,17 @@ func (r *knowledgeDocumentRepository) MarkFailed(ctx context.Context, id uint64,
 			updates["metadata"] = mergeMetadata(current.Metadata, metadata)
 		}
 
-		if err := tx.Model(&entity.KnowledgeDocument{}).Where("id = ?", id).Updates(updates).Error; err != nil {
-			return err
+		result := tx.Model(&entity.KnowledgeDocument{}).
+			Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusProcessing).
+			Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			// 行没了，或已经不在 processing：整笔回滚，包括下面那条记录更新。
+			// 记录不去单独更新是对的 —— 文档既然已被删除，记录要么一起没了，
+			// 要么已经从"处理中"推进到了别的状态，都不该再被这里改成 failed。
+			return fmt.Errorf("文档 %d 不存在或已不在处理中，失败现场未写入", id)
 		}
 
 		// 手动录入（IngestText）没有上传记录，这里匹配 0 行，不报错也不影响什么。
@@ -402,6 +416,11 @@ func (r *knowledgeDocumentRepository) ReplaceChunks(ctx context.Context, id uint
 		//    status = 'ready' 的 CHECK 约束要求 content 非空，而"内容已经落库"
 		//    与"文档标记为可检索"如果分开提交，中间失败会留下一个 ready
 		//    却没有切片的文档 —— 用户看到入库成功，检索却永远搜不到它。
+		//
+		//    带 status = 'processing' 条件：文档可能在这次处理期间被用户删掉，
+		//    或者被别的执行者推进到了别的状态。这时影响 0 行，返回错误让整个事务回滚 ——
+		//    绝不能给一个不在处理中的文档写入切片（那会留下没有归属的数据，
+		//    以及磁盘上一份没人认领的失败原件）。
 		updates := map[string]any{
 			"title":            input.Title,
 			"content":          input.Content,
@@ -411,8 +430,14 @@ func (r *knowledgeDocumentRepository) ReplaceChunks(ctx context.Context, id uint
 		if len(input.Metadata) > 0 {
 			updates["metadata"] = input.Metadata
 		}
-		if err := tx.Model(&entity.KnowledgeDocument{}).Where("id = ?", id).Updates(updates).Error; err != nil {
-			return err
+		result := tx.Model(&entity.KnowledgeDocument{}).
+			Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusProcessing).
+			Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("文档 %d 不存在或已不在处理中，本次切片写入已回滚", id)
 		}
 
 		// 4. 这次投递成功了，记录也跟着到 ready。

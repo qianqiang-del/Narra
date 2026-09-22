@@ -67,6 +67,28 @@ func NewClient(cfg config.EmbeddingConfig) (*Client, error) {
 	}, nil
 }
 
+// HTTPError 是向量服务返回的非 2xx 响应。
+//
+// 做成有类型的错误、而不是一句格式化字符串，是因为调用方（收录链路的批量向量化）
+// 要按状态码决定"值不值得重试"：429 与 5xx 是上游限流或抽风，隔一会儿再来可能就好；
+// 其余 4xx 是请求本身不对，重试多少次都一样。
+type HTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("向量服务返回 HTTP 状态码 %d", e.StatusCode)
+	}
+	return fmt.Sprintf("向量服务返回 HTTP 状态码 %d: %s", e.StatusCode, e.Body)
+}
+
+// Retryable 表示这个错误是不是"过一会儿再来可能就好了"。
+func (e *HTTPError) Retryable() bool {
+	return e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= http.StatusInternalServerError
+}
+
 // Embed 为每个输入文本返回一个向量。
 func (c *Client) Embed(ctx context.Context, inputs []string) ([][]float32, error) {
 	if len(inputs) == 0 {
@@ -101,9 +123,10 @@ func (c *Client) Embed(ctx context.Context, inputs []string) ([][]float32, error
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, maxErrorBodyLength))
 		if readErr != nil {
-			return nil, fmt.Errorf("向量服务返回 HTTP 状态码 %d", response.StatusCode)
+			// 连错误体都读不出来时只保留状态码：它是判断"值不值得重试"的唯一依据。
+			return nil, &HTTPError{StatusCode: response.StatusCode}
 		}
-		return nil, fmt.Errorf("向量服务返回 HTTP 状态码 %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+		return nil, &HTTPError{StatusCode: response.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
 
 	var result embeddingsResponse

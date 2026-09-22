@@ -82,6 +82,11 @@ func TestKnowledgeRetryMarkFailedMergesMetadata(t *testing.T) {
 	if err := repo.SetMetadata(ctx, document.ID, payload); err != nil {
 		t.Fatalf("写入 metadata 失败: %v", err)
 	}
+	// 真实链路里 MarkFailed 只会作用在 processing 的行上（worker Claim 之后），
+	// 仓储的守卫据此把"已删除/已推走"的行挡在外面。
+	if err := repo.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("推进到 processing 失败: %v", err)
+	}
 
 	failure := knowledgeTestFailure(t, "parse", "No module named 'scipy'")
 	if err := repo.MarkFailed(ctx, document.ID, failure, "解析失败"); err != nil {
@@ -115,6 +120,9 @@ func TestKnowledgeRetrySetUploadPathKeepsFailureDetail(t *testing.T) {
 		t.Fatalf("创建文档失败: %v", err)
 	}
 
+	if err := repo.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("推进到 processing 失败: %v", err)
+	}
 	failure := knowledgeTestFailure(t, "parse", "解析器不可用")
 	if err := repo.MarkFailed(ctx, document.ID, failure, "解析失败"); err != nil {
 		t.Fatalf("标记失败状态失败: %v", err)
@@ -168,6 +176,9 @@ func TestKnowledgeRetryRequeueResetsFailedDocumentAndRecord(t *testing.T) {
 		t.Fatalf("创建上传记录失败: %v", err)
 	}
 
+	if err := repo.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("推进到 processing 失败: %v", err)
+	}
 	failure := knowledgeTestFailure(t, "parse", "解析器不可用")
 	if err := repo.MarkFailed(ctx, document.ID, failure, "解析失败"); err != nil {
 		t.Fatalf("标记失败状态失败: %v", err)
@@ -216,5 +227,44 @@ func TestKnowledgeRetryRequeueResetsFailedDocumentAndRecord(t *testing.T) {
 	}
 	if again {
 		t.Error("已经不是失败状态了，重复重试应当返回 false")
+	}
+}
+
+// 不在 processing 的行不能被写成 failed：用户在处理期间把文档/记录删了时，
+// 这里必须整笔回滚并报错，而不是留下一份"失败现场"（那行已经不存在了），
+// 或者把一份已经 ready 的文档改回 failed。
+func TestKnowledgeMarkFailedRejectsDocumentNotProcessing(t *testing.T) {
+	tx := testTx(t)
+	repo := NewKnowledgeDocumentRepository(tx)
+	ctx := context.Background()
+
+	document := knowledgeTestDocument() // 停在 pending
+	if err := repo.Create(ctx, document); err != nil {
+		t.Fatalf("创建文档失败: %v", err)
+	}
+	before, err := repo.GetByID(ctx, document.ID)
+	if err != nil {
+		t.Fatalf("回读文档失败: %v", err)
+	}
+
+	failure := knowledgeTestFailure(t, "parse", "解析器不可用")
+	if err := repo.MarkFailed(ctx, document.ID, failure, "解析失败"); err == nil {
+		t.Fatal("文档不在 processing 时必须报错，不能写失败现场")
+	}
+
+	after, err := repo.GetByID(ctx, document.ID)
+	if err != nil {
+		t.Fatalf("再次回读文档失败: %v", err)
+	}
+	if after.Status != before.Status {
+		t.Errorf("状态被改动了：%q → %q", before.Status, after.Status)
+	}
+
+	var metadata map[string]any
+	if err := json.Unmarshal(after.Metadata, &metadata); err != nil {
+		t.Fatalf("解析 metadata 失败: %v", err)
+	}
+	if _, ok := metadata["stage"]; ok {
+		t.Errorf("失败现场不该被写入，实际 metadata: %v", metadata)
 	}
 }

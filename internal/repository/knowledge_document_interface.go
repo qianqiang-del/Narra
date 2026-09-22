@@ -53,6 +53,9 @@ type KnowledgeDocumentRepository interface {
 	// MarkFailed 把文档推进到 failed，把失败现场**合并**进 metadata，
 	// 并把原因同步到这次上传的记录上（两处在同一个事务里，见实现）。
 	//
+	// 只处理仍在 processing 的文档：行已被删除、或已被推进到别的状态时，
+	// 整体回滚并返回错误，不写任何失败现场。调用方据此判断"这次失败没能落库"。
+	//
 	// metadata 是一份 JSON 对象（阶段、原因、时间），合并时只覆盖同名的键：
 	// upload_path 与 explicit_title 这些收录链路的输入会原样留着 ——
 	// 失败原件的归档、删除时的清理、以及重试都要靠它们。见实现的 mergeMetadata。
@@ -64,6 +67,9 @@ type KnowledgeDocumentRepository interface {
 	// 它必须是原子的，这是 entity.KnowledgeDocument 那句"更新原文后应替换其全部切片"
 	// 的实现方式：只要中间任何一步失败，旧的切片和旧的正文就都还在，
 	// 不会出现"正文换了、切片还是旧的"这种检索结果与原文对不上的状态。
+	//
+	// 同样只处理仍在 processing 的文档：文档在处理期间被删除时，
+	// 最后的 UPDATE 影响 0 行，整个事务回滚（切片也不会写进去）并返回错误。
 	ReplaceChunks(ctx context.Context, id uint64, input entity.ChunkReplacement) error
 
 	// SetMetadata 整份覆盖文档的 metadata。上传链路用它记下暂存文件路径与标题回落标记；

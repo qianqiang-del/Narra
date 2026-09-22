@@ -284,3 +284,42 @@ func TestProcessOneKeepsStagedFileOnCancel(t *testing.T) {
 		t.Errorf("取消时原件应当留在原地等待回收，实际 stat: %v", err)
 	}
 }
+
+// 文档在处理期间被删掉时，失败原件不该归档：归档出来的 failed/<ID>/ 两张表都查不到、
+// 任何清理路径也够不着，只会永远留在磁盘上。文档都没了，没有重试对象，直接清掉暂存目录。
+func TestProcessOneDiscardsStagedFileWhenDocumentGone(t *testing.T) {
+	root := t.TempDir()
+	store := &fakeDocumentStore{} // created == nil：GetByID 返回 ErrRecordNotFound
+	ingester := newIngesterWithParser(store, &stubParser{err: fmt.Errorf("解析失败")})
+	worker := NewWorker(store, ingester, root, 1)
+
+	directory := filepath.Join(root, "pending", "1")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatalf("创建暂存目录失败: %v", err)
+	}
+	staged := filepath.Join(directory, "upload.docx")
+	if err := os.WriteFile(staged, []byte("内容由桩决定"), 0o644); err != nil {
+		t.Fatalf("写入暂存文件失败: %v", err)
+	}
+
+	metadata, err := json.Marshal(map[string]any{"upload_path": staged, "explicit_title": true})
+	if err != nil {
+		t.Fatalf("构造 metadata 失败: %v", err)
+	}
+	document := entity.KnowledgeDocument{
+		Title:    "已被删除的文档",
+		Status:   entity.KnowledgeDocumentStatusProcessing,
+		Metadata: metadata,
+	}
+	document.ID = testDocumentID
+
+	worker.processOne(context.Background(), document)
+
+	if _, err := os.Stat(directory); !os.IsNotExist(err) {
+		t.Errorf("文档已删除时暂存目录应当被清掉，实际 stat: %v", err)
+	}
+	archive := filepath.Join(root, failedDirName, strconv.FormatUint(testDocumentID, 10))
+	if _, err := os.Stat(archive); !os.IsNotExist(err) {
+		t.Errorf("不该产生无人认领的归档目录，实际 stat: %v", err)
+	}
+}

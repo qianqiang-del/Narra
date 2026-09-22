@@ -2,10 +2,17 @@ package rag
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"net"
 	"strconv"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
+
+	"narra/pkg/logger"
 )
 
 // Embedder 是本模块对向量化能力的最小依赖面。
@@ -33,10 +40,25 @@ type embedderFactory func() (Embedder, error)
 // 16 片 × 800 字在多数 OpenAI 兼容服务的单请求额度内仍有余量。
 const embedBatchSize = 16
 
+// embedBatchAttempts 单批向量化的总尝试次数（含第一次）。
+//
+// 3 次是"挡掉偶发抖动"与"别把故障时间拉长"之间的折中：一篇文档可能有几十批，
+// 每批都重试很多次只会让真故障看起来像卡住。退避后的额外等待每批最多几秒。
+const embedBatchAttempts = 3
+
+// embedRetryBaseDelay 重试的基准间隔：第 n 次重试等 base << (n-1)，默认 1s、2s。
+//
+// 声明成变量而不是常量，是为了让测试把它压到毫秒级 —— 否则一个重试用例要跑好几秒。
+// 生产路径不会改它。
+var embedRetryBaseDelay = time.Second
+
 // embedInBatches 分批向量化，返回与 chunks 等长、顺序一致的向量。
 //
 // 返回值保持 []float32 而不是直接转成 pgvector 文本：维度校验和入库前的有限性检查
 // 都要看原始数值，提前转成字符串就只能再解析回来。
+//
+// 每一批内部做有限次重试（见 embedBatchWithRetry）：收录一篇文档可能是几十批请求，
+// 任何一批撞上限流或网络抖动，整篇就会失败，而用户重试要从解析重新来过。
 func embedInBatches(ctx context.Context, embedder Embedder, chunks []Chunk) ([][]float32, error) {
 	vectors := make([][]float32, len(chunks))
 
@@ -51,19 +73,78 @@ func embedInBatches(ctx context.Context, embedder Embedder, chunks []Chunk) ([][
 			inputs = append(inputs, chunk.Content)
 		}
 
-		batch, err := embedder.Embed(ctx, inputs)
+		batch, err := embedBatchWithRetry(ctx, embedder, inputs)
 		if err != nil {
 			return nil, fmt.Errorf("第 %d~%d 个切片向量化失败: %w", start+1, end, err)
-		}
-		if len(batch) != len(inputs) {
-			return nil, fmt.Errorf("%w: 第 %d~%d 个切片请求 %d 条，上游返回 %d 条",
-				ErrEmbeddingMismatch, start+1, end, len(inputs), len(batch))
 		}
 		for index, vector := range batch {
 			vectors[start+index] = vector
 		}
 	}
 	return vectors, nil
+}
+
+// embedBatchWithRetry 对一个批次做有限次重试，并校验返回的条数。
+//
+// 只重试明确可恢复的错误：429、5xx、网络超时与连接错误（见 isRetryableEmbedError）。
+// 参数错误、向量条数或维度不对这类"再来一次也一样"的失败直接返回，不浪费时间。
+// 上层 ctx 被取消（关停）时立刻放弃，连退避等待也要能被打断。
+func embedBatchWithRetry(ctx context.Context, embedder Embedder, inputs []string) ([][]float32, error) {
+	var lastErr error
+
+	for attempt := 0; attempt < embedBatchAttempts; attempt++ {
+		if attempt > 0 {
+			delay := embedRetryBaseDelay << (attempt - 1)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		batch, err := embedder.Embed(ctx, inputs)
+		if err == nil {
+			if len(batch) != len(inputs) {
+				// 条数不符是契约被破坏：同一批再问一次只会得到同样的结果，不重试。
+				return nil, fmt.Errorf("%w: 请求 %d 条，上游返回 %d 条",
+					ErrEmbeddingMismatch, len(inputs), len(batch))
+			}
+			return batch, nil
+		}
+		lastErr = err
+
+		if ctx.Err() != nil {
+			// 关停/取消：重试没有意义，立刻返回而不是等完退避。
+			return nil, ctx.Err()
+		}
+		if !isRetryableEmbedError(err) {
+			return nil, err
+		}
+		logger.Warn("单批向量化失败，准备重试",
+			zap.Int("attempt", attempt+1),
+			zap.Int("attempts", embedBatchAttempts),
+			zap.Int("inputs", len(inputs)),
+			zap.Error(err),
+		)
+	}
+	return nil, lastErr
+}
+
+// isRetryableEmbedError 判断一个错误值不值得重试。
+//
+// 两类算：错误自己声明可重试的（embedding.HTTPError 的 429 / 5xx），以及网络层错误
+// （超时、连接被拒/重置、DNS 抖动）—— 后者都是"再试一次可能就好"。
+// 其余一律不重试：4xx 参数错误、条数/维度不符，重试只会浪费时间。
+func isRetryableEmbedError(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var retryable interface{ Retryable() bool }
+	if errors.As(err, &retryable) {
+		return retryable.Retryable()
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 // vectorLiteral 把向量转成 pgvector 的文本格式，如 "[0.1,0.2]"。

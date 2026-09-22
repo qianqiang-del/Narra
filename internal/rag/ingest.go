@@ -809,6 +809,26 @@ func ocrCoverageError(result *documentparser.Result) error {
 	}
 }
 
+// documentExists 判断一条文档是否还在，供 worker 决定失败原件要不要归档。
+//
+// 查不动（DB 抖动）时按"还在"处理：宁可留下一个以后能清理的归档，
+// 也不能因为一次查询失败就把用户的原件删掉 —— 那会让重试永久失去输入。
+func (i *Ingester) documentExists(id uint64) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := i.store.GetByID(ctx, id)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false
+	}
+	logger.Warn("确认文档是否仍存在时出错，按仍存在处理",
+		zap.Uint64("document_id", id), zap.Error(err))
+	return true
+}
+
 // formatPageNumbers 把页码列成"第 3、7、12 页"；超过上限时折叠，避免长文档的报错刷屏。
 func formatPageNumbers(pages []int) string {
 	limit := len(pages)
