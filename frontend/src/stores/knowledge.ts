@@ -11,6 +11,7 @@ import {
   fetchUploadRecords,
   retryKnowledgeDocument,
   uploadKnowledgeFile,
+  watchKnowledgeDocument,
   type KnowledgeDocument,
   type KnowledgeParserStatus,
   type KnowledgeUploadRecord,
@@ -28,8 +29,9 @@ import {
  * 仍然留着（那时它的展示状态是「已收录后删除」），而主页看不到任何痕迹 ——
  * 记录条数与主页条数**不该相等**，也不该被拿来互推。
  *
- * 收录是异步的：`upload` 拿到的是 pending 文档，靠 `fetchKnowledgeDocument`
- * 轮询到终态，前端据此驱动"处理中"的反馈。
+ * 收录是异步的：`upload` 拿到的是 pending 文档，靠 SSE 进度流盯到终态
+ * （`watchUntilSettled`，流不可用时回退 `fetchKnowledgeDocument` 轮询），
+ * 前端据此驱动"处理中"的反馈。
  *
  * 两个列表都走**服务端筛选与分页**（批 ①）：主页问 `status=ready`，
  * 上传记录走独立的 `GET /knowledge/upload-records`。在那之前记录是从文档列表里
@@ -85,7 +87,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   /**
    * 有文件正在收录。
    *
-   * 它同时就是"一次只能传一份"的前端约束：`upload` 会一直轮询到终态，
+   * 它同时就是"一次只能传一份"的前端约束：`upload` 会一直盯到终态，
    * 所以这个标志从提交一直挂到处理结束，界面据此禁用整个上传区。
    * 服务端的强制拒绝也在（批 ①，见后端 SubmitFile），前端这层仍然保留 ——
    * 少一次注定失败的往返。
@@ -180,7 +182,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    * 只重拉上传记录。
    *
    * 抽屉每次打开、以及提交后要让新记录立刻出现时用。之所以要单独一条路径：
-   * 提交后到终态之间轮询得很密，把主页也一起重拉会让列表反复闪。
+   * 提交后到终态之间状态翻得很快，把主页也一起重拉会让列表反复闪。
    */
   async function loadRecords() {
     const records = await fetchUploadRecords({ page: 1, size: RECORD_PAGE_SIZE })
@@ -214,54 +216,42 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   }
 
   /**
-   * 上传并收录一份文件，一路轮询到终态。
-   *
-   * **不把"处理失败"当异常抛出**：失败同样是有效结果（库里留了一行 failed，
-   * 调用方要在上传记录里把原因交给用户），所以只有请求本身出错
-   * （网络、后端拒绝、轮询超时）才抛。
-   *
-   * 后端此刻若正在收另一份，上传接口会拒（409），错误照样从这里抛出去 ——
-   * 前端在上传期间本来就锁着入口，撞上它的是并发场景。
+   * 文档是否已经到终态（ready / failed）。终态之后不会再有变化：
+   * 服务端推完最后一帧就关流，轮询也该停。
    */
-  /**
-   * 轮询一份文档直到它走到终态（ready / failed），返回最后那一帧。
-   *
-   * 上传与重试共用这一段：两者都是"后台在跑、前端盯着状态"，差别只在第一步
-   * 怎么把任务交出去。边轮询边把当前帧写进 activeUpload，弹层那张卡片就跟着它动。
-   *
-   * 上限是必须的：一份卡在 pending 的文档（例如 worker 没起来）会把界面永远锁在
-   * "处理中"，而 uploading 一直为真，用户连下一份都传不了。
-   */
-  async function pollUntilSettled(document: KnowledgeDocument): Promise<KnowledgeDocument> {
-    let deadline = Date.now() + POLL_TIMEOUT_MS
-    let current = document
+  function isSettled(document: KnowledgeDocument): boolean {
+    return document.status === 'ready' || document.status === 'failed'
+  }
 
-    // 首次上传时后端在准备解析环境（可能十几分钟），这段等待不该吃掉"处理超时"的窗口。
-    // 判据是"进度还在变"（见 PREPARE_STALL_MS）；准备结束后窗口从头算。
+  /**
+   * "处理超时"与"环境准备卡住"的判据，SSE 与轮询两条路共用一份。
+   *
+   * 首次上传时后端可能在准备解析环境（分钟级），这段等待不该吃掉"文档处理超时"
+   * 的窗口：准备期间只看进度有没有在动，准备结束后窗口从头算（见 PREPARE_STALL_MS）。
+   * 上限本身是必须的：一份卡在 pending 的文档（例如 worker 没起来）会把界面永远
+   * 锁在"处理中"，而 uploading 一直为真，用户连下一份都传不了。
+   */
+  function createSettleClock() {
+    let deadline = Date.now() + POLL_TIMEOUT_MS
     let lastProgress = ''
     let progressChangedAt = Date.now()
     let wasPreparing = false
 
-    while (current.status === 'pending' || current.status === 'processing') {
-      // 只在"还没问过"或"能力开着但环境没好"时问：
-      // 环境备好之后（或压根没开解析能力）这个接口就没必要再打了。
-      const unknown = parserStatus.value === null
-      const pendingSetup = parserStatus.value?.enabled === true && !parserStatus.value.ready
-      if (unknown || pendingSetup) {
-        await loadParserStatus()
-      }
-
-      if (parserStatus.value?.preparing) {
-        const progress = parserStatus.value.progress
-        if (progress !== lastProgress) {
-          lastProgress = progress
-          progressChangedAt = Date.now()
+    return {
+      /** 到点或卡住时抛出。SSE 路每秒调一次（没有事件也要查），轮询路每轮调一次 */
+      check() {
+        if (parserStatus.value?.preparing) {
+          const progress = parserStatus.value.progress
+          if (progress !== lastProgress) {
+            lastProgress = progress
+            progressChangedAt = Date.now()
+          }
+          if (Date.now() - progressChangedAt >= PREPARE_STALL_MS) {
+            throw new Error('解析环境准备似乎卡住了，请稍后刷新查看状态')
+          }
+          wasPreparing = true
+          return
         }
-        if (Date.now() - progressChangedAt >= PREPARE_STALL_MS) {
-          throw new Error('解析环境准备似乎卡住了，请稍后刷新查看状态')
-        }
-        wasPreparing = true
-      } else {
         if (wasPreparing) {
           // 准备刚结束：之前那段时间是环境准备，不是这一份文档的处理时长
           wasPreparing = false
@@ -270,11 +260,96 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
         if (Date.now() >= deadline) {
           throw new Error('文档处理超时，请稍后刷新查看状态')
         }
+      },
+    }
+  }
+
+  /**
+   * 逐次轮询直到终态，返回最后那一帧。
+   *
+   * 它现在是 SSE 的兜底路径（流建不起来或中途断开），逻辑与升级前完全一样：
+   * 每秒问一次详情，顺便按需问解析环境状态。
+   */
+  async function pollUntilSettled(
+    document: KnowledgeDocument,
+    clock = createSettleClock(),
+  ): Promise<KnowledgeDocument> {
+    let current = document
+    while (!isSettled(current)) {
+      // 只在"还没问过"或"能力开着但环境没好"时问：
+      // 环境备好之后（或压根没开解析能力）这个接口就没必要再打了。
+      const unknown = parserStatus.value === null
+      const pendingSetup = parserStatus.value?.enabled === true && !parserStatus.value.ready
+      if (unknown || pendingSetup) {
+        await loadParserStatus()
       }
+
+      clock.check()
 
       await new Promise((resolve) => setTimeout(resolve, 1000))
       current = await fetchKnowledgeDocument(current.id)
       activeUpload.value = current
+    }
+    return current
+  }
+
+  /**
+   * 盯着一份文档直到终态，返回最后那一帧。
+   *
+   * 上传与重试共用这一段：两者都是"后台在跑、前端盯着状态"，差别只在第一步
+   * 怎么把任务交出去。边收帧边把当前帧写进 activeUpload，弹层那张卡片就跟着它动。
+   *
+   * 主路是 SSE：服务端在有变化时推 document / parser 两帧，正常情况下一次连接
+   * 跑到终态，前端不再每秒发一次请求。流不可用（代理不支持长连接、服务重启、
+   * 接口没部署）时回退 pollUntilSettled —— 两条路共用同一个 clock，超时口径一致。
+   */
+  async function watchUntilSettled(document: KnowledgeDocument): Promise<KnowledgeDocument> {
+    const clock = createSettleClock()
+    const controller = new AbortController()
+    let current = document
+    let clockError: Error | null = null
+
+    // SSE 只在有变化时才有事件；安静期必须靠本地时钟兜底（worker 挂了就没有事件了），
+    // 所以这里按秒查超时/卡住，而不是等下一个事件。
+    const timer = window.setInterval(() => {
+      try {
+        clock.check()
+      } catch (error) {
+        clockError = error as Error
+        controller.abort()
+      }
+    }, 1000)
+
+    try {
+      await watchKnowledgeDocument(
+        current.id,
+        {
+          onDocument: (frame) => {
+            current = frame
+            activeUpload.value = frame
+          },
+          onParser: (status) => {
+            parserStatus.value = status
+          },
+        },
+        controller.signal,
+      )
+    } catch (error) {
+      // 时钟判定的超时/卡住不是"流不可用"，直接抛；其余情况退回轮询。
+      if (clockError) throw clockError
+      // 降级不影响界面，但要能在控制台看见原因（后端没重启、接口没部署、
+      // 代理不支持长连接都会走到这里）—— 否则表现成"怎么还在每秒发请求"，
+      // 排查时只能靠猜。
+      console.warn('知识库进度流不可用，已回退到每秒轮询', error)
+      return pollUntilSettled(current, clock)
+    } finally {
+      window.clearInterval(timer)
+    }
+
+    // 流正常结束却没到终态（服务端提前关流）：同样回退轮询，而不是把非终态当结果。
+    if (!isSettled(current)) {
+      console.warn('知识库进度流提前结束，已回退到每秒轮询', current.status)
+      return pollUntilSettled(current, clock)
     }
     return current
   }
@@ -293,6 +368,16 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     }
   }
 
+  /**
+   * 上传并收录一份文件，一路盯到终态。
+   *
+   * **不把"处理失败"当异常抛出**：失败同样是有效结果（库里留了一行 failed，
+   * 调用方要在上传记录里把原因交给用户），所以只有请求本身出错
+   * （网络、后端拒绝、等待超时）才抛。
+   *
+   * 后端此刻若正在收另一份，上传接口会拒（409），错误照样从这里抛出去 ——
+   * 前端在上传期间本来就锁着入口，撞上它的是并发场景。
+   */
   async function upload(file: File, title?: string): Promise<KnowledgeDocument> {
     uploading.value = true
     try {
@@ -303,10 +388,10 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       // 抽屉立刻有这条。
       await refreshRecordsQuietly()
 
-      const settled = await pollUntilSettled(document)
+      const settled = await watchUntilSettled(document)
 
       // 终态之后整表重拉：这一份的切片数、字符数、updated_at 都是后端在收尾时补的，
-      // 记录那一行的状态也是在同一个事务里跟着翻的 —— 别拿轮询到的最后一帧糊弄过去
+      // 记录那一行的状态也是在同一个事务里跟着翻的 —— 别拿流里收到的最后一帧糊弄过去
       await load()
       return settled
     } finally {
@@ -320,7 +405,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    *
    * **不用重新选文件**：后端把那条 failed 文档改回 pending，输入是失败时归档在
    * 服务器上的原件。所以它与 upload 的差别只有第一步 —— 一个交出新文件，
-   * 一个让旧任务重新排队；之后的轮询与整表重拉完全一样。
+   * 一个让旧任务重新排队；之后的等待与整表重拉完全一样。
    *
    * 同样置 uploading：重试会占住后台的收录位，期间再传一份会被服务端的闸门拒掉
    * （409），前端先一步把入口锁上，少一次注定失败的往返。
@@ -332,7 +417,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       activeUpload.value = document
       await refreshRecordsQuietly()
 
-      const settled = await pollUntilSettled(document)
+      const settled = await watchUntilSettled(document)
       await load()
       return settled
     } finally {
