@@ -275,8 +275,12 @@ func (f *fixture) newOrchestrator(t *testing.T, model Model) *Orchestrator {
 		Messages:      f.messages,
 		Runs:          f.runs,
 		Turns:         f.turns,
+		Compactions:   f.compactions,
 		Model:         model,
-		Director:      RoundRobinDirector{},
+		// 摘要器沿用假模型：这些用例的消息量远低于预算，不会真的触发压缩；
+		// 但装配校验要求它非空 —— 真正的压缩行为由 context_test.go 用例覆盖。
+		Summarizer: FakeModel{},
+		Director:   RoundRobinDirector{},
 	})
 	if err != nil {
 		t.Fatalf("装配编排器失败: %v", err)
@@ -500,7 +504,8 @@ func TestOrchestratorRejectsBadInput(t *testing.T) {
 // failingModel 永远失败，用来验证失败路径。
 type failingModel struct{}
 
-func (failingModel) Generate(ctx context.Context, request GenerationRequest) (GenerationResponse, error) {
+// Generate 永远返回错误，用来验证失败路径。形参用不到，直接写成下划线。
+func (failingModel) Generate(_ context.Context, _ GenerationRequest) (GenerationResponse, error) {
 	return GenerationResponse{}, fmt.Errorf("模拟模型故障")
 }
 
@@ -523,6 +528,11 @@ func TestOrchestratorMarksFailure(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("模型失败时应当返回错误")
+	}
+	// 失败时 Run 仍会返回有效结果（见 Run 的契约说明）。显式断言一句，
+	// 既守住契约，也说明下面用 result 不是"err 之后碰了零值"。
+	if result.RunID == 0 {
+		t.Fatal("失败时也应返回 RunID，否则排查时找不到是哪一趟活失败了")
 	}
 
 	if result.Status != entity.RunStatusFailed {

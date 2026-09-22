@@ -16,13 +16,6 @@ import (
 )
 
 const (
-	// historyLimit 是一次发言最多带多少条历史消息。
-	//
-	// 这是**临时上限**，不是最终方案：按 token 预算裁剪上下文是第 4 步的事。
-	// 第一版先给个固定值，避免讨论聊长了以后把整条对话都塞进提示词里 ——
-	// 那既慢又贵，而且超过模型窗口会直接报错。
-	historyLimit = 40
-
 	// errorMessageLimit 是落库的错误描述最大字节数。
 	// 库里是 text 列，本身就存得下；限制是为了别把整段堆栈或原始 API 响应写进去 ——
 	// 那一列是给运维看"为什么失败"的，不是日志。
@@ -83,8 +76,12 @@ func New(deps Deps) (*Orchestrator, error) {
 		return nil, fmt.Errorf("编排器缺少运行仓储")
 	case deps.Turns == nil:
 		return nil, fmt.Errorf("编排器缺少回合仓储")
+	case deps.Compactions == nil:
+		return nil, fmt.Errorf("编排器缺少摘要仓储")
 	case deps.Model == nil:
 		return nil, fmt.Errorf("编排器缺少模型")
+	case deps.Summarizer == nil:
+		return nil, fmt.Errorf("编排器缺少摘要器")
 	}
 	if deps.Director == nil {
 		deps.Director = RoundRobinDirector{}
@@ -101,6 +98,10 @@ func New(deps Deps) (*Orchestrator, error) {
 //
 // 它只在"确实跑起来了"的情况下返回 nil 错误；一旦中途失败，会尽力把运行和当前回合
 // 标成失败再返回错误 —— 半途而废的记录里，"为什么没跑完"比"跑完的部分"更值钱。
+//
+// ⚠️ 契约：**返回错误时 Result 依然是有意义的**（RunID / TraceID / Turns 都已填好），
+// 调用方可以拿它去查库、写日志。这与"err 非空就别用其它返回值"的常见惯例不同，
+// 是有意的 —— 失败时最需要的恰恰是"哪一趟活失败了"这个 ID。
 func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error) {
 	maxTurns, err := normalizeMaxTurns(request.MaxTurns)
 	if err != nil {
@@ -161,7 +162,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 			// 选人策略返回了越界下标，这是编排自身的 bug。既不能继续往下跑
 			// （会把消息记到不存在的人头上），也不能让它把进程带崩 ——
 			// 当场收尾，并留下能直接定位的原因。
-			return o.abandon(ctx, run, fmt.Errorf(
+			return o.abandon(run, fmt.Errorf(
 				"选人策略返回了非法的发言人下标 %d（参与者共 %d 人）",
 				decision.SpeakerIndex, len(request.Participants),
 			), outcomes, log)
@@ -170,7 +171,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 		participant := request.Participants[decision.SpeakerIndex]
 		outcome, err := o.speak(ctx, request, run, participant, turnNo, trigger.Content)
 		if err != nil {
-			return o.abandon(ctx, run, err, outcomes, log)
+			return o.abandon(run, err, outcomes, log)
 		}
 
 		spoken[decision.SpeakerIndex]++
@@ -282,7 +283,7 @@ func (o *Orchestrator) speak(
 
 	history, err := o.history(ctx, request.ConversationID)
 	if err != nil {
-		o.abandonTurn(ctx, turn, err)
+		o.abandonTurn(turn, err)
 		return TurnOutcome{}, err
 	}
 
@@ -293,7 +294,7 @@ func (o *Orchestrator) speak(
 		History:     history,
 	})
 	if err != nil {
-		o.abandonTurn(ctx, turn, err)
+		o.abandonTurn(turn, err)
 		return TurnOutcome{}, fmt.Errorf("第 %d 轮生成失败: %w", turnNo, err)
 	}
 
@@ -330,7 +331,7 @@ func (o *Orchestrator) speak(
 		// 漏掉它会导致正在活跃的讨论被排到列表下面去。
 		return o.deps.Conversations.TouchLastMessage(ctx, request.ConversationID, finishedAt)
 	}); err != nil {
-		o.abandonTurn(ctx, turn, err)
+		o.abandonTurn(turn, err)
 		return TurnOutcome{}, fmt.Errorf("落库第 %d 轮结果失败: %w", turnNo, err)
 	}
 
@@ -381,19 +382,11 @@ func (o *Orchestrator) callModel(ctx context.Context, request GenerationRequest)
 }
 
 // history 读这次发言要带的上下文，按发生顺序排列。
+//
+// 保留这个名字和签名，内部换成按预算组装的版本（context.go）：
+// 调用点只有 speak 一处，换实现不必让它知道"现在有摘要、有压缩"这些细节。
 func (o *Orchestrator) history(ctx context.Context, conversationID uint64) ([]HistoryMessage, error) {
-	messages, err := o.deps.Messages.ListRecentByConversation(ctx, conversationID, historyLimit)
-	if err != nil {
-		return nil, fmt.Errorf("读取对话历史失败: %w", err)
-	}
-	history := make([]HistoryMessage, 0, len(messages))
-	for _, message := range messages {
-		history = append(history, HistoryMessage{
-			Speaker: speakerName(message),
-			Content: message.Content,
-		})
-	}
-	return history, nil
+	return o.buildContext(ctx, conversationID, o.deps.Logger)
 }
 
 // closeRun 写运行的终态。
@@ -419,10 +412,11 @@ func (o *Orchestrator) closeRun(ctx context.Context, run *entity.OrchestrationRu
 
 // abandon 在失败时收拾现场：把运行标成失败，然后原样返回原因。
 //
-// 收尾用的是一个全新的 context，而不是调用方传来的那个 —— 失败的原因很可能就是
-// "上游超时/用户取消了"，那个 ctx 已经作废，拿它去写库会立刻再失败一次，
-// 于是连"这次讨论失败了"都留不下来，前端只能一直转圈。
-func (o *Orchestrator) abandon(ctx context.Context, run *entity.OrchestrationRun, cause error, outcomes []TurnOutcome, log *zap.Logger) (Result, error) {
+// 它**刻意不接收调用方的 context**：失败的原因很可能就是"上游超时/用户取消了"，
+// 那个 ctx 已经作废，拿它去写库会立刻再失败一次，于是连"这次讨论失败了"都留不下来，
+// 前端只能一直转圈。所以这里从 context.Background() 另起一个带超时的。
+// 参数干脆不收，比"收下却不用"更不容易让人误会成"它会用调用方的 ctx 收尾"。
+func (o *Orchestrator) abandon(run *entity.OrchestrationRun, cause error, outcomes []TurnOutcome, log *zap.Logger) (Result, error) {
 	finalizeCtx, cancel := context.WithTimeout(context.Background(), finalizeTimeout)
 	defer cancel()
 
@@ -441,9 +435,10 @@ func (o *Orchestrator) abandon(ctx context.Context, run *entity.OrchestrationRun
 
 // abandonTurn 尽力把一个没跑完的回合标成失败。
 //
+// 同样不接收调用方的 context，理由见 abandon。
 // 这里**不覆盖**原始错误：回合状态写不进去只说明现场收拾得不干净，
 // 真正让这次讨论崩掉的原因还在调用方的错误里，那个才是有用的信息。
-func (o *Orchestrator) abandonTurn(ctx context.Context, turn *entity.AgentTurn, cause error) {
+func (o *Orchestrator) abandonTurn(turn *entity.AgentTurn, cause error) {
 	finalizeCtx, cancel := context.WithTimeout(context.Background(), finalizeTimeout)
 	defer cancel()
 
