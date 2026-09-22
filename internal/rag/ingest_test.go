@@ -17,6 +17,8 @@ import (
 
 	"gorm.io/gorm"
 
+	einoembedding "github.com/cloudwego/eino/components/embedding"
+
 	"narra/internal/model/entity"
 	"narra/pkg/config"
 	"narra/pkg/documentparser"
@@ -251,16 +253,16 @@ type stubEmbedder struct {
 	shortBy   int
 }
 
-func (s *stubEmbedder) Embed(ctx context.Context, inputs []string) ([][]float32, error) {
+func (s *stubEmbedder) EmbedStrings(ctx context.Context, inputs []string, _ ...einoembedding.Option) ([][]float64, error) {
 	s.batches = append(s.batches, append([]string(nil), inputs...))
 	if s.err != nil {
 		return nil, s.err
 	}
 
-	vectors := make([][]float32, len(inputs))
+	vectors := make([][]float64, len(inputs))
 	for index, text := range inputs {
-		vector := make([]float32, s.dimension)
-		vector[0] = float32(utf8.RuneCountInString(text))
+		vector := make([]float64, s.dimension)
+		vector[0] = float64(utf8.RuneCountInString(text))
 		vectors[index] = vector
 	}
 	if s.shortBy > 0 && len(vectors) > s.shortBy {
@@ -298,7 +300,7 @@ func newFakeModels() *fakeModelRegistry {
 // 直接换掉 ingester.records（同包可见）即可。
 func newIngesterWith(store DocumentStore, models ModelRegistry, embedder Embedder, cfg config.EmbeddingConfig) *Ingester {
 	ingester := NewIngester(store, &fakeUploadRecordStore{}, models, embedding.NewManager(cfg), nil)
-	ingester.newEmbedder = func() (Embedder, error) {
+	ingester.newEmbedder = func(model *entity.EmbeddingModel) (Embedder, error) {
 		if embedder == nil {
 			return nil, fmt.Errorf("用例没有提供向量桩")
 		}
@@ -588,7 +590,9 @@ func (p *stubParser) Status(context.Context) documentparser.Status {
 // 解析器换成给定的桩，向量化仍走确定的桩，整条链路不碰外部世界。
 func newIngesterWithParser(store DocumentStore, parser documentparser.Parser) *Ingester {
 	ingester := NewIngester(store, &fakeUploadRecordStore{}, newFakeModels(), embedding.NewManager(testEmbeddingConfig()), parser)
-	ingester.newEmbedder = func() (Embedder, error) { return &stubEmbedder{dimension: testVectorDims}, nil }
+	ingester.newEmbedder = func(*entity.EmbeddingModel) (Embedder, error) {
+		return &stubEmbedder{dimension: testVectorDims}, nil
+	}
 	return ingester
 }
 
@@ -928,7 +932,7 @@ func TestIngestRejectsTooManyChunks(t *testing.T) {
 }
 
 func TestVectorLiteralFormatsAndRejectsBadValues(t *testing.T) {
-	literal, err := vectorLiteral([]float32{0.5, -1, 2})
+	literal, err := vectorLiteral([]float64{0.5, -1, 2})
 	if err != nil {
 		t.Fatalf("正常向量不该报错: %v", err)
 	}
@@ -939,10 +943,10 @@ func TestVectorLiteralFormatsAndRejectsBadValues(t *testing.T) {
 	if _, err := vectorLiteral(nil); !errors.Is(err, ErrInvalidVector) {
 		t.Errorf("空向量必须报成 ErrInvalidVector，实际: %v", err)
 	}
-	if _, err := vectorLiteral([]float32{float32(math.NaN())}); !errors.Is(err, ErrInvalidVector) {
+	if _, err := vectorLiteral([]float64{math.NaN()}); !errors.Is(err, ErrInvalidVector) {
 		t.Errorf("NaN 必须被拦下（pgvector 不认这个字面量），实际: %v", err)
 	}
-	if _, err := vectorLiteral([]float32{float32(math.Inf(1))}); !errors.Is(err, ErrInvalidVector) {
+	if _, err := vectorLiteral([]float64{math.Inf(1)}); !errors.Is(err, ErrInvalidVector) {
 		t.Errorf("Inf 必须被拦下，实际: %v", err)
 	}
 }

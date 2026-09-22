@@ -135,8 +135,8 @@ type Ingester struct {
 	embedding *embedding.Manager
 	parser    documentparser.Parser
 
-	// newEmbedder 是这个包唯一的注入点，默认按当前生效配置现建 Client。
-	// 测试把它换成返回桩的工厂，整条链路就能在完全离线的条件下跑完。
+	// newEmbedder 是这个包唯一的注入点，默认按模型行 + 当前生效配置现建 Eino 适配器
+	// （见 embedderFactory）。测试把它换成返回桩的工厂，整条链路就能完全离线跑完。
 	newEmbedder embedderFactory
 }
 
@@ -200,13 +200,7 @@ func NewIngester(
 		embedding: embeddingManager,
 		parser:    parser,
 	}
-	ingester.newEmbedder = func() (Embedder, error) {
-		client, err := embedding.NewClient(ingester.embedding.Config())
-		if err != nil {
-			return nil, fmt.Errorf("向量服务配置不可用: %w", err)
-		}
-		return client, nil
-	}
+	ingester.newEmbedder = newModelEmbedderFactory(embeddingManager)
 	return ingester
 }
 
@@ -457,7 +451,7 @@ func (i *Ingester) ingestMarkdown(
 	metadata["model"] = model.Name
 	metadata["model_id"] = model.ID
 
-	embedder, err := i.newEmbedder()
+	embedder, err := i.newEmbedder(model)
 	if err != nil {
 		return i.failIngest(ctx, document, "model", err)
 	}
@@ -650,7 +644,7 @@ func buildReplacement(
 	markdown string,
 	metadata map[string]any,
 	chunks []Chunk,
-	vectors [][]float32,
+	vectors [][]float64,
 	model *entity.EmbeddingModel,
 ) (entity.ChunkReplacement, error) {
 	if len(chunks) != len(vectors) {

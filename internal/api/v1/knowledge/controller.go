@@ -1,6 +1,9 @@
 package knowledge
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +19,7 @@ import (
 	"narra/internal/service"
 	"narra/pkg/documentparser"
 	"narra/pkg/response"
+	"narra/pkg/sse"
 )
 
 const (
@@ -32,6 +36,25 @@ const (
 
 	// uploadTempPrefix 上传文件的临时目录前缀。
 	uploadTempPrefix = "narra-upload-"
+
+	// 收录进度流（GET /knowledge/documents/:id/events）上的事件名，
+	// 与前端 api/knowledge.ts 的 watchKnowledgeDocument 一一对应。
+	eventDocument = "document" // 文档快照，形状同 GET /knowledge/documents/:id
+	eventParser   = "parser"   // 解析环境状态，形状同 GET /knowledge/documents/parser/status
+	eventError    = "error"    // 流中途失败（例如文档被删），推完即关流
+
+	// eventsQueryInterval 是进度流内部查库的节奏，与前端原来的轮询一致：
+	// 换掉的是每秒一次的 HTTP 往返与请求日志，查询本身的代价不变。
+	eventsQueryInterval = time.Second
+
+	// eventsHeartbeatInterval 心跳间隔。空闲连接会被反代与浏览器掐掉，
+	// 每 20 秒报一次活；写失败也正好是"对端已断开"的检测点。
+	eventsHeartbeatInterval = 20 * time.Second
+
+	// eventsMaxDuration 是服务端兜底的最长推送时长：客户端异常（不关连接也不再读）
+	// 时不留一条永远跑下去的循环。正常路径走不到它 —— 文档到终态即关流，
+	// 前端自己也有 15 分钟的处理超时（见 frontend/src/stores/knowledge.ts）。
+	eventsMaxDuration = 45 * time.Minute
 )
 
 // Controller 是知识库文档的 HTTP 处理器。
@@ -42,6 +65,12 @@ type Controller struct {
 	svc       service.KnowledgeService
 	uploadDir string                // 上传根目录；每次上传在此新建一个单独的暂存子目录
 	parser    documentparser.Parser // 可以为 nil，表示文档解析能力未启用
+
+	// 进度流（Events）的节奏参数。零值由 NewController 补成 events* 默认值；
+	// 测试调小它们，否则一条状态流转要等秒级才能观察完。
+	eventsQueryInterval     time.Duration
+	eventsHeartbeatInterval time.Duration
+	eventsMaxDuration       time.Duration
 }
 
 // NewController 创建知识库处理器。
@@ -49,7 +78,14 @@ type Controller struct {
 // uploadDir 要和服务层、worker 用的是同一个值：服务层靠它判断一条记录的
 // upload_path 是否可信（只清理自己目录下的），传错会让删除时的清理失效。
 func NewController(svc service.KnowledgeService, uploadDir string, parser documentparser.Parser) *Controller {
-	return &Controller{svc: svc, uploadDir: uploadDir, parser: parser}
+	return &Controller{
+		svc:                     svc,
+		uploadDir:               uploadDir,
+		parser:                  parser,
+		eventsQueryInterval:     eventsQueryInterval,
+		eventsHeartbeatInterval: eventsHeartbeatInterval,
+		eventsMaxDuration:       eventsMaxDuration,
+	}
 }
 
 // ParserStatus 返回文档解析能力的可用状态，供前端提示"当前能不能传 PDF"。
@@ -57,19 +93,27 @@ func NewController(svc service.KnowledgeService, uploadDir string, parser docume
 // parser 为 nil 是"配置上就没启用"的确定状态，直接答一个 ready = false；
 // 非 nil 时交给解析器自己探测（例如 Python 运行时和依赖是否就绪）。
 func (c *Controller) ParserStatus(ctx *gin.Context) {
+	response.Success(ctx, c.parserSnapshot(ctx.Request.Context()))
+}
+
+// parserSnapshot 取解析能力状态快照，parser 未启用时给出确定状态。
+//
+// ParserStatus 与进度流共用它：两边对"没启用"的说法必须是同一句，
+// 否则同一个界面会从接口和流里拿到两种解释。
+func (c *Controller) parserSnapshot(ctx context.Context) documentparser.Status {
 	if c.parser == nil {
 		// Enabled=false 与"没准备好"是两件事：前者是配置里就没开，
 		// 前端据此提示的是"这类文件暂时没法解析"，而不是"首次上传要等一会儿"。
-		response.Success(ctx, documentparser.Status{Enabled: false, Ready: false, Reason: "document parser is disabled"})
-		return
+		return documentparser.Status{Enabled: false, Ready: false, Reason: "document parser is disabled"}
 	}
-	response.Success(ctx, c.parser.Status(ctx.Request.Context()))
+	return c.parser.Status(ctx)
 }
 
 // Upload 接收一个文件，登记为待收录文档后立即返回。
 //
 // 返回时文档是 pending：请求只做落盘与建行，解析与向量化由 rag.Worker 在后台推进。
-// 调用方拿响应里的 id 轮询 GET /knowledge/documents/:id 看进度。
+// 调用方拿响应里的 id 订阅 GET /knowledge/documents/:id/events 看进度（见 Events）；
+// 单篇详情（GET /knowledge/documents/:id）仍然可以随时查一次当前状态。
 func (c *Controller) Upload(ctx *gin.Context) {
 	header, err := ctx.FormFile(uploadFieldName)
 	if err != nil {
@@ -131,11 +175,103 @@ func (c *Controller) Upload(ctx *gin.Context) {
 	response.SuccessWithMessage(ctx, "文档已收录", document)
 }
 
+// Events 用 SSE 推送一篇文档的收录进度，替掉前端每秒一次的详情轮询。
+//
+// 为什么是服务端轮询数据库，而不是让 rag.Worker 主动推：worker 在另一个包、
+// 也不持有 HTTP 连接，让它发事件要多一层进程内总线；而这里每秒查一条文档的代价，
+// 与前端原先每秒一次 GET 完全相同 —— 换掉的是往返、连接建立与请求日志。
+// 将来若升级成事件驱动，这个接口对外的契约（事件名与帧的形状）可以保持不变。
+//
+// 契约（与前端 watchKnowledgeDocument 对齐）：
+//   - 连上先推当前帧：一帧 document、一帧 parser；
+//   - 之后有变化才推：文档变了推 document，解析环境进度变了推 parser；
+//   - document 到终态（ready / failed）时推完最后一帧就关流；
+//   - 中途取不到文档（例如用户删了这条记录）时推一帧 error 再关流。
+//
+// 它是一条"状态快照流"，不依赖事件回放：断线重连直接补当前帧，所以没有事件 id。
+func (c *Controller) Events(ctx *gin.Context) {
+	id, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.BadRequest(ctx, "文档 ID 无效")
+		return
+	}
+
+	requestCtx := ctx.Request.Context()
+	// 首帧必须在 SSE 头之前取到：文档压根不存在时，调用方该收到的是统一信封的
+	// JSON 错误，而不是一条"连上了但立刻报错"的事件流（响应头一出去就换不回来了）。
+	document, err := c.svc.Get(requestCtx, id)
+	if err != nil {
+		response.BadRequest(ctx, err.Error())
+		return
+	}
+
+	sse.Start(ctx)
+
+	// 推帧用"序列化后比对"：progress 的 payload 就是写上线的那份字节，
+	// 不依赖 DTO 字段的可比较性，以后加字段也不会漏推。
+	lastDocument, _ := json.Marshal(document)
+	lastParser, _ := json.Marshal(c.parserSnapshot(requestCtx))
+	_ = sse.EventJSON(ctx, eventDocument, lastDocument)
+	_ = sse.EventJSON(ctx, eventParser, lastParser)
+	if isSettled(document.Status) {
+		return
+	}
+
+	query := time.NewTicker(c.eventsQueryInterval)
+	defer query.Stop()
+	heartbeat := time.NewTicker(c.eventsHeartbeatInterval)
+	defer heartbeat.Stop()
+	deadline := time.NewTimer(c.eventsMaxDuration)
+	defer deadline.Stop()
+
+	for {
+		select {
+		case <-requestCtx.Done():
+			// 客户端断开了（关页面、主动 abort）：结束循环，不用再写。
+			return
+		case <-deadline.C:
+			_ = sse.Event(ctx, eventError, gin.H{"message": "进度推送已超时，请刷新查看最新状态"})
+			return
+		case <-heartbeat.C:
+			if sse.Heartbeat(ctx) != nil {
+				return
+			}
+		case <-query.C:
+			document, err := c.svc.Get(requestCtx, id)
+			if err != nil {
+				_ = sse.Event(ctx, eventError, gin.H{"message": err.Error()})
+				return
+			}
+			if payload, _ := json.Marshal(document); !bytes.Equal(payload, lastDocument) {
+				lastDocument = payload
+				if sse.EventJSON(ctx, eventDocument, payload) != nil {
+					return
+				}
+			}
+			if isSettled(document.Status) {
+				return
+			}
+			if payload, _ := json.Marshal(c.parserSnapshot(requestCtx)); !bytes.Equal(payload, lastParser) {
+				lastParser = payload
+				if sse.EventJSON(ctx, eventParser, payload) != nil {
+					return
+				}
+			}
+		}
+	}
+}
+
+// isSettled 判断文档是否到了终态。终态之后进度不会再变，流可以收了；
+// 前端也据此停止等待（见 stores/knowledge.ts 的 isSettled）。
+func isSettled(status string) bool {
+	return status == entity.KnowledgeDocumentStatusReady || status == entity.KnowledgeDocumentStatusFailed
+}
+
 // Retry 把一条收录失败的文档重新排队，让后台拿同一份原件再跑一遍。
 //
 // 不收新文件：失败的原件已经被归档在服务器上（data/uploads/failed/<文档ID>/），
 // 所以这次请求不需要 multipart，一个空 POST 就够。返回的文档是 pending，
-// 调用方接着轮询 Get 看进度 —— 与上传之后的流程完全一样。
+// 调用方接着订阅 Events 看进度 —— 与上传之后的流程完全一样。
 //
 // 三种"现在不行"翻成 409 而不是 400：问题不在这次请求的参数，而在此刻的状态 ——
 // 文档已经不是失败态、后台正忙着收别的、或者原件已经不在了（那只能重新上传）。

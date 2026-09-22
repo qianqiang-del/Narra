@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	einoembedding "github.com/cloudwego/eino/components/embedding"
+
+	"narra/internal/model/entity"
 	"narra/pkg/embedding"
 )
 
@@ -21,16 +24,16 @@ type flakyEmbedder struct {
 	dimension int
 }
 
-func (f *flakyEmbedder) Embed(ctx context.Context, inputs []string) ([][]float32, error) {
+func (f *flakyEmbedder) EmbedStrings(ctx context.Context, inputs []string, _ ...einoembedding.Option) ([][]float64, error) {
 	f.calls++
 	if f.calls <= f.failTimes {
 		return nil, f.err
 	}
 
-	vectors := make([][]float32, len(inputs))
+	vectors := make([][]float64, len(inputs))
 	for index := range inputs {
-		vectors[index] = make([]float32, f.dimension)
-		vectors[index][0] = float32(index)
+		vectors[index] = make([]float64, f.dimension)
+		vectors[index][0] = float64(index)
 	}
 	return vectors, nil
 }
@@ -168,5 +171,73 @@ func TestEmbedInBatchesDoesNotRetryCountMismatch(t *testing.T) {
 	}
 	if len(embedder.batches) != 1 {
 		t.Errorf("条数不符不该重试，实际调用 %d 次", len(embedder.batches))
+	}
+}
+
+// TestModelEmbedderConfigPrefersModelRow 校验"模型身份以模型行为准、连接信息以全局配置为准"。
+//
+// 这条判断是收录与检索共用的命门：模型行与配置一旦漂移而这里没对齐，查询向量会落到
+// 另一个语义空间 —— 相似度照样算得出来、不报任何错，只是排序全是噪声。
+func TestModelEmbedderConfigPrefersModelRow(t *testing.T) {
+	global := testEmbeddingConfig()
+	global.BaseURL = "https://global.example.test/v1"
+	manager := embedding.NewManager(global)
+
+	baseURL := "https://model-gateway.example.test/v1"
+	cfg := modelEmbedderConfig(manager, &entity.EmbeddingModel{
+		Name:       "bge-m3",
+		Dimensions: 1024,
+		BaseURL:    &baseURL,
+	})
+
+	if cfg.Model != "bge-m3" || cfg.Dimensions != 1024 {
+		t.Fatalf("模型身份应当以模型行为准: %+v", cfg)
+	}
+	if cfg.BaseURL != baseURL {
+		t.Fatalf("模型行带地址时应当以它为准: %q", cfg.BaseURL)
+	}
+	if cfg.APIKey != global.APIKey || cfg.Timeout != global.Timeout || !cfg.Enabled {
+		t.Fatalf("密钥与超时应当来自全局配置: %+v", cfg)
+	}
+}
+
+// TestModelEmbedderConfigFallsBackToGlobal 校验模型行没有地址时沿用全局地址 ——
+// 空白是"没写"，不能当成"明确配成了空地址"，否则会去连一个不存在的相对地址。
+func TestModelEmbedderConfigFallsBackToGlobal(t *testing.T) {
+	global := testEmbeddingConfig()
+	global.BaseURL = "https://global.example.test/v1"
+	manager := embedding.NewManager(global)
+
+	blank := "   "
+	cases := map[string]*entity.EmbeddingModel{
+		"模型行没有地址":  {Name: "bge-m3", Dimensions: 1024},
+		"模型行地址是空白": {Name: "bge-m3", Dimensions: 1024, BaseURL: &blank},
+		"没有模型行":    nil,
+	}
+	for name, model := range cases {
+		if cfg := modelEmbedderConfig(manager, model); cfg.BaseURL != global.BaseURL {
+			t.Fatalf("%s：应当沿用全局地址，实际 %q", name, cfg.BaseURL)
+		}
+	}
+}
+
+// TestNewModelEmbedderFactoryBuildsEinoEmbedder 校验生产工厂真的造得出 Eino 适配器，
+// 且配置不合法时**在构造期**就报错 —— 收录与检索各自还有一道 Enabled 检查，
+// 这里是最后一道：真等到调用才发现，前面已经白解析了一份文档。
+func TestNewModelEmbedderFactoryBuildsEinoEmbedder(t *testing.T) {
+	factory := newModelEmbedderFactory(embedding.NewManager(testEmbeddingConfig()))
+	embedder, err := factory(&entity.EmbeddingModel{Name: testModelName, Dimensions: testVectorDims})
+	if err != nil {
+		t.Fatalf("合法配置应当能建出向量化能力: %v", err)
+	}
+	if _, ok := embedder.(*embedding.EinoEmbedder); !ok {
+		t.Fatalf("生产工厂应当返回 Eino 适配器，实际 %T", embedder)
+	}
+
+	disabled := testEmbeddingConfig()
+	disabled.Enabled = false
+	model := &entity.EmbeddingModel{Name: testModelName, Dimensions: testVectorDims}
+	if _, err := newModelEmbedderFactory(embedding.NewManager(disabled))(model); err == nil {
+		t.Fatal("向量服务未启用时应当在构造期报错")
 	}
 }

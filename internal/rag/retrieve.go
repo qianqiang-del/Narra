@@ -128,53 +128,29 @@ type RetrieveResult struct {
 	Hits []Hit
 }
 
-// queryEmbedderFactory 按"库里向量所属的那个模型"现建一个 Embedder。
-//
-// 与 embedderFactory 的差别只在模型从哪来，但这一条是检索的命门：查询串必须用
-// knowledge_embeddings.model_id 指的那个模型去向量化。用全局配置里的模型，
-// 一旦配置与模型行漂移（改了设置却没有重建切片），查询向量就落到了另一个语义空间 ——
-// 相似度照样算得出来、不报任何错，只是排序全是噪声。这类静默劣化最难查，
-// 所以模型由入参显式指定，而不是从配置里读。
-type queryEmbedderFactory func(model *entity.EmbeddingModel) (Embedder, error)
-
 // Retriever 是检索链路的门面。
 type Retriever struct {
 	search      ChunkSearcher
 	models      ModelRegistry
 	embedding   *embedding.Manager
-	newEmbedder queryEmbedderFactory
+	newEmbedder embedderFactory
 }
 
 // NewRetriever 创建检索器。
 //
-// embeddingManager 只用来取"当前生效的连接配置"（地址、密钥、超时），向量化用哪个模型
-// 以库里的默认模型为准（见 queryEmbedderFactory）。
+// embeddingManager 只用来取"当前生效的连接配置"（地址、密钥、超时）；向量化用哪个模型
+// 以库里的默认模型为准，见 embedderFactory 与 newModelEmbedderFactory。
 func NewRetriever(
 	search ChunkSearcher,
 	models ModelRegistry,
 	embeddingManager *embedding.Manager,
 ) *Retriever {
-	retriever := &Retriever{
-		search:    search,
-		models:    models,
-		embedding: embeddingManager,
+	return &Retriever{
+		search:      search,
+		models:      models,
+		embedding:   embeddingManager,
+		newEmbedder: newModelEmbedderFactory(embeddingManager),
 	}
-	retriever.newEmbedder = func(model *entity.EmbeddingModel) (Embedder, error) {
-		cfg := embeddingManager.Config()
-		cfg.Model = model.Name
-		cfg.Dimensions = int(model.Dimensions)
-		// 模型行上有自己的 base_url 时以它为准：同一个密钥配到不同网关的场景下，
-		// 全局配置里的地址可能根本托管不了这个模型。
-		if model.BaseURL != nil && strings.TrimSpace(*model.BaseURL) != "" {
-			cfg.BaseURL = *model.BaseURL
-		}
-		client, err := embedding.NewClient(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("向量服务配置不可用: %w", err)
-		}
-		return client, nil
-	}
-	return retriever
 }
 
 // Retrieve 两路召回并融合出 topK 条命中。

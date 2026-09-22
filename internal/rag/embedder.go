@@ -10,28 +10,74 @@ import (
 	"strings"
 	"time"
 
+	einoembedding "github.com/cloudwego/eino/components/embedding"
 	"go.uber.org/zap"
 
+	"narra/internal/model/entity"
+	"narra/pkg/config"
+	"narra/pkg/embedding"
 	"narra/pkg/logger"
 )
 
-// Embedder 是本模块对向量化能力的最小依赖面。
+// Embedder 是本模块对向量化能力的依赖面。
 //
-// 定义接口而不直接依赖 *embedding.Client，是为了让收录链路的测试能注入一个确定性的桩
-// （例如把每段文本映射成一个可预测的向量）：否则测一次切分与入库就要真的联网调一次
-// 向量服务，测试会退化成"看上游今天通不通"。*embedding.Client 的 Embed 签名与它完全一致。
-type Embedder interface {
-	Embed(ctx context.Context, inputs []string) ([][]float32, error)
+// 它**就是** Eino 的 embedding.Embedder（类型别名，不是另抄一份签名）：生产路径由
+// pkg/embedding 的 EinoEmbedder 实现，将来把收录或检索接进 Eino 的 indexer / retriever 时，
+// 同一个值可以直接传进去，不用再包一层适配。
+//
+// 之所以仍然"接口 + 工厂"而不是直接持有 *embedding.EinoEmbedder：测试要能注入一个
+// 确定性的桩（把每段文本映射成可预测的向量），否则测一次切分与入库就要真的联网调一次
+// 向量服务，测试会退化成"看上游今天通不通"。注入点是下面的 embedderFactory。
+type Embedder = einoembedding.Embedder
+
+// 编译期确认生产实现满足本模块的依赖面；上游接口签名变动时这里先编译失败。
+var _ Embedder = (*embedding.EinoEmbedder)(nil)
+
+// embedderFactory 按"这次要用哪个模型"现建一个 Embedder。
+//
+// 三个约束叠在一起才长成这样：
+//
+//   - **现建而不是持有**：Client 是配置快照（base_url 与 model 在构造时就固化了），
+//     启动时建一个长期持有，设置页改了地址或模型之后它不会跟着变，会静默把向量写到
+//     错误的模型下（见 pkg/embedding/eino.go 的提醒）。
+//   - **收模型行而不是只读全局配置**：查询串与切片必须用**库里向量所属的那个模型**去
+//     向量化。两者一旦漂移（改了设置却没重建切片），相似度照样算得出来、不报任何错，
+//     只是排序全是噪声 —— 这类静默劣化最难查。
+//   - **可换成桩**：它是本包唯一的注入点，测试用它把向量化变成确定性实现。
+type embedderFactory func(model *entity.EmbeddingModel) (Embedder, error)
+
+// newModelEmbedderFactory 是生产路径的工厂：按模型行 + 当前生效的连接配置现建 Eino 适配器。
+//
+// 收录与检索共用它，"用哪个模型、连哪个地址、超时多久"因此只有一处判断。
+func newModelEmbedderFactory(manager *embedding.Manager) embedderFactory {
+	return func(model *entity.EmbeddingModel) (Embedder, error) {
+		client, err := embedding.NewClient(modelEmbedderConfig(manager, model))
+		if err != nil {
+			return nil, fmt.Errorf("向量服务配置不可用: %w", err)
+		}
+		return embedding.NewEinoEmbedder(client)
+	}
 }
 
-// embedderFactory 现建一个 Embedder。
+// modelEmbedderConfig 把"库里的模型行"与"当前生效的连接配置"拼成一份向量化配置。
 //
-// 做成工厂而不是在构造时持有一个实例：Client 是配置快照（base_url 和 model 在构造时
-// 就固化了），启动时建一个长期持有，设置页改了地址或模型之后它不会跟着变，
-// 会静默把向量写到错误的模型下。所以每次收录都按当前生效配置现建一个。
+// 连接信息（密钥、超时）来自全局配置；模型身份（名字、维度、地址）以模型行为准 ——
+// 模型行上带了自己的 base_url 时也以它为准：同一个密钥配到不同网关的场景下，
+// 全局配置里的地址可能根本托管不了这个模型。
 //
-// 同时它也是这个包唯一的注入点：测试用一个返回桩的工厂替换它。
-type embedderFactory func() (Embedder, error)
+// 包级可见是为了能被单测直接验（纯函数，不建客户端、不发请求）。
+func modelEmbedderConfig(manager *embedding.Manager, model *entity.EmbeddingModel) config.EmbeddingConfig {
+	cfg := manager.Config()
+	if model == nil {
+		return cfg
+	}
+	cfg.Model = model.Name
+	cfg.Dimensions = int(model.Dimensions)
+	if model.BaseURL != nil && strings.TrimSpace(*model.BaseURL) != "" {
+		cfg.BaseURL = *model.BaseURL
+	}
+	return cfg
+}
 
 // embedBatchSize 每次向量化请求携带的切片数。
 //
@@ -54,13 +100,13 @@ var embedRetryBaseDelay = time.Second
 
 // embedInBatches 分批向量化，返回与 chunks 等长、顺序一致的向量。
 //
-// 返回值保持 []float32 而不是直接转成 pgvector 文本：维度校验和入库前的有限性检查
+// 返回值保持数值切片而不是直接转成 pgvector 文本：维度校验和入库前的有限性检查
 // 都要看原始数值，提前转成字符串就只能再解析回来。
 //
 // 每一批内部做有限次重试（见 embedBatchWithRetry）：收录一篇文档可能是几十批请求，
 // 任何一批撞上限流或网络抖动，整篇就会失败，而用户重试要从解析重新来过。
-func embedInBatches(ctx context.Context, embedder Embedder, chunks []Chunk) ([][]float32, error) {
-	vectors := make([][]float32, len(chunks))
+func embedInBatches(ctx context.Context, embedder Embedder, chunks []Chunk) ([][]float64, error) {
+	vectors := make([][]float64, len(chunks))
 
 	for start := 0; start < len(chunks); start += embedBatchSize {
 		end := start + embedBatchSize
@@ -89,7 +135,10 @@ func embedInBatches(ctx context.Context, embedder Embedder, chunks []Chunk) ([][
 // 只重试明确可恢复的错误：429、5xx、网络超时与连接错误（见 isRetryableEmbedError）。
 // 参数错误、向量条数或维度不对这类"再来一次也一样"的失败直接返回，不浪费时间。
 // 上层 ctx 被取消（关停）时立刻放弃，连退避等待也要能被打断。
-func embedBatchWithRetry(ctx context.Context, embedder Embedder, inputs []string) ([][]float32, error) {
+//
+// 调用的是 Eino 的 EmbedStrings（Embedder 是它的别名）；本模块不用它的 option，
+// 模型由工厂在构造时固化 —— 这比每次调用都传一遍更难写错。
+func embedBatchWithRetry(ctx context.Context, embedder Embedder, inputs []string) ([][]float64, error) {
 	var lastErr error
 
 	for attempt := 0; attempt < embedBatchAttempts; attempt++ {
@@ -102,7 +151,7 @@ func embedBatchWithRetry(ctx context.Context, embedder Embedder, inputs []string
 			}
 		}
 
-		batch, err := embedder.Embed(ctx, inputs)
+		batch, err := embedder.EmbedStrings(ctx, inputs)
 		if err == nil {
 			if len(batch) != len(inputs) {
 				// 条数不符是契约被破坏：同一批再问一次只会得到同样的结果，不重试。
@@ -149,22 +198,24 @@ func isRetryableEmbedError(err error) bool {
 
 // vectorLiteral 把向量转成 pgvector 的文本格式，如 "[0.1,0.2]"。
 //
-// 位宽用 32：Client 解析出来的就是 float32，按 64 位格式化会输出一串实际不存在的精度
-// （0.10000000149011612），既占空间又没有信息量。
+// 位宽用 32：pgvector 的 vector 列本身是单精度（float4），按 64 位格式化会输出一串
+// 最终会被数据库丢掉的精度（0.10000000149011612），既占空间又没有信息量。
+// 也正因为列是单精度，Eino 适配器返回的 float64 在这里按 32 位落地不引入额外损失 ——
+// 那些数值本来就从 Client 的 float32 解析结果逐位转上来的。
 //
 // NaN 与 Inf 必须在这里拦掉：它们在 SQL 文本里会被写成 "NaN" / "+Inf"，
 // pgvector 直接拒绝，报出来的是一个看不出根因的语法错误。上游服务返回坏向量是
 // 真实发生过的事，落到库里就是一批永远排序异常的向量，很难查。
-func vectorLiteral(vector []float32) (string, error) {
+func vectorLiteral(vector []float64) (string, error) {
 	if len(vector) == 0 {
 		return "", fmt.Errorf("%w: 向量为空", ErrInvalidVector)
 	}
 	values := make([]string, len(vector))
 	for index, value := range vector {
-		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return "", fmt.Errorf("%w: 第 %d 维不是有限数（NaN 或 Inf）", ErrInvalidVector, index+1)
 		}
-		values[index] = strconv.FormatFloat(float64(value), 'g', -1, 32)
+		values[index] = strconv.FormatFloat(value, 'g', -1, 32)
 	}
 	return "[" + strings.Join(values, ",") + "]", nil
 }
