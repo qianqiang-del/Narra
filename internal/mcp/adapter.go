@@ -10,14 +10,25 @@ import (
 	"github.com/eino-contrib/jsonschema"
 )
 
-// EinoTools 将 MCP 注册表中的工具转换为 Eino 的 BaseTool 列表；webSearch 为假时不挂任何工具。
+// EinoTools 把**内置工具**与 MCP 注册表中的**远端工具**合并成 Eino 的 BaseTool 列表。
+//
+// webSearch 只拦远端工具：为假时不返回它们，但内置工具（本服务自己实现的，
+// 目前是知识库检索 rag_retrieve）照常返回 —— 用户没开联网搜索，不等于不希望
+// agent 去查自己的资料。
+//
+// 闸门放在这里而不是调用方，是因为"哪些工具能上"取决于 Manager 手里的东西：
+// 内置工具已经在内存里，远端工具要先连过 server 才有。调用方只该回答"这次允不允许联网"。
+//
+// 内置工具排在前面并已排序（见 localToolList）：它们是本服务的核心能力，
+// 而远端工具取决于用户配了哪些 server，顺序不该随配置变化。
 func (m *Manager) EinoTools(ctx context.Context, webSearch bool) ([]tool.BaseTool, error) {
 	_ = ctx
+	result := m.localToolList()
 	if !webSearch {
-		return nil, nil
+		return result, nil
 	}
+
 	descriptors := m.ListTools()
-	result := make([]tool.BaseTool, 0, len(descriptors))
 	for _, descriptor := range descriptors {
 		inputSchema := new(jsonschema.Schema)
 		if err := json.Unmarshal(descriptor.InputSchema, inputSchema); err != nil {

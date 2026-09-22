@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudwego/eino/components/tool"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.uber.org/zap"
 	"narra/pkg/config"
@@ -46,6 +47,10 @@ type Manager struct {
 	servers  map[string]*serverState
 	registry *Registry
 	connect  clientFactory
+
+	// localTools 是本服务自己实现的工具（见 local.go），与远端注册表分开存：
+	// 注册表每次刷新都会整体重建，本地工具混进去会被无声抹掉。
+	localTools map[string]tool.BaseTool
 }
 
 // NewManager 创建空的 MCP 管理器，server 配置通过 Load 从数据库加载。

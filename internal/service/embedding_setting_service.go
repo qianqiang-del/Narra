@@ -210,9 +210,20 @@ func (s *embeddingSettingService) ensureDefaultModel(ctx context.Context, cfg co
 	// 挂在这里是因为这段代码是"换模型 / 改维度"的唯一入口 —— 启动时对齐（LoadActive）
 	// 与设置页保存都从这走，跟着它就不会漏建。
 	//
-	// 失败只让检索退化成顺序扫描、不影响正确性，所以告警即可、不上抛：
+	// 失败只让检索退化成顺序扫描、不影响正确性，所以记日志即可、不上抛：
 	// 为一条索引把"保存配置"判成失败是本末倒置。
+	//
+	// 两类别混为一谈：维度超过 pgvector 的 HNSW 上限是**模型的长期属性**（不会被修好，
+	// 检索也照常正确），每次启动报一条 Warn 像是在出事，降成 Info；
+	// 其余的失败（DDL 权限、数据库故障）才是真要人看的，保持 Warn。
 	if err := s.modelRepo.EnsureVectorIndex(ctx, model); err != nil {
+		if errors.Is(err, repository.ErrVectorIndexUnsupported) {
+			logger.Info("模型维度超过向量索引上限，跳过建索引；知识检索将走精确顺序扫描（结果不受影响）",
+				zap.String("model", cfg.Model),
+				zap.Int32("dimensions", model.Dimensions),
+			)
+			return nil
+		}
 		logger.Warn("为默认模型建立向量索引失败，知识检索将退化为顺序扫描",
 			zap.String("model", cfg.Model),
 			zap.Int32("dimensions", model.Dimensions),

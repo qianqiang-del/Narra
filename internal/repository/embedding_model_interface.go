@@ -40,6 +40,9 @@ type EmbeddingModelRepository interface {
 	// 它返回错误而不是自己告警 —— 建索引失败只影响检索速度、不影响正确性，
 	// 是否值得打断调用方（例如保存配置）由调用方判断。
 	//
+	// 维度超过 pgvector 的 HNSW 上限时返回包装了 ErrVectorIndexUnsupported 的错误：
+	// 调用方据此把"模型的长期属性"与"真正的故障"分开（前者提示，后者告警）。
+	//
 	// ⚠️ 必须在事务外调用：CREATE INDEX CONCURRENTLY 不能跑在事务块里。
 	EnsureVectorIndex(ctx context.Context, model *entity.EmbeddingModel) error
 }
