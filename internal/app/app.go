@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -220,6 +221,14 @@ func (a *App) initDependencies() error {
 	uploadDir := a.cfg.Storage.UploadDir
 	if uploadDir == "" {
 		uploadDir = "data/uploads"
+	}
+	// 统一成绝对路径再往三处注入（controller / service / worker）。
+	// 否则默认的 "data/uploads" 会原样记进 metadata.upload_path，而读取、重试与清理
+	// 都按"当时的 cwd"解析 —— 换个工作目录启动，失败原件就找不到了：
+	// 重试报"原件不在"，删除时的清理也会静默失效（文件永远留在磁盘上）。
+	uploadDir, err := filepath.Abs(uploadDir)
+	if err != nil {
+		return fmt.Errorf("解析上传目录的绝对路径失败: %w", err)
 	}
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 		return fmt.Errorf("创建上传目录失败: %w", err)

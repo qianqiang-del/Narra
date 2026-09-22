@@ -113,6 +113,11 @@ func TestKnowledgeReplaceChunksWritesThreeTables(t *testing.T) {
 	}
 
 	input := knowledgeTestReplacement(document.ID, modelID, 3)
+	// 状态机对齐真实链路：收录是先 MarkProcessing 再 ReplaceChunks，
+	// 仓储的终态写入只认处理中的行（见 ReplaceChunks 的实现）。
+	if err := repo.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("推进到 processing 失败: %v", err)
+	}
 	if err := repo.ReplaceChunks(ctx, document.ID, input); err != nil {
 		t.Fatalf("替换切片失败: %v", err)
 	}
@@ -180,6 +185,9 @@ func TestKnowledgeReplaceChunksRemovesPreviousChunksAndVectors(t *testing.T) {
 		t.Fatalf("创建文档失败: %v", err)
 	}
 
+	if err := repo.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("推进到 processing 失败: %v", err)
+	}
 	if err := repo.ReplaceChunks(ctx, document.ID, knowledgeTestReplacement(document.ID, modelID, 4)); err != nil {
 		t.Fatalf("首次替换失败: %v", err)
 	}
@@ -187,6 +195,11 @@ func TestKnowledgeReplaceChunksRemovesPreviousChunksAndVectors(t *testing.T) {
 		t.Fatalf("首次替换后向量数 = %d，期望 4", got)
 	}
 
+	// 二次替换同样要先回到 processing：一次成功的收录会把文档标成 ready，
+	// 而终态写入只接受处理中的行。
+	if err := repo.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("再次推进到 processing 失败: %v", err)
+	}
 	if err := repo.ReplaceChunks(ctx, document.ID, knowledgeTestReplacement(document.ID, modelID, 1)); err != nil {
 		t.Fatalf("二次替换失败: %v", err)
 	}
@@ -210,6 +223,9 @@ func TestKnowledgeReplaceChunksRollsBackOnVectorCountMismatch(t *testing.T) {
 	document := knowledgeTestDocument()
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
+	}
+	if err := repo.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("推进到 processing 失败: %v", err)
 	}
 	if err := repo.ReplaceChunks(ctx, document.ID, knowledgeTestReplacement(document.ID, modelID, 3)); err != nil {
 		t.Fatalf("首次替换失败: %v", err)
@@ -252,6 +268,41 @@ func TestKnowledgeReplaceChunksRejectsEmptyChunks(t *testing.T) {
 	}
 	if reloaded.Status == entity.KnowledgeDocumentStatusReady {
 		t.Error("没有切片的文档不能被标成 ready")
+	}
+}
+
+// 只有处理中的文档才能接收切片。这条守卫挡的是"处理期间文档被删掉/被推走"：
+// 少了它，切片会先按 FK 报错、或者写进一份已经 ready 的文档，
+// 而调用方拿到的是一个看不出根因的数据库错误。
+func TestKnowledgeReplaceChunksRejectsDocumentNotProcessing(t *testing.T) {
+	tx := testTx(t)
+	repo := NewKnowledgeDocumentRepository(tx)
+	ctx := context.Background()
+
+	modelID := knowledgeTestModelID(t, tx)
+	document := knowledgeTestDocument() // 停在 pending
+	if err := repo.Create(ctx, document); err != nil {
+		t.Fatalf("创建文档失败: %v", err)
+	}
+
+	err := repo.ReplaceChunks(ctx, document.ID, knowledgeTestReplacement(document.ID, modelID, 2))
+	if err == nil {
+		t.Fatal("文档不在 processing 时必须报错，不能写入切片")
+	}
+
+	if got := countRows(t, tx, &entity.KnowledgeChunk{}, "document_id = ?", document.ID); got != 0 {
+		t.Errorf("被拒绝的替换不该留下切片，实际 %d 条", got)
+	}
+	if got := countRows(t, tx, &entity.KnowledgeEmbedding{}, "model_id = ?", modelID); got != 0 {
+		t.Errorf("被拒绝的替换不该留下向量，实际 %d 条", got)
+	}
+
+	reloaded, err := repo.GetByID(ctx, document.ID)
+	if err != nil {
+		t.Fatalf("回读文档失败: %v", err)
+	}
+	if reloaded.Status != entity.KnowledgeDocumentStatusPending {
+		t.Errorf("状态被改动了：%q，期望仍是 pending", reloaded.Status)
 	}
 }
 

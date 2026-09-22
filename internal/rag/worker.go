@@ -179,17 +179,35 @@ func (w *Worker) run() {
 func (w *Worker) process(ctx context.Context) {
 	documents, err := w.store.ListPending(ctx, w.concurrency)
 	if err != nil {
+		logger.Warn("取待处理文档失败，本轮跳过", zap.Error(err))
 		return
 	}
 	var group sync.WaitGroup
 	for _, document := range documents {
 		claimed, err := w.store.Claim(ctx, document.ID)
-		if err != nil || !claimed {
+		if err != nil {
+			logger.Warn("抢占任务失败，跳过这一条",
+				zap.Uint64("document_id", document.ID), zap.Error(err))
+			continue
+		}
+		if !claimed {
 			continue
 		}
 		group.Add(1)
 		go func(document entity.KnowledgeDocument) {
 			defer group.Done()
+			// 一个任务的 panic 不能带走整个进程：Go 里任何 goroutine 的未捕获 panic
+			// 都会终止程序。这里兜住并放弃本次处理 —— 心跳会随之停止，
+			// 该行几分钟内会被周期 ResetStale 回收重新排队。
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					logger.Error("收录任务 panic，已放弃本次处理",
+						zap.Uint64("document_id", document.ID),
+						zap.Any("panic", recovered),
+						zap.Stack("stack"),
+					)
+				}
+			}()
 			w.processOne(ctx, document)
 		}(document)
 	}
@@ -207,6 +225,8 @@ func (w *Worker) process(ctx context.Context) {
 //   - 成功：内容已经进库，原件没有用了，删掉整个暂存目录；
 //   - 失败：原件**留下来**并归档到 failed/<文档ID>/ —— 它是重试的输入，
 //     删掉就等于把"重试这一份"的能力一起删了，用户只能重新上传一遍；
+//   - 失败但文档已被删除：直接清掉暂存目录。没有重试对象，留着只会变成
+//     两张表都查不到的孤儿文件（见 processOne 里 documentExists 那一步）；
 //   - 取消（服务关停）：既不归档也不落终态，原件留在暂存目录不动 ——
 //     这一行很快会被周期 ResetStale 打回 pending，下次处理还要原样用它。
 func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocument) {
@@ -218,12 +238,13 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 	}
 
 	stopHeartbeat := w.startHeartbeat(ctx, document.ID)
+	defer stopHeartbeat() // 必须用 defer：任务 panic 时也要把心跳停掉，否则这一行永远不会被回收
+
 	_, err := w.ingester.processExistingFile(ctx, &document, FileInput{
 		Path:      path,
 		Title:     taskTitle(document.Metadata, document.Title),
 		SourceURI: sourceURI(document),
 	})
-	stopHeartbeat()
 
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -236,11 +257,21 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 		// 界面上只显示一句中文摘要（failIngest 写进 metadata 的 error 键），
 		// 完整诊断（错误码 + stderr 原文）躺在 metadata 的 error_detail 里。
 		// 这里再留一条日志：排障时不该为了看一句 traceback 去翻某一行文档的 JSON。
-		logger.Warn("文件收录失败，失败原件将归档保留",
+		logger.Warn("文件收录失败",
 			zap.Uint64("document_id", document.ID),
 			zap.String("path", path),
 			zap.Error(err),
 		)
+
+		// 归档之前先确认这一行还在：用户可能在处理期间把文档或上传记录删了。
+		// 那时归档出来的 failed/<ID>/ 两张表都查不到、任何清理路径也够不着，
+		// 只会永远留在磁盘上。文档都没了，也就没有重试对象，原件不必保留。
+		if !w.ingester.documentExists(document.ID) {
+			logger.Info("文档已被删除，不再归档失败原件，直接清理暂存目录",
+				zap.Uint64("document_id", document.ID))
+			w.discardStagedFile(path)
+			return
+		}
 		w.archiveStagedFile(ctx, document.ID, path)
 		return
 	}
@@ -293,6 +324,11 @@ func (w *Worker) archiveStagedFile(ctx context.Context, documentID uint64, path 
 		// 原件已经不在了（metadata 里的路径可能早被人工动过），没有东西要归档。
 		return
 	}
+	if !w.isStagingDir(source) {
+		// 路径来自 metadata，写入者不受约束；形态不对就不碰，免得把删除动作带到别处。
+		logger.Warn("失败原件不在可归档的暂存目录内，跳过归档", zap.String("dir", source))
+		return
+	}
 
 	target := filepath.Join(w.uploadRoot, failedDirName, strconv.FormatUint(documentID, 10))
 	// 重试之后又失败时会第二次走到这里，而这一回原件已经躺在归档目录里了
@@ -340,11 +376,41 @@ func (w *Worker) archiveStagedFile(ctx context.Context, documentID uint64, path 
 // 而失败恰恰是最需要把文件留下的那条路。返回值也不再丢弃 ——
 // 删不掉是有信息的（Windows 上常见于文件仍被解析器进程占用），
 // 而这个目录此后没有任何人会再来清理它。
+//
+// 删之前先收窄范围：只允许删 <root>/pending/<一层> 或 <root>/failed/<一层>。
+// path 来自 metadata、写入者不受约束；如果它直接落在 root 下，
+// filepath.Dir 就是 root 本身，RemoveAll 会把整棵上传目录（含别的待处理原件）清空。
 func (w *Worker) discardStagedFile(path string) {
 	directory := filepath.Dir(path)
+	if !w.isStagingDir(directory) {
+		logger.Warn("暂存目录不在可清理范围内，跳过删除", zap.String("dir", directory))
+		return
+	}
 	if err := os.RemoveAll(directory); err != nil {
 		logger.Warn("清理上传暂存目录失败", zap.String("dir", directory), zap.Error(err))
 	}
+}
+
+// isStagingDir 判断一个目录是否是我们管理的暂存目录（上传根目录下的两层之一，
+// 即 pending/<一层> 或 failed/<一层>）。
+//
+// 判据只要求"恰好比根目录深两层"：这样删除的影响范围永远限定在某个暂存子目录里，
+// 不可能落到根目录本身。不做目录名白名单 —— 上传根目录整个归本服务管，
+// 多一份白名单只会多一个会漂移的口径。
+func (w *Worker) isStagingDir(dir string) bool {
+	root, err := filepath.Abs(w.uploadRoot)
+	if err != nil {
+		return false
+	}
+	target, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return len(strings.Split(rel, string(os.PathSeparator))) == 2
 }
 
 // uploadPath 从 metadata 里读上传时记下的暂存文件路径，读不到返回空串。

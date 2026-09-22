@@ -457,7 +457,7 @@ func (s *knowledgeService) Delete(ctx context.Context, id uint64) error {
 	if err := deleter.Delete(ctx, id); err != nil {
 		return fmt.Errorf("删除知识文档失败: %w", err)
 	}
-	if path := metadataUploadPath(document.Metadata); path != "" && s.isUploadPath(path) {
+	if path := metadataUploadPath(document.Metadata); path != "" && s.removableStagingDir(path) {
 		_ = os.RemoveAll(filepath.Dir(path))
 	}
 	return nil
@@ -517,7 +517,7 @@ func (s *knowledgeService) DeleteUploadRecord(ctx context.Context, id uint64) er
 		return fmt.Errorf("删除上传记录失败: %w", err)
 	}
 
-	if stagedPath != "" && s.isUploadPath(stagedPath) {
+	if stagedPath != "" && s.removableStagingDir(stagedPath) {
 		_ = os.RemoveAll(filepath.Dir(stagedPath))
 	}
 	return nil
@@ -547,6 +547,35 @@ func toUploadRecordResponse(view entity.KnowledgeUploadRecordView) responsedto.K
 		out.Error = *view.ErrorMessage
 	}
 	return out
+}
+
+// removableStagingDir 判断一条 upload_path 是否指向我们管理的暂存文件 ——
+// 也就是"它的父目录可以安全删掉"。
+//
+// 与 isUploadPath 的区别在严格程度。那个只要求路径落在上传根目录内（用于读，
+// 例如重试前确认原件还在）；而清理动作删的是 filepath.Dir(path)，
+// 所以这里必须要求形态精确：文件恰好比根目录深两层
+// （<root>/pending/<一层>/<文件> 或 <root>/failed/<一层>/<文件>）。
+// 放宽的后果很具体：如果 metadata 里是 <root>/upload.md，Dir 就是 root 本身，
+// RemoveAll 会把整棵上传目录清空 —— 包括其他正在处理的原件。
+func (s *knowledgeService) removableStagingDir(path string) bool {
+	if strings.TrimSpace(s.uploadDir) == "" {
+		// 没配上上传目录（早期调用点）时一律不清理，避免按 cwd 误判。
+		return false
+	}
+	root, err := filepath.Abs(s.uploadDir)
+	if err != nil {
+		return false
+	}
+	target, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return len(strings.Split(rel, string(os.PathSeparator))) == 3
 }
 
 // metadataUploadPath 从 metadata 里取上传时的暂存文件路径，读不到返回空串。
