@@ -46,6 +46,20 @@ type Deps struct {
 	Model         Model    // 真实模型或假模型，见 model.go
 	Director      Director // 选人策略；留空则用"轮流发言"
 	Logger        *zap.Logger
+
+	// Compactions 读写历史摘要，供上下文压缩使用。
+	Compactions repository.ContextCompactionRepository
+
+	// Summarizer 把过长的历史压成摘要；与 Model 分开，见 model.go 的说明。
+	Summarizer Summarizer
+
+	// ContextBudget 是组装上下文时的 token 上限，超过就触发摘要压缩；0 表示用默认值。
+	// 做成可配是为了让测试能用很小的值把压缩逼出来 —— 真要造出几千 token 的对话，
+	// 用例又慢又难读。
+	ContextBudget int
+
+	// ContextKeepRecent 是压缩时保留多少条最近消息不进摘要；0 表示用默认值。
+	ContextKeepRecent int
 }
 
 // Orchestrator 跑完一次完整的课堂讨论。
