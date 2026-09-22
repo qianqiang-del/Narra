@@ -16,6 +16,19 @@ type Model interface {
 	Generate(ctx context.Context, request GenerationRequest) (GenerationResponse, error)
 }
 
+// Summarizer 是"把一段老对话压成一段短话"的能力。
+//
+// 单独开一个接口，而不是复用 Model：Generate 的返回里带着"下一步动作"，
+// 那是"轮到某个角色发言"才需要的东西，摘要不该被它污染；两者的提示词也完全不同。
+// 合在一个方法里，早晚要加参数去区分"这次是发言还是摘要"。
+type Summarizer interface {
+	// Summarize 把 messages 压成一段摘要。
+	//
+	// previous 是上一版摘要正文（没有摘要时为空串）。摘要链是累积的：
+	// 新摘要要吸收上一版，否则更早那些被压掉的内容就此丢失，模型会以为讨论刚开始。
+	Summarize(ctx context.Context, previous string, messages []HistoryMessage) (string, error)
+}
+
 // GenerationRequest 是一次发言请求。
 //
 // 只带"角色现在需要知道的"：他是谁、大家在聊什么、之前谁说过什么。
@@ -75,6 +88,20 @@ func (FakeModel) Generate(ctx context.Context, request GenerationRequest) (Gener
 		InputTokens:  estimateTokens(topicAndHistory(request)),
 		OutputTokens: estimateTokens(content),
 	}, nil
+}
+
+// Summarize 返回一段格式固定、远短于原文的假摘要。
+//
+// 必须远短于原文：库里有一条 CHECK 要求 summary_tokens < source_tokens，
+// 假摘要要是写长了，压缩会在落库那一步被拒绝 —— 测试就会去查一个并不存在的压缩 bug。
+func (FakeModel) Summarize(ctx context.Context, previous string, messages []HistoryMessage) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(
+		"【摘要】此前 %d 条发言已压缩：围绕主题来回讨论过，更早的结论继续有效。（假模型生成，未调用真实大模型）",
+		len(messages),
+	), nil
 }
 
 // topicAndHistory 把这次请求的输入拼成一段文本，只为估算 token 用。
