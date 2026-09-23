@@ -106,30 +106,6 @@ func (r *messageRepository) ListByConversation(ctx context.Context, conversation
 	return messages, err
 }
 
-// ListRecentByConversation 取该对话最新的 limit 条消息，返回时按序号升序。
-//
-// 用"倒序取 N 条再翻正"而不是"先数总数、再从头取后面那段"：消息可能被单独删除，
-// 序号会有空洞，"总数 - N"算出来的起点会偏，取到的条数也不对。
-//
-// 交给调用方之前必须翻回正序：这段数据的用途是喂给模型当对话上下文，
-// 顺序反了模型看到的对话是倒着发生的。
-func (r *messageRepository) ListRecentByConversation(ctx context.Context, conversationID uint64, limit int) ([]entity.ConversationMessage, error) {
-	var messages []entity.ConversationMessage
-	err := conn(ctx, r.db).
-		Where("conversation_id = ?", conversationID).
-		Order("sequence_no DESC").
-		Limit(normalizeLimit(limit)).
-		Find(&messages).Error
-	if err != nil {
-		return nil, err
-	}
-
-	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
-		messages[left], messages[right] = messages[right], messages[left]
-	}
-	return messages, nil
-}
-
 func (r *messageRepository) CountByConversation(ctx context.Context, conversationID uint64) (int64, error) {
 	var count int64
 	err := conn(ctx, r.db).

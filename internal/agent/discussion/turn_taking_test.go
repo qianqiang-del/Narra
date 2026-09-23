@@ -78,8 +78,12 @@ func (f *fixture) newOrchestratorWith(t *testing.T, model Model, director Direct
 		Messages:      f.messages,
 		Runs:          f.runs,
 		Turns:         f.turns,
+		Compactions:   f.compactions,
 		Model:         model,
-		Director:      director,
+		// 摘要器沿用假模型，理由同 orchestrator_test.go 的 newOrchestrator：
+		// 这些用例不触发压缩，只是装配校验要求非空。
+		Summarizer: FakeModel{},
+		Director:   director,
 	})
 	if err != nil {
 		t.Fatalf("装配编排器失败: %v", err)
@@ -367,6 +371,11 @@ func TestTurnTakingGivesUpAfterRetry(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("重试后仍失败时应当返回错误")
+	}
+	// 失败时 Run 仍会返回带 RunID 的结果（见 Run 的契约说明）。这里显式断言一句：
+	// 既守住这个契约，也说明下面用 result.RunID 不是"err 之后碰了零值"。
+	if result.RunID == 0 {
+		t.Fatal("失败时也应返回 RunID，否则排查时找不到是哪一趟活失败了")
 	}
 
 	run, loadErr := f.runs.FindByID(ctx, result.RunID)
