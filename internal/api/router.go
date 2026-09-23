@@ -2,6 +2,7 @@ package api
 
 import (
 	classroomv1 "narra/internal/api/v1/classroom"
+	conversationv1 "narra/internal/api/v1/conversation"
 	"narra/internal/api/v1/embedding"
 	knowledgev1 "narra/internal/api/v1/knowledge"
 	"narra/internal/api/v1/llm"
@@ -17,25 +18,27 @@ import (
 
 // Router 路由
 type Router struct {
-	roleCtrl      *role.Controller
-	embeddingCtrl *embedding.Controller
-	voiceCtrl     *voice.Controller
-	mcpCtrl       *mcpv1.Controller
-	llmCtrl       *llm.Controller
-	classroomCtrl *classroomv1.Controller
-	knowledgeCtrl *knowledgev1.Controller
+	roleCtrl         *role.Controller
+	embeddingCtrl    *embedding.Controller
+	voiceCtrl        *voice.Controller
+	mcpCtrl          *mcpv1.Controller
+	llmCtrl          *llm.Controller
+	classroomCtrl    *classroomv1.Controller
+	knowledgeCtrl    *knowledgev1.Controller
+	conversationCtrl *conversationv1.Controller
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, classroomSvc service.ClassroomService, knowledgeSvc service.KnowledgeService, uploadDir string, parser documentparser.Parser) *Router {
+func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, classroomSvc service.ClassroomService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, uploadDir string, parser documentparser.Parser) *Router {
 	return &Router{
-		roleCtrl:      role.NewController(roleSvc),
-		embeddingCtrl: embedding.NewController(embeddingSvc),
-		voiceCtrl:     voice.NewController(voiceSvc),
-		mcpCtrl:       mcpv1.NewController(mcpSvc),
-		llmCtrl:       llm.NewController(llmSvc),
-		classroomCtrl: classroomv1.NewController(classroomSvc),
-		knowledgeCtrl: knowledgev1.NewController(knowledgeSvc, uploadDir, parser),
+		roleCtrl:         role.NewController(roleSvc),
+		embeddingCtrl:    embedding.NewController(embeddingSvc),
+		voiceCtrl:        voice.NewController(voiceSvc),
+		mcpCtrl:          mcpv1.NewController(mcpSvc),
+		llmCtrl:          llm.NewController(llmSvc),
+		classroomCtrl:    classroomv1.NewController(classroomSvc),
+		knowledgeCtrl:    knowledgev1.NewController(knowledgeSvc, uploadDir, parser),
+		conversationCtrl: conversationv1.NewController(conversationSvc),
 	}
 }
 
@@ -65,6 +68,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		llm.RegisterRoutes(v1, r.llmCtrl)
 		classroomv1.RegisterRoutes(v1, r.classroomCtrl)
 		knowledgev1.RegisterRoutes(v1, r.knowledgeCtrl)
+		conversationv1.RegisterRoutes(v1, r.conversationCtrl)
 	}
 }
 

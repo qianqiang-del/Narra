@@ -78,6 +78,7 @@ func (f *fixture) newOrchestratorWith(t *testing.T, model Model, director Direct
 		Messages:      f.messages,
 		Runs:          f.runs,
 		Turns:         f.turns,
+		Events:        f.events,
 		Compactions:   f.compactions,
 		Model:         model,
 		// 摘要器沿用假模型，理由同 orchestrator_test.go 的 newOrchestrator：
