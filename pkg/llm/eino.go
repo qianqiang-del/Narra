@@ -54,20 +54,27 @@ func (m *EinoChatModel) Stream(ctx context.Context, in []*schema.Message, opts .
 	if err != nil {
 		return nil, err
 	}
-	upstream, err := m.client.ChatStream(ctx, request)
+
+	// 下游提前不读了（消费方收手、上层取消）时，光停住转发还不够：上游 HTTP 请求
+	// 还挂着，模型还在那边白生成。派生一个可取消的 ctx，让转发协程退出时把它一起收掉。
+	streamCtx, cancel := context.WithCancel(ctx)
+
+	upstream, err := m.client.ChatStream(streamCtx, request)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 
 	reader, writer := schema.Pipe[*schema.Message](8)
 	go func() {
+		defer cancel()
 		defer writer.Close()
 		for chunk := range upstream {
 			if chunk.Err != nil {
 				writer.Send(nil, chunk.Err)
 				return
 			}
-			// 下游不再读了（消费方提前收手）就别再往里塞。
+			// 下游不再读了就别再往里塞；defer cancel 会把上游请求一并取消。
 			if writer.Send(fromStreamChunk(chunk), nil) {
 				return
 			}
