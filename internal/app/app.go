@@ -23,6 +23,7 @@ import (
 	"narra/internal/model/entity"
 	"narra/internal/rag"
 	"narra/internal/repository"
+	"narra/internal/retention"
 	"narra/internal/service"
 	"narra/pkg/config"
 	"narra/pkg/crypto"
@@ -43,6 +44,7 @@ type App struct {
 	mcpManager      *internalmcp.Manager
 	worker          *bootstrap.WorkerRuntime
 	knowledgeWorker *rag.Worker
+	retention       *retention.Cleaner
 	langfuseFlush   func()
 }
 
@@ -202,6 +204,11 @@ func (a *App) initDependencies() error {
 	knowledgeDocumentRepo := repository.NewKnowledgeDocumentRepository(a.postgresDB)
 	knowledgeUploadRecordRepo := repository.NewKnowledgeUploadRecordRepository(a.postgresDB)
 	knowledgeSearchRepo := repository.NewKnowledgeSearchRepository(a.postgresDB)
+	// 对话与事件是两个仓储：前者回答"这条对话在不在"，后者是 SSE 的事件来源。
+	// 事件由编排 / 工作台在各自事务里写（见 ConversationEventRepository.AppendNext），
+	// SSE 侧只读。
+	conversationRepo := repository.NewConversationRepository(a.postgresDB)
+	conversationEventRepo := repository.NewConversationEventRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
 	roleSvc := service.NewRoleService(roleRepo)
@@ -293,12 +300,22 @@ func (a *App) initDependencies() error {
 	a.worker = workerRuntime
 	classroomSvc := service.NewClassroomService(classroomRepo, classroomAgentRepo, roleRepo, llmProviderSvc, queue, txManager)
 
+	// 对话事件流（SSE）：执行过程与最终结果从 conversation_events 里增量读、推给前端。
+	// 事件的写入不经过服务层 —— 它属于产生内容的那条链路（编排 / 工作台）的事务。
+	conversationSvc := service.NewConversationService(conversationRepo, conversationEventRepo)
+
+	// 过程数据的过期清理：expires_at 在写入时就按各自保留期算好了（事件 7 天），
+	// 清理侧只认这一列。没有它事件表会一直涨，而它记录的事实另有更长的生命周期。
+	a.retention = retention.New(
+		retention.Table{Name: "conversation_events", Store: conversationEventRepo},
+	)
+
 	// 对账：队列里已不会继续处理的 generating 课程，归档的判失败、丢了的重投。
 	if err := bootstrap.ReconcileGenerating(context.Background(), classroomDeps, workerRuntime, queue); err != nil {
 		return err
 	}
 
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, knowledgeSvc, uploadDir, parser)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, knowledgeSvc, conversationSvc, uploadDir, parser)
 	return nil
 }
 
@@ -372,6 +389,11 @@ func (a *App) Run() {
 		}
 	}
 
+	// 启动过期数据清理（启动时先清一轮，之后按周期跑）
+	if a.retention != nil {
+		a.retention.Start()
+	}
+
 	// 启动 HTTP 服务器
 	go func() {
 		logger.Info("HTTP 服务器启动",
@@ -412,6 +434,15 @@ func (a *App) gracefulShutdown() {
 			logger.Error("知识库 worker 未在预算内停稳，可能留下 processing 行（下次启动会回收）", zap.Error(err))
 		}
 		workerCancel()
+	}
+
+	// 过期清理要先于关库停下：它下一轮可能正好在写 DELETE。
+	if a.retention != nil {
+		retentionCtx, retentionCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := a.retention.Stop(retentionCtx); err != nil {
+			logger.Error("过期清理任务未在预算内停稳", zap.Error(err))
+		}
+		retentionCancel()
 	}
 
 	if a.router != nil {

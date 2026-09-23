@@ -72,6 +72,8 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface SseEvent {
   /** 事件名；服务端没写 event 行时按协议默认 `message` */
   event: string
+  /** 事件 id（id 行）；服务端没写时为 undefined。断线续传用它当起点 */
+  id?: string
   /** data 行拼接结果（多行用 \n 连接） */
   data: string
 }
@@ -139,6 +141,7 @@ export async function* streamEvents(path: string, signal?: AbortSignal): AsyncGe
 /** 解析一个事件块（不含结尾空行）；没有 data 的块按协议忽略 */
 function parseSseBlock(block: string): SseEvent | null {
   let event = 'message'
+  let id: string | undefined
   const data: string[] = []
   for (const line of block.split(/\r?\n/)) {
     if (line === '' || line.startsWith(':')) continue // 注释（心跳就是它）
@@ -148,7 +151,8 @@ function parseSseBlock(block: string): SseEvent | null {
     if (value.startsWith(' ')) value = value.slice(1)
     if (field === 'event') event = value
     else if (field === 'data') data.push(value)
+    else if (field === 'id') id = value
   }
   if (data.length === 0) return null
-  return { event, data: data.join('\n') }
+  return { event, id, data: data.join('\n') }
 }
