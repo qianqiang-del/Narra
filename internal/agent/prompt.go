@@ -15,11 +15,10 @@ var promptFS embed.FS
 
 // 文件名写错会在包初始化时 panic（走 mustPromptFile），跑一次测试就能发现。
 const (
-	promptDirRoles       = "prompts/roles"
-	promptFileNarration  = "prompts/tasks/narration.md"
-	promptFileOutline    = "prompts/tasks/outline.md"
-	promptFileScene      = "prompts/tasks/scene.md"
-	promptFileRoundtable = "prompts/tasks/roundtable.md"
+	promptDirRoles      = "prompts/roles"
+	promptFileNarration = "prompts/tasks/narration.md"
+	promptFileOutline   = "prompts/tasks/outline.md"
+	promptFileScene     = "prompts/tasks/scene.md"
 )
 
 // PromptTask 这次要干什么活。角色层回答「你是谁」，任务层回答「这次干什么活」。
@@ -54,8 +53,8 @@ var roleLayer = map[string]string{
 // taskLayer 任务层，以及只有哪个角色大类接得到这个任务。
 //
 // 目前只有讲稿一个任务，且只有教师有：讲解只由教师发声
-// （internal/model/entity/scene_segment.go:20）。播放期的圆桌发言不分角色大类
-// （谁发言都守同一套规则），所以不进这张表，走下面的 BuildRoundtablePrompt。
+// （internal/model/entity/scene_segment.go:20）。播放期的圆桌发言不在本模块，
+// 那边的任务层加在 prompts/tasks/ 下，在这里补一行。
 //
 // 不需要角色的任务（大纲、场景内容）不在这张表里——见下面的 roleFreeTasks。
 var taskLayer = map[PromptTask]struct {
@@ -70,9 +69,6 @@ var roleFreeTasks = map[PromptTask]string{
 	TaskOutline: mustPromptFile(promptFileOutline),
 	TaskScene:   mustPromptFile(promptFileScene),
 }
-
-// roundtableTask 是圆桌发言的任务层：每个角色大类都要接，所以单独放。
-var roundtableTask = mustPromptFile(promptFileRoundtable)
 
 // BuildSystemPrompt 装配一个角色在指定任务下的完整系统提示词。
 //
@@ -103,20 +99,6 @@ func BuildRoleIdentity(a entity.PresetAgent) (string, bool) {
 		return "", false
 	}
 	s := joinSections(roleHead, role)
-	return strings.NewReplacer("{{agentName}}", a.Name, "{{persona}}", a.Persona).Replace(s), true
-}
-
-// BuildRoundtablePrompt 装配圆桌发言的系统提示词：身份框架 + 大类规范 + persona + 圆桌任务层。
-//
-// 与 BuildSystemPrompt 的区别在任务层：讲稿等任务是"某个大类专属"，圆桌发言是
-// "谁发言都守同一套规则"，所以这里不挑 role_type，只要大类在角色层里就能拼。
-// 第二个返回值为 false 表示大类不认识，调用方不能拿空串当提示词用。
-func BuildRoundtablePrompt(a entity.PresetAgent) (string, bool) {
-	role, ok := roleLayer[a.RoleType]
-	if !ok {
-		return "", false
-	}
-	s := joinSections(roleHead, role, roundtableTask)
 	return strings.NewReplacer("{{agentName}}", a.Name, "{{persona}}", a.Persona).Replace(s), true
 }
 
