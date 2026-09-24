@@ -31,10 +31,6 @@ type Decision struct {
 	SpeakerIndex int    // 下一位发言人的下标；Stop 为 true 时无意义
 	Stop         bool   // 是否就此停下
 	StopReason   string // 停止原因，取值见 entity.RunStop*
-
-	// Reason 是给用户看的"为什么这么走"，写进 director.decision 事件。
-	// 选人策略自己填；留空时编排层用一句通用说明兜底。它只影响展示，不影响判断。
-	Reason string
 }
 
 // RoundRobinDirector 让每个角色轮流发言，全员都说过话就结束。
@@ -47,10 +43,10 @@ type RoundRobinDirector struct{}
 func (RoundRobinDirector) Decide(state DiscussionState) Decision {
 	for index := range state.Participants {
 		if index < len(state.Spoken) && state.Spoken[index] == 0 {
-			return Decision{SpeakerIndex: index, Reason: "按顺序轮换到下一位"}
+			return Decision{SpeakerIndex: index}
 		}
 	}
-	return Decision{Stop: true, StopReason: entity.RunStopCompleted, Reason: "全员都已发过言"}
+	return Decision{Stop: true, StopReason: entity.RunStopCompleted}
 }
 
 // TurnTakingDirector 按"上一轮给出的下一步动作"决定下一个谁说话。
@@ -71,14 +67,14 @@ type TurnTakingDirector struct{}
 func (TurnTakingDirector) Decide(state DiscussionState) Decision {
 	switch state.LastAction {
 	case entity.AgentTurnActionAskUser:
-		return Decision{Stop: true, StopReason: entity.RunStopWaiting, Reason: "上一位要求先听用户的回答"}
+		return Decision{Stop: true, StopReason: entity.RunStopWaiting}
 	case entity.AgentTurnActionEnd:
-		return Decision{Stop: true, StopReason: entity.RunStopCompleted, Reason: "上一位宣布讨论结束"}
+		return Decision{Stop: true, StopReason: entity.RunStopCompleted}
 	case entity.AgentTurnActionContinue:
 		// "继续"是对同一个人的指令，所以只在确实有人说过话时才算数；
 		// 第一轮就收到 continue 时退回默认轮换，否则会挑出一个不存在的发言人。
 		if state.LastSpeaker >= 0 && state.LastSpeaker < len(state.Participants) {
-			return Decision{SpeakerIndex: state.LastSpeaker, Reason: "上一位要求继续补充"}
+			return Decision{SpeakerIndex: state.LastSpeaker}
 		}
 	}
 	return nextUnspoken(state)
@@ -88,10 +84,10 @@ func (TurnTakingDirector) Decide(state DiscussionState) Decision {
 func nextUnspoken(state DiscussionState) Decision {
 	for index := range state.Participants {
 		if index < len(state.Spoken) && state.Spoken[index] == 0 {
-			return Decision{SpeakerIndex: index, Reason: "换下一位还没发过言的成员"}
+			return Decision{SpeakerIndex: index}
 		}
 	}
-	return Decision{Stop: true, StopReason: entity.RunStopCompleted, Reason: "全员都已发过言"}
+	return Decision{Stop: true, StopReason: entity.RunStopCompleted}
 }
 
 // normalizeNextAction 把模型给出的动作收敛成"库里认识的值"。

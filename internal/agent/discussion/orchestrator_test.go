@@ -115,7 +115,6 @@ type fixture struct {
 	messages      repository.MessageRepository
 	runs          repository.RunRepository
 	turns         repository.TurnRepository
-	events        repository.ConversationEventRepository
 	compactions   repository.ContextCompactionRepository
 	tx            repository.TransactionManager
 
@@ -167,7 +166,6 @@ func newFixture(t *testing.T) *fixture {
 		messages:      repository.NewMessageRepository(db),
 		runs:          repository.NewRunRepository(db),
 		turns:         repository.NewTurnRepository(db),
-		events:        repository.NewConversationEventRepository(db),
 		compactions:   repository.NewContextCompactionRepository(db),
 		tx:            repository.NewTransactionManager(db),
 	}
@@ -181,7 +179,6 @@ func newFixture(t *testing.T) *fixture {
 		db.Where("run_id IN (?)", runIDs).Delete(&entity.AgentTurn{})
 		db.Where("conversation_id = ?", f.conversation.ID).Delete(&entity.OrchestrationRun{})
 		db.Where("conversation_id = ?", f.conversation.ID).Delete(&entity.ConversationMessage{})
-		db.Where("conversation_id = ?", f.conversation.ID).Delete(&entity.ConversationEvent{})
 		// 摘要在对话之后才可能存在，删对话时数据库会把它级联带走；这里仍然显式删一次，
 		// 理由和上面一样 —— 清理不该建立在"级联规则没被改过"这个假设上。
 		db.Where("conversation_id = ?", f.conversation.ID).Delete(&entity.ContextCompaction{})
@@ -279,7 +276,6 @@ func (f *fixture) newOrchestrator(t *testing.T, model Model) *Orchestrator {
 		Runs:          f.runs,
 		Turns:         f.turns,
 		Compactions:   f.compactions,
-		Events:        f.events,
 		Model:         model,
 		// 摘要器沿用假模型：这些用例的消息量远低于预算，不会真的触发压缩；
 		// 但装配校验要求它非空 —— 真正的压缩行为由 context_test.go 用例覆盖。

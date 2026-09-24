@@ -36,9 +36,8 @@ type Deps struct {
 	Messages      repository.MessageRepository
 	Runs          repository.RunRepository
 	Turns         repository.TurnRepository
-	Events        repository.ConversationEventRepository // 执行过程与最终结果的事件流
-	Model         Model                                  // 真实模型或假模型，见 model.go
-	Director      Director                               // 选人策略；留空则用"轮流发言"
+	Model         Model    // 真实模型或假模型，见 model.go
+	Director      Director // 选人策略；留空则用"轮流发言"
 	Logger        *zap.Logger
 
 	// Compactions 读写历史摘要，供上下文压缩使用。
@@ -77,8 +76,6 @@ func New(deps Deps) (*Orchestrator, error) {
 		return nil, fmt.Errorf("编排器缺少运行仓储")
 	case deps.Turns == nil:
 		return nil, fmt.Errorf("编排器缺少回合仓储")
-	case deps.Events == nil:
-		return nil, fmt.Errorf("编排器缺少事件仓储")
 	case deps.Compactions == nil:
 		return nil, fmt.Errorf("编排器缺少摘要仓储")
 	case deps.Model == nil:
@@ -139,13 +136,6 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 	)
 	log.Info("讨论开始", zap.Int16("max_turns", run.MaxTurns), zap.Int("participants", len(request.Participants)))
 
-	// 事件流的第一帧：前端据此画出"这一趟开始了、圆桌上有谁"。
-	o.emit(ctx, request.ConversationID, &run.ID, nil, entity.ConversationEventRunStarted, RunStartedPayload{
-		TriggerMessageID: request.TriggerMessageID,
-		MaxTurns:         run.MaxTurns,
-		Participants:     participantPayloads(request.Participants),
-	})
-
 	spoken := make([]int, len(request.Participants))
 	outcomes := make([]TurnOutcome, 0, maxTurns)
 	lastSpeaker := -1
@@ -179,14 +169,6 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 		}
 
 		participant := request.Participants[decision.SpeakerIndex]
-		// 选人结果先于发言推出去：前端先亮"谁要说话"，再等正文增量。
-		o.emit(ctx, request.ConversationID, &run.ID, nil, entity.ConversationEventDirectorDecision, DirectorDecisionPayload{
-			TurnNo:    turnNo,
-			AgentID:   participant.ClassroomAgentID,
-			AgentName: participant.Name,
-			Reason:    decisionReason(decision),
-		})
-
 		outcome, err := o.speak(ctx, request, run, participant, turnNo, trigger.Content)
 		if err != nil {
 			return o.abandon(run, err, outcomes, log)
@@ -222,16 +204,6 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 			Status: entity.RunStatusFailed, StopReason: entity.RunStopError,
 			Turns: outcomes,
 		}, err
-	}
-
-	// 收尾事件在终态写库之后：流上看到 run.completed 时，运行本身已经是终态。
-	if status == entity.RunStatusWaitingUser {
-		o.emit(ctx, request.ConversationID, &run.ID, nil, entity.ConversationEventRunWaitingUser, RunWaitingUserPayload{Reason: stopReason})
-	} else {
-		o.emit(ctx, request.ConversationID, &run.ID, nil, entity.ConversationEventRunCompleted, RunCompletedPayload{
-			StopReason: stopReason,
-			Turns:      len(outcomes),
-		})
 	}
 
 	log.Info("讨论结束",
@@ -309,13 +281,6 @@ func (o *Orchestrator) speak(
 		return TurnOutcome{}, fmt.Errorf("建立第 %d 个回合失败: %w", turnNo, err)
 	}
 
-	o.emit(ctx, request.ConversationID, &run.ID, &turn.ID, entity.ConversationEventAgentStarted, AgentStartedPayload{
-		TurnID:    turn.ID,
-		TurnNo:    turn.TurnNo,
-		AgentID:   participant.ClassroomAgentID,
-		AgentName: participant.Name,
-	})
-
 	history, err := o.history(ctx, request.ConversationID)
 	if err != nil {
 		o.abandonTurn(turn, err)
@@ -369,26 +334,6 @@ func (o *Orchestrator) speak(
 		o.abandonTurn(turn, err)
 		return TurnOutcome{}, fmt.Errorf("落库第 %d 轮结果失败: %w", turnNo, err)
 	}
-
-	// 过程与结果一起推：一批增量（当前模型不是流式，整段正文就是一批）、完成帧、
-	// 以及"这一轮结束了、下一步是什么"。顺序不能反 —— 前端靠它把正文挂到正确的消息上。
-	o.emit(ctx, request.ConversationID, &run.ID, &turn.ID, entity.ConversationEventMessageDelta, MessageDeltaPayload{
-		TurnID:    turn.ID,
-		MessageID: message.ID,
-		Delta:     response.Content,
-	})
-	o.emit(ctx, request.ConversationID, &run.ID, &turn.ID, entity.ConversationEventMessageCompleted, MessageCompletedPayload{
-		TurnID:     turn.ID,
-		MessageID:  message.ID,
-		Content:    response.Content,
-		TokenCount: response.OutputTokens,
-	})
-	o.emit(ctx, request.ConversationID, &run.ID, &turn.ID, entity.ConversationEventAgentCompleted, AgentCompletedPayload{
-		TurnID:     turn.ID,
-		TurnNo:     turn.TurnNo,
-		MessageID:  message.ID,
-		NextAction: nextAction,
-	})
 
 	return TurnOutcome{
 		TurnID:       turn.ID,
@@ -479,11 +424,6 @@ func (o *Orchestrator) abandon(run *entity.OrchestrationRun, cause error, outcom
 		log.Error("标记运行失败状态时又出错了", zap.Error(err))
 	}
 
-	// 失败也要让流上有个交代：前端一直等不到 run.completed，会把界面永远转下去。
-	o.emit(finalizeCtx, run.ConversationID, &run.ID, nil, entity.ConversationEventRunFailed, RunFailedPayload{
-		Error: truncate(cause.Error(), errorMessageLimit),
-	})
-
 	return Result{
 		RunID:      run.ID,
 		TraceID:    run.TraceID,
@@ -491,40 +431,6 @@ func (o *Orchestrator) abandon(run *entity.OrchestrationRun, cause error, outcom
 		StopReason: entity.RunStopError,
 		Turns:      outcomes,
 	}, cause
-}
-
-// emit 追加一条对话事件，尽力而为：失败只记日志，不把讨论本身带崩。
-//
-// 为什么不让失败冒泡：事件流是"看得见过程"的通道，不是事实来源 —— 运行、回合、
-// 消息都已经落库了（或正被同一段代码写）。为了一帧事件把整场讨论判失败，代价不对等。
-// 代价是流上可能缺一帧（前端还有 conversation_messages 可查），所以这里用 Warn 留痕，
-// 而不是静默吞掉。
-//
-// 每条事件单独开一笔小事务，不塞进写消息那笔：事件写失败不该回滚消息；
-// 反过来消息回滚了也不该留下一帧"说过这句话"的事件。
-func (o *Orchestrator) emit(ctx context.Context, conversationID uint64, runID, turnID *uint64, eventType string, payload any) {
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		o.deps.Logger.Warn("序列化对话事件失败", zap.String("event", eventType), zap.Error(err))
-		return
-	}
-
-	event := &entity.ConversationEvent{
-		ConversationID: conversationID,
-		RunID:          runID,
-		TurnID:         turnID,
-		EventType:      eventType,
-		Payload:        encoded,
-	}
-	if err := o.deps.Tx.Run(ctx, func(ctx context.Context) error {
-		return o.deps.Events.AppendNext(ctx, event)
-	}); err != nil {
-		o.deps.Logger.Warn("写入对话事件失败，事件流会缺这一帧",
-			zap.String("event", eventType),
-			zap.Uint64("conversation_id", conversationID),
-			zap.Error(err),
-		)
-	}
 }
 
 // abandonTurn 尽力把一个没跑完的回合标成失败。
