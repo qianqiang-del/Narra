@@ -19,10 +19,14 @@ import (
 //
 // 按消费方分三组：
 //   - 收录链路（rag.DocumentStore）：Create / GetByID / MarkProcessing / MarkFailed / ReplaceChunks
-//   - 后台任务队列（rag.FileTaskStore）：SetMetadata / SetUploadPath / ListPending / Claim / Touch / ResetStale / Requeue / MarkFailed
+//   - 后台任务队列（rag.FileTaskStore）：SetMetadata / SetUploadPath / FailedLeaseOwned /
+//     ListPending / ClaimAndReturnAttempt / Touch / ResetStale / Requeue / MarkFailed /
+//     SaveParsedContent / ReplaceStagedChunks / ListChunksByDocument / SaveEmbeddingsAndMarkReady
 //   - 查询与删除（service）：List / GetByID / CountChunksByDocument / Delete
 //
-// MarkFailed 被前两组共用，所以它在两处都出现。
+// MarkFailed 被前两组共用，所以它在两处都出现。分阶段写入的四个方法只服务异步文件链路
+// （Worker 按 ingest_stage 恢复）；同步链路（IngestText / IngestFile）仍走 ReplaceChunks，
+// 用一次事务把正文、切片、向量与 ready 一起写完。
 //
 // 三张表之间是 ON DELETE CASCADE（切片随原文、向量随切片），删除只用删最外层一行。
 type KnowledgeDocumentRepository interface {
@@ -53,14 +57,17 @@ type KnowledgeDocumentRepository interface {
 	// MarkFailed 把文档推进到 failed，把失败现场**合并**进 metadata，
 	// 并把原因同步到这次上传的记录上（两处在同一个事务里，见实现）。
 	//
-	// 只处理仍在 processing 的文档：行已被删除、或已被推进到别的状态时，
-	// 整体回滚并返回错误，不写任何失败现场。调用方据此判断"这次失败没能落库"。
+	// attempt 是这次处理的租约编号（同步链路传 0，它没有认领这一步）。只有仍在 processing
+	// 且编号相符的文档才会被写入：行已被删除、已被回收并重新认领时，影响 0 行并返回
+	// applied = false —— 调用方据此判断"这次失败没能落库"，绝不能移动磁盘上的原件
+	// （旧执行者把新一轮正在用的文件挪走，会把新任务一起打断）。
+	// 数据库层面的错误以 err 返回，此时 applied 也是 false。
 	//
 	// metadata 是一份 JSON 对象（阶段、原因、时间），合并时只覆盖同名的键：
 	// upload_path 与 explicit_title 这些收录链路的输入会原样留着 ——
 	// 失败原件的归档、删除时的清理、以及重试都要靠它们。见实现的 mergeMetadata。
 	// reason 是给用户看的那一句中文（界面直接显示它），为空时记录的失败原因清空。
-	MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage, reason string) error
+	MarkFailed(ctx context.Context, id uint64, attempt int32, metadata json.RawMessage, reason string) (applied bool, err error)
 
 	// ReplaceChunks 用一个事务完成"换掉这篇文档的全部切片与向量，并把文档标记为可检索"。
 	//
@@ -76,36 +83,83 @@ type KnowledgeDocumentRepository interface {
 	// 覆盖的规则由调用方决定（这里只负责写）。
 	SetMetadata(ctx context.Context, id uint64, metadata json.RawMessage) error
 
-	// SetUploadPath 只替换 metadata 里的 upload_path，其余键原样保留。
-	// 失败原件归档到 failed/<文档ID>/ 之后用它把指针挪过去 —— 这时 metadata 里
+	// SetUploadPath 只替换 metadata 里的 upload_path，其余键原样保留。归档时 metadata 里
 	// 已经有 MarkFailed 写下的失败现场，整份覆盖会把失败原因抹掉。
-	SetUploadPath(ctx context.Context, id uint64, path string) error
+	//
+	// 只处理仍由这次失败持有的行（id、status = failed、ingest_attempt 三者相符）：
+	// 返回 applied = false 表示用户已经重试或任务已被重新认领，指针不能改 ——
+	// 调用方据此把已挪走的文件挪回原位（见 rag.Worker.archiveStagedFile）。
+	SetUploadPath(ctx context.Context, id uint64, attempt int32, path string) (applied bool, err error)
+
+	// FailedLeaseOwned 判断这一行是否仍由这次失败持有（status = failed 且租约编号相符）。
+	// 归档原件之前用它做最后一道核对：不匹配就说明已经有人重试或接手，
+	// 旧 Worker 必须停止，不能再碰磁盘上的文件。
+	FailedLeaseOwned(ctx context.Context, id uint64, attempt int32) (bool, error)
 
 	// ListPending 按创建时间取最多 limit 条 pending 文档，供后台任务队列取任务。
 	// 它只是查询，不代表这些任务已经被抢到 —— 并发执行者之间靠 Claim 决出胜负。
 	ListPending(ctx context.Context, limit int) ([]entity.KnowledgeDocument, error)
 
-	// Claim 用一条带 status = 'pending' 条件的 UPDATE 把文档抢成 processing。
-	// 返回 false 表示这条已经被别的执行者抢走了，调用方应当跳过。
+	// ClaimAndReturnAttempt 用一条带 status = 'pending' 条件的 UPDATE 把文档抢成
+	// processing，并把 ingest_attempt 原子递增，返回递增后的编号（本次处理的租约编号）。
+	// claimed 为 false 表示这条已经被别的执行者抢走了，调用方应当跳过。
 	// 条件写在 UPDATE 的 WHERE 里而不是"先查再改"，是为了让并发下的取舍由数据库一次性决定。
-	Claim(ctx context.Context, id uint64) (bool, error)
+	//
+	// 递增必须和抢占在同一条语句里完成：编号就是"谁在跑"的凭据，分两步写会留下
+	// 两个执行者拿到同一个编号的窗口，租约也就形同虚设。
+	ClaimAndReturnAttempt(ctx context.Context, id uint64) (attempt int32, claimed bool, err error)
 
 	// ResetStale 把 updated_at 早于 olderThan 且仍在 processing 的文档打回 pending。
 	// 用于回收僵尸任务：进程在处理中退出后，那些行没有任何人会再碰。
 	// Worker 在启动时与轮询循环里周期调用它（阈值与心跳间隔配套，见实现的 Touch）。
+	// 它不改 ingest_attempt —— 行被打回 pending 之后，旧租约的写入已经过不了
+	// status 条件；重新认领时编号还会再递增一次。
 	ResetStale(ctx context.Context, olderThan time.Time) error
 
 	// Touch 只把 processing 文档的 updated_at 推到当前时刻，作为任务心跳。
-	// 它不参与状态机：行不是 processing（被删、已 ready、已被回收）时影响 0 行，不报错。
-	Touch(ctx context.Context, id uint64) error
+	// 它不参与状态机：行不是 processing、或租约编号已经对不上时影响 0 行，不报错。
+	//
+	// 编号是必须的：旧租约的僵尸心跳若还能推时间，一个已经死掉的新任务会被
+	// 一直"续命"，周期回收永远等不到它。
+	Touch(ctx context.Context, id uint64, attempt int32) error
 
 	// Requeue 把一行 failed 文档改回 pending 重新排队，并清掉上一次的失败现场，
 	// 同一个事务里把上传记录也置回 pending（见实现）。这是"原地重试"的写入口。
 	//
+	// stage 是调用方按现实材料算出的恢复点（见 rag.ResolveRecoveryStage）：重试不该死守
+	// 原来的阶段 —— 切片没了就退回正文，正文没了就退回原文件，都没有才会在计算时被拒。
+	//
 	// 返回 false 表示这一行不满足条件（不存在，或状态已经不是 failed），
 	// 调用方据此报"不需要重试" —— 不把它当成错误，是因为并发点两次重试时
 	// 后到的那次本来就该安静地输掉。
-	Requeue(ctx context.Context, id uint64) (bool, error)
+	Requeue(ctx context.Context, id uint64, stage string) (bool, error)
+
+	// SaveParsedContent 保存解析产物，并把 ingest_stage 推进到 chunk ——
+	// 正文与阶段必须在同一个事务里改：只写正文不推阶段会让恢复重新解析（浪费但安全），
+	// 只推阶段不写正文会让恢复读到空正文（数据丢失，不可接受）。
+	//
+	// metadata 只做顶层合并，upload_path 与 explicit_title 必须原样保留到成功清理原文件为止 ——
+	// 进程崩溃后靠它找回原件。只处理仍在 processing 且租约编号相符的文档。
+	SaveParsedContent(ctx context.Context, id uint64, attempt int32, input entity.ParsedContent) error
+
+	// ReplaceStagedChunks 换掉这篇文档的全部切片，并把 ingest_stage 推进到 embed。
+	// 旧切片先删（硬删除，外键级联带走旧向量），新切片在同一事务里写入。
+	// 只有正文已经落库（stage = chunk）的文档才会走到这里，所以不写 content。
+	// 同样只处理仍在 processing 且租约编号相符的文档。
+	ReplaceStagedChunks(ctx context.Context, id uint64, attempt int32, chunks []entity.KnowledgeChunk, metadata json.RawMessage) error
+
+	// ListChunksByDocument 按 chunk_index 升序取回一篇文档的全部切片，供 embed 阶段
+	// 从库里恢复输入（不再读原文件）。返回顺序就是向量与切片的对应顺序。
+	ListChunksByDocument(ctx context.Context, id uint64) ([]entity.KnowledgeChunk, error)
+
+	// SaveEmbeddingsAndMarkReady 写入向量并把文档置为 ready、ingest_stage 置 NULL。
+	// 它必须是一个事务：只有全部向量写成功，文档才能 ready —— 否则会出现一篇
+	// "可检索但缺向量"的文档，界面上看不出任何异常，检索却永远漏掉它。
+	//
+	// embeddings 的 ChunkID 必须属于这篇文档，数量也必须与当前切片数一致，
+	// 否则整个事务回滚。重复执行为幂等：先清掉这些切片的旧向量再写。
+	// 同一个事务里把上传记录也置为 ready（手动录入没有记录，匹配 0 行无害）。
+	SaveEmbeddingsAndMarkReady(ctx context.Context, id uint64, attempt int32, embeddings []entity.KnowledgeEmbedding, metadata json.RawMessage) error
 
 	// Delete 删除一篇文档。切片与向量不在这里删 —— 外键 ON DELETE CASCADE 会把它们带走。
 	// 硬删除，不走软删除：UNIQUE (document_id, chunk_index) 要求同序号的上一条先消失。

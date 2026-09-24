@@ -23,7 +23,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
 
-import { MAX_UPLOAD_BYTES, SUPPORTED_EXTENSIONS, needsDocumentParser } from '@/api/knowledge'
+import { MAX_UPLOAD_BYTES, SUPPORTED_EXTENSIONS, failureStageKey, needsDocumentParser } from '@/api/knowledge'
 import { useKnowledgeStore } from '@/stores/knowledge'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -53,6 +53,19 @@ const failed = computed(() => (store.uploading ? null : store.lastFailedRecord))
  * 记录就只剩 documentId 为空）。那种情况没有可重跑的对象，按钮置灰。
  */
 const canRetry = computed(() => Boolean(failed.value?.documentId))
+
+/**
+ * 失败行的粗粒度阶段（"解析阶段失败"等）。
+ *
+ * 与具体错误分开显示：前缀回答"卡在哪一大步"，error 回答"具体为什么"。
+ * 细粒度位置（如 store：向量算好了但没写进去）优先，位置未知时回落到收录阶段。
+ */
+const failedStageLabel = computed(() => {
+  const record = failed.value
+  if (!record) return ''
+  const key = failureStageKey(record.failedStage, record.stage)
+  return key ? t(`knowledge.stage.${key}`) : ''
+})
 
 const selectedSize = computed(() =>
   selectedFile.value ? `${(selectedFile.value.size / 1024 / 1024).toFixed(1)} MB` : '',
@@ -311,6 +324,7 @@ async function retryFailed() {
                   v-if="failed.error"
                   class="mt-1.5 rounded-md bg-red-50 px-2 py-1.5 text-xs break-words text-red-700 dark:bg-red-950/30 dark:text-red-300"
                 >
+                  <span v-if="failedStageLabel" class="font-medium">{{ failedStageLabel }}：</span>
                   {{ failed.error }}
                 </p>
                 <!-- 重试同一份原件：不用重新选文件（后端留着归档的输入） -->

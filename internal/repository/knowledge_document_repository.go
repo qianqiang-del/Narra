@@ -32,21 +32,50 @@ func (r *knowledgeDocumentRepository) SetMetadata(ctx context.Context, id uint64
 	return r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).Where("id = ?", id).Update("metadata", metadata).Error
 }
 
-// SetUploadPath 把 metadata 里的 upload_path 换成新位置，其他键一律不动。
+// SetUploadPath 把 metadata 里的 upload_path 换成失败原件归档后的新位置。
+//
+// 只处理**仍由这次失败持有**的文档：id、status = failed、ingest_attempt 三者全中才写。
+// 不匹配说明已经有人点了重试（状态回到 pending / processing），或任务已被回收重新认领 ——
+// 这时旧 Worker 的迟到归档绝不能改指针：它会污染新一轮的输入路径。
+// 返回 applied = false 表示没有命中，调用方（worker）据此把已挪走的文件挪回原位。
 //
 // 单独开一个方法而不是复用 SetMetadata：后者是整份覆盖，而调用它的时机
-// （收录失败后把原件从暂存目录归档到 failed/<文档ID>/ 下）正好在 MarkFailed
-// 刚写完失败现场之后 —— 用覆盖写法会把 stage / error / failed_at 一起抹掉，
-// 用户就再也看不到这次为什么失败了。
+// （归档失败原件）正好在 MarkFailed 刚写完失败现场之后 —— 用覆盖写法会把
+// stage / error / failed_at 一起抹掉，用户就再也看不到这次为什么失败了。
 //
 // 与 MarkFailed 的"先读后写"不同，这里用一条 SQL 做 jsonb 顶层合并就够了：
 // 只改一个键，不需要知道其余键是什么，也就不存在读到旧值再写回去的窗口。
-func (r *knowledgeDocumentRepository) SetUploadPath(ctx context.Context, id uint64, path string) error {
-	return r.db.WithContext(ctx).
+func (r *knowledgeDocumentRepository) SetUploadPath(ctx context.Context, id uint64, attempt int32, path string) (bool, error) {
+	result := r.db.WithContext(ctx).
 		Model(&entity.KnowledgeDocument{}).
-		Where("id = ?", id).
-		Update("metadata", gorm.Expr("metadata || jsonb_build_object('upload_path', ?::text)", path)).
-		Error
+		Where("id = ? AND status = ? AND ingest_attempt = ?", id, entity.KnowledgeDocumentStatusFailed, attempt).
+		Update("metadata", gorm.Expr("metadata || jsonb_build_object('upload_path', ?::text)", path))
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// FailedLeaseOwned 判断这一行是否仍由这次失败持有（status = failed 且租约编号相符）。
+//
+// 归档原件之前的最后一道核对：用户可能在失败现场写下的下一秒就点了重试，
+// 新一轮已经接手并在读原文件。那时旧 Worker 必须彻底停手 —— 把文件挪走
+// 会让新一轮读不到输入，这比"少归档一次"严重得多。
+func (r *knowledgeDocumentRepository) FailedLeaseOwned(ctx context.Context, id uint64, attempt int32) (bool, error) {
+	var row struct {
+		Status        string
+		IngestAttempt int32
+	}
+	if err := r.db.WithContext(ctx).
+		Model(&entity.KnowledgeDocument{}).
+		Select("status", "ingest_attempt").
+		Where("id = ?", id).Take(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return row.Status == entity.KnowledgeDocumentStatusFailed && row.IngestAttempt == attempt, nil
 }
 
 // ListPending 按创建时间正序取待处理文档（先进先出），只做查询、不改状态。
@@ -60,18 +89,45 @@ func (r *knowledgeDocumentRepository) ListPending(ctx context.Context, limit int
 	return documents, err
 }
 
-// Claim 抢占一条待处理文档：带 status = 'pending' 条件的 UPDATE，抢到才返回 true。
+// ClaimAndReturnAttempt 抢占一条待处理文档，并把租约编号原子递增后返回。
 //
+// 带 status = 'pending' 条件的 UPDATE，抢到才返回 claimed = true。
 // 条件写在 UPDATE 的 WHERE 里而不是"先查再改"，是为了让并发下的取舍由数据库
 // 一次性完成 —— 两个执行者同时来，只有一个能让 RowsAffected 为 1。
 //
+// 递增与置状态在同一条 UPDATE 里：编号就是"谁在跑"的凭据，分成两步写会留下
+// 两个执行者拿到同一个编号的窗口。回读放在同一个事务里，读到的一定是自己刚写下的值。
+//
 // 用 Updates 传 map 而不是 UpdateColumn：claimed_at 这个语义要靠 updated_at 承担
 // （ResetStale 按它判断僵尸任务），而 map 形式会触发 GORM 的 autoUpdateTime 自动带上它。
-func (r *knowledgeDocumentRepository) Claim(ctx context.Context, id uint64) (bool, error) {
-	result := r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).
-		Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusPending).
-		Updates(map[string]any{"status": entity.KnowledgeDocumentStatusProcessing})
-	return result.RowsAffected == 1, result.Error
+func (r *knowledgeDocumentRepository) ClaimAndReturnAttempt(ctx context.Context, id uint64) (int32, bool, error) {
+	var attempt int32
+	claimed := false
+
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&entity.KnowledgeDocument{}).
+			Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusPending).
+			Updates(map[string]any{
+				"status":         entity.KnowledgeDocumentStatusProcessing,
+				"ingest_attempt": gorm.Expr("ingest_attempt + 1"),
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		claimed = true
+
+		var row struct{ IngestAttempt int32 }
+		if err := tx.Model(&entity.KnowledgeDocument{}).
+			Select("ingest_attempt").Where("id = ?", id).Take(&row).Error; err != nil {
+			return err
+		}
+		attempt = row.IngestAttempt
+		return nil
+	})
+	return attempt, claimed, err
 }
 
 // ResetStale 把卡在 processing 超过时限的文档打回 pending，让它们重新入队。
@@ -95,13 +151,14 @@ func (r *knowledgeDocumentRepository) ResetStale(ctx context.Context, olderThan 
 // goroutine 消失）之后，行在 staleAfter 内就会变"旧"，被周期 ResetStale 捡回去 ——
 // 不需要等下一次进程重启。
 //
-// 用 UpdateColumn + 显式时间：要的正是"只改这一列"。带 status 条件是防御：
-// 行已被删、或已经被 ResetStale 打回 pending 时，这里影响 0 行且不报错 ——
-// 心跳不该把任何状态改回去。
-func (r *knowledgeDocumentRepository) Touch(ctx context.Context, id uint64) error {
+// 用 UpdateColumn + 显式时间：要的正是"只改这一列"。带 status 与租约编号条件是防御：
+// 行已被删、已被 ResetStale 打回 pending、或已被重新认领时，这里影响 0 行且不报错 ——
+// 心跳不该把任何状态改回去，也不该给旧租约续命（否则一个已经死掉的新任务会被
+// 旧执行者一直"续命"，周期回收永远等不到它）。
+func (r *knowledgeDocumentRepository) Touch(ctx context.Context, id uint64, attempt int32) error {
 	return r.db.WithContext(ctx).
 		Model(&entity.KnowledgeDocument{}).
-		Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusProcessing).
+		Where("id = ? AND status = ? AND ingest_attempt = ?", id, entity.KnowledgeDocumentStatusProcessing, attempt).
 		UpdateColumn("updated_at", time.Now().UTC()).Error
 }
 
@@ -244,15 +301,20 @@ func (r *knowledgeDocumentRepository) MarkProcessing(ctx context.Context, id uin
 }
 
 // MarkFailed 在一个事务里把文档推进到 failed，把失败现场**合并**进 metadata，
-// 并把原因同步到这次上传的记录上。
+// 并把原因同步到这次上传的记录上。返回 applied 表示失败现场是否真的写进了这一行。
 //
 // 两行必须一起改：文档状态是给主页看的，记录状态是给上传记录抽屉看的 ——
 // 只改一处会让同一件事在两个界面上说法不同。
 //
-// 只处理**仍在 processing** 的文档：带 status 条件而不是裸 id，是为了不覆盖
-// 别人已经推进到的状态。最典型的场景是用户在后台处理期间把这条记录（连同文档）
-// 删掉了 —— 此时 UPDATE 影响 0 行，这里直接返回错误让事务回滚，
-// 不写任何失败现场（那行已经不存在了）。调用方（rag.failIngest）会记一条日志。
+// 只处理**仍在 processing、且租约编号相符**的文档：带 status 与 ingest_attempt 条件
+// 而不是裸 id，是为了不覆盖别人已经推进到的状态，也挡住旧执行者的迟到写入。
+// 最典型的两个场景：用户在后台处理期间把这条记录（连同文档）删掉了；或者旧 Worker
+// 被 ResetStale 回收、任务已被重新认领 —— 两种情况下 UPDATE 都影响 0 行，
+// 这里返回 applied = false 且不写任何失败现场（那行已经不属于这次处理了）。
+// 调用方（rag.Worker）据此决定不归档原件：把新一轮正在用的文件挪走会打断新任务。
+//
+// 数据库层面的错误以 err 返回（applied 同样是 false），调用方按"这次失败没能落库"
+// 处理，日志里要留下痕迹。
 //
 // metadata 是合并写回而不是整份覆盖。这张表的 metadata 同时装着两件事：
 // "这一次失败长什么样"（stage / error / failed_at，由收录链路写）与
@@ -261,38 +323,39 @@ func (r *knowledgeDocumentRepository) MarkProcessing(ctx context.Context, id uin
 // upload_path 没了，失败原件的归档与删除时的清理都找不到它 —— 库里留一行 failed、
 // 磁盘上留一份没人认领的文件，就这么攒出了孤儿。
 //
-// 先读后写放在事务里：调用者是已经抢到这一行的执行者（rag.Worker 的 Claim），
+// 先读后写放在事务里：调用者是已经抢到这一行的执行者（rag.Worker 的 ClaimAndReturnAttempt），
 // 同一行不存在第二个写者，所以不需要行锁。
 //
 // reason 是给用户看的那一句中文（"文档解析失败：解析环境缺少 Python 模块 scipy"），
 // 由调用方从错误里折出来后显式传进来 —— 界面上显示的就是它，不是诊断串。
 // 仓储不去解析 metadata 的 JSON 结构：那个结构是收录链路
 // 与接口层共享的约定，在这里再实现一遍就成了第三份口径。
-func (r *knowledgeDocumentRepository) MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage, reason string) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+func (r *knowledgeDocumentRepository) MarkFailed(ctx context.Context, id uint64, attempt int32, metadata json.RawMessage, reason string) (bool, error) {
+	applied := false
+
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		updates := map[string]any{"status": entity.KnowledgeDocumentStatusFailed}
 		if len(metadata) > 0 {
-			var current entity.KnowledgeDocument
-			err := tx.Model(&entity.KnowledgeDocument{}).
-				Select("metadata").Where("id = ?", id).Take(&current).Error
-			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			base, err := readMetadata(tx, id)
+			if err != nil {
 				return err
 			}
-			updates["metadata"] = mergeMetadata(current.Metadata, metadata)
+			updates["metadata"] = mergeMetadata(base, metadata)
 		}
 
 		result := tx.Model(&entity.KnowledgeDocument{}).
-			Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusProcessing).
+			Where("id = ? AND status = ? AND ingest_attempt = ?", id, entity.KnowledgeDocumentStatusProcessing, attempt).
 			Updates(updates)
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
-			// 行没了，或已经不在 processing：整笔回滚，包括下面那条记录更新。
-			// 记录不去单独更新是对的 —— 文档既然已被删除，记录要么一起没了，
-			// 要么已经从"处理中"推进到了别的状态，都不该再被这里改成 failed。
-			return fmt.Errorf("文档 %d 不存在或已不在处理中，失败现场未写入", id)
+			// 行没了、已被推走、或租约已失效：整笔不写，包括下面那条记录更新。
+			// 记录不去单独更新是对的 —— 文档既然已不属于这次处理，记录要么一起没了，
+			// 要么已经由新一轮任务在管。
+			return nil
 		}
+		applied = true
 
 		// 手动录入（IngestText）没有上传记录，这里匹配 0 行，不报错也不影响什么。
 		return tx.Model(&entity.KnowledgeUploadRecord{}).
@@ -302,9 +365,28 @@ func (r *knowledgeDocumentRepository) MarkFailed(ctx context.Context, id uint64,
 				"error_message": utils.OptionalString(reason),
 			}).Error
 	})
+	return applied, err
 }
 
-// Requeue 把一行 failed 文档改回 pending 重新排队，并清掉上一次的失败现场。
+// readMetadata 读一篇文档当前的 metadata，供合并写回使用。
+//
+// 行不存在时返回 nil 而不是 ErrRecordNotFound：调用方随后那条带状态条件的 UPDATE
+// 会自己判断"这一行还在不在、属不属于我"，读取这一步只需要把旧值带出来。
+func readMetadata(tx *gorm.DB, id uint64) (json.RawMessage, error) {
+	var current entity.KnowledgeDocument
+	err := tx.Model(&entity.KnowledgeDocument{}).
+		Select("metadata").Where("id = ?", id).Take(&current).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return current.Metadata, nil
+}
+
+// Requeue 把一行 failed 文档改回 pending 重新排队，清掉上一次的失败现场，
+// 并把 ingest_stage 改写成按现实材料算出的恢复点（由调用方算好传入）。
 //
 // 这是"原地重试"的写入口：复用同一行文档、同一条上传记录，不新建任何东西 ——
 // 一份文件一份资产，重试只是让它再跑一遍。返回 false 表示这一行不满足条件
@@ -313,21 +395,27 @@ func (r *knowledgeDocumentRepository) MarkFailed(ctx context.Context, id uint64,
 // 条件写在 UPDATE 的 WHERE 里而不是先查再改：两个请求同时点重试时，
 // 只有一个的 RowsAffected 会是 1，另一个拿到 false —— 不需要额外的锁。
 //
-// 清掉的是 stage / error / failed_at 三个键，它们描述的是上一次：
+// 阶段在这里被改写而不是保留原值：重试的起点由"现实还剩什么材料"决定
+// （有切片直接重向量化，没切片有正文重分块，都没了才重新解析原文件），
+// 死守原来那个阶段会在材料被动过时走进死胡同。下一轮 Worker 还会再算一次，
+// 防止"点了重试之后材料又没了"。
+//
+// 清掉的是 metadata 里的 stage / error / failed_at 三个键，它们描述的是上一次：
 // 留着会让处理期间的前端一直读到上一轮的失败原因。而 upload_path 与 explicit_title
 // 必须保留 —— 前者是这次重试的输入（原件已归档到 failed/<文档ID>/ 下），
 // 后者决定标题要不要回落到正文标题，丢了会让重试后的标题与第一次不一致。
 //
 // 同一个事务里把上传记录也置回 pending 并清掉 error_message：抽屉里显示的是它。
 // 只改文档不改记录，用户会看到"文档在转圈、记录那一行还说失败"。
-func (r *knowledgeDocumentRepository) Requeue(ctx context.Context, id uint64) (bool, error) {
+func (r *knowledgeDocumentRepository) Requeue(ctx context.Context, id uint64, stage string) (bool, error) {
 	requeued := false
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&entity.KnowledgeDocument{}).
 			Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusFailed).
 			Updates(map[string]any{
-				"status":   entity.KnowledgeDocumentStatusPending,
-				"metadata": gorm.Expr("metadata - 'stage' - 'error' - 'failed_at'"),
+				"status":       entity.KnowledgeDocumentStatusPending,
+				"ingest_stage": stage,
+				"metadata":     gorm.Expr("metadata - 'stage' - 'error' - 'failed_at'"),
 			})
 		if result.Error != nil {
 			return result.Error
@@ -346,6 +434,172 @@ func (r *knowledgeDocumentRepository) Requeue(ctx context.Context, id uint64) (b
 			}).Error
 	})
 	return requeued, err
+}
+
+// SaveParsedContent 保存解析产物，并把 ingest_stage 推进到 chunk。
+//
+// 正文与阶段必须原子：只写正文不推阶段会让恢复重新解析（浪费但安全），
+// 只推阶段不写正文会让恢复读到空正文（数据丢失，不可接受）。metadata 走顶层合并，
+// upload_path 与 explicit_title 原样保留 —— 进程崩溃后靠它找回原件。
+//
+// 只处理仍在 processing 且租约编号相符的文档，见 stagedUpdate。
+func (r *knowledgeDocumentRepository) SaveParsedContent(ctx context.Context, id uint64, attempt int32, input entity.ParsedContent) error {
+	if strings.TrimSpace(input.Content) == "" {
+		return fmt.Errorf("文档 %d 的解析正文为空，不能落库", id)
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		base, err := readMetadata(tx, id)
+		if err != nil {
+			return err
+		}
+
+		updates := map[string]any{
+			"title":            input.Title,
+			"content":          input.Content,
+			"content_checksum": input.Checksum,
+			"ingest_stage":     entity.KnowledgeDocumentStageChunk,
+		}
+		if len(input.Metadata) > 0 {
+			updates["metadata"] = mergeMetadata(base, input.Metadata)
+		}
+		return stagedUpdate(tx, id, attempt, updates, "解析正文")
+	})
+}
+
+// ReplaceStagedChunks 换掉这篇文档的全部切片，并把 ingest_stage 推进到 embed。
+//
+// 顺序不能反：先删旧切片再插新切片（UNIQUE (document_id, chunk_index) 要求同序号
+// 的上一条先消失；旧向量由外键级联带走），最后才推进阶段 —— stage = embed 的语义
+// 就是"切片已落库"，反过来会出现一个恢复时读不到切片的 embed 阶段。
+//
+// 不写 content：走到这一步的文档，正文在 SaveParsedContent 时已经落库。
+func (r *knowledgeDocumentRepository) ReplaceStagedChunks(ctx context.Context, id uint64, attempt int32, chunks []entity.KnowledgeChunk, metadata json.RawMessage) error {
+	if len(chunks) == 0 {
+		return fmt.Errorf("文档 %d 没有可写入的切片", id)
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. 先删旧切片。硬删除，同序号的上一条必须先消失，否则重复导入会撞唯一约束。
+		if err := tx.Where("document_id = ?", id).Delete(&entity.KnowledgeChunk{}).Error; err != nil {
+			return err
+		}
+
+		// 2. 批量插入切片。关联字段保持 nil，GORM 对 nil 的 belongs-to 关联不做级联写入。
+		if err := tx.CreateInBatches(chunks, knowledgeInsertBatch).Error; err != nil {
+			return err
+		}
+
+		// 3. 推进阶段并合并 metadata（chunks / chunk_ms 这些处理产物）。
+		base, err := readMetadata(tx, id)
+		if err != nil {
+			return err
+		}
+		updates := map[string]any{"ingest_stage": entity.KnowledgeDocumentStageEmbed}
+		if len(metadata) > 0 {
+			updates["metadata"] = mergeMetadata(base, metadata)
+		}
+		return stagedUpdate(tx, id, attempt, updates, "切片")
+	})
+}
+
+// ListChunksByDocument 按 chunk_index 升序取回一篇文档的全部切片。
+//
+// 顺序就是向量与切片的对应顺序：embed 阶段按它恢复输入，保存向量时按同一个顺序回填
+// ChunkID，错位会让"第 3 段的向量"指向第 5 段，而检索看起来一切正常。
+func (r *knowledgeDocumentRepository) ListChunksByDocument(ctx context.Context, id uint64) ([]entity.KnowledgeChunk, error) {
+	var chunks []entity.KnowledgeChunk
+	err := r.db.WithContext(ctx).
+		Where("document_id = ?", id).
+		Order("chunk_index ASC").
+		Find(&chunks).Error
+	return chunks, err
+}
+
+// SaveEmbeddingsAndMarkReady 写入向量并把文档置为 ready、ingest_stage 置 NULL。
+//
+// 必须是一个事务：只有全部向量写成功，文档才能 ready。分开提交会留下
+// "可检索但没有向量"的文档 —— 界面上看不出任何异常，检索却永远漏掉它。
+//
+// 向量与切片要双向校验：数量相等挡不住张冠李戴（向量挂在别的文档的切片上），
+// 归属相符也挡不住漏写。两者都过之后才写。先清旧向量再写，重复执行幂等
+// （也避免撞 UNIQUE (chunk_id, model_id)）。
+func (r *knowledgeDocumentRepository) SaveEmbeddingsAndMarkReady(ctx context.Context, id uint64, attempt int32, embeddings []entity.KnowledgeEmbedding, metadata json.RawMessage) error {
+	if len(embeddings) == 0 {
+		return fmt.Errorf("文档 %d 没有可写入的向量", id)
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		chunkIDs := make([]uint64, len(embeddings))
+		for index := range embeddings {
+			chunkIDs[index] = embeddings[index].ChunkID
+		}
+
+		var chunkCount int64
+		if err := tx.Model(&entity.KnowledgeChunk{}).Where("document_id = ?", id).Count(&chunkCount).Error; err != nil {
+			return err
+		}
+		if int(chunkCount) != len(embeddings) {
+			return fmt.Errorf("文档 %d 的切片数 %d 与向量数 %d 不一致", id, chunkCount, len(embeddings))
+		}
+
+		var matched int64
+		if err := tx.Model(&entity.KnowledgeChunk{}).
+			Where("document_id = ? AND id IN ?", id, chunkIDs).
+			Count(&matched).Error; err != nil {
+			return err
+		}
+		if int(matched) != len(chunkIDs) {
+			return fmt.Errorf("文档 %d 的向量与切片对不上：%d 个向量里只有 %d 个属于本文档的切片", id, len(chunkIDs), matched)
+		}
+
+		if err := tx.Where("chunk_id IN ?", chunkIDs).Delete(&entity.KnowledgeEmbedding{}).Error; err != nil {
+			return err
+		}
+		if err := tx.CreateInBatches(embeddings, knowledgeInsertBatch).Error; err != nil {
+			return err
+		}
+
+		base, err := readMetadata(tx, id)
+		if err != nil {
+			return err
+		}
+		updates := map[string]any{
+			"status":       entity.KnowledgeDocumentStatusReady,
+			"ingest_stage": nil,
+		}
+		if len(metadata) > 0 {
+			updates["metadata"] = mergeMetadata(base, metadata)
+		}
+		if err := stagedUpdate(tx, id, attempt, updates, "向量"); err != nil {
+			return err
+		}
+
+		// 这次投递成功了，记录也跟着到 ready。必须在同一个事务里：
+		// 否则会出现"文档已经可检索、记录还停在处理中"这两行互相矛盾的状态。
+		// 手动录入（IngestText）没有记录，这里匹配 0 行，无害。
+		return tx.Model(&entity.KnowledgeUploadRecord{}).
+			Where("document_id = ?", id).
+			Update("status", entity.KnowledgeUploadRecordStatusReady).Error
+	})
+}
+
+// stagedUpdate 是分阶段写入共用的收尾：带状态与租约条件更新文档行。
+//
+// 影响 0 行时返回错误（整笔回滚）。这不是"内部错误"，而是这次处理已经失去写权限：
+// 行被删了、被 ResetStale 打回 pending、或已被重新认领。调用方（rag.failIngest）
+// 会把原因记进日志，但不会把这次失败写成文档的 failed —— 那行已经不属于它了。
+func stagedUpdate(tx *gorm.DB, id uint64, attempt int32, updates map[string]any, what string) error {
+	result := tx.Model(&entity.KnowledgeDocument{}).
+		Where("id = ? AND status = ? AND ingest_attempt = ?", id, entity.KnowledgeDocumentStatusProcessing, attempt).
+		Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("文档 %d 不存在、已不在处理中或租约已失效，%s未写入", id, what)
+	}
+	return nil
 }
 
 // mergeMetadata 把 payload 的顶层键合并到 base 上，同名的键以 payload 为准。
@@ -426,6 +680,9 @@ func (r *knowledgeDocumentRepository) ReplaceChunks(ctx context.Context, id uint
 			"content":          input.Content,
 			"content_checksum": input.Checksum,
 			"status":           entity.KnowledgeDocumentStatusReady,
+			// 同步链路也走这条不变量：ready 文档没有下一步，阶段必须清空，
+			// 否则会出现 ready + ingest_stage = parse 这种没人定义过的组合。
+			"ingest_stage": nil,
 		}
 		if len(input.Metadata) > 0 {
 			updates["metadata"] = input.Metadata

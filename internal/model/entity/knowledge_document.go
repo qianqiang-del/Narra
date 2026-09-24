@@ -24,6 +24,18 @@ const (
 	KnowledgeDocumentStatusFailed     = "failed"     // 处理失败，原因记在 metadata
 )
 
+// 文档的收录阶段。文件收录被拆成三步，每步成功才推进到下一步，失败则停在失败的那一步 ——
+// 所以它同时表示"当前正在做"与"失败后下次从哪一步恢复"。
+//
+// 取值必须与 IngestStage 字段上 check tag 里的 knowledge_documents_ingest_stage_check
+// 保持一致，改一处要改两处（与状态常量同一条约定）。ready 文档没有下一步，取值为 NULL，
+// 因此这里没有 done。
+const (
+	KnowledgeDocumentStageParse = "parse" // 还没有可靠正文，恢复时必须读原文件重新解析
+	KnowledgeDocumentStageChunk = "chunk" // 正文已落库，恢复时直接从正文重新切分
+	KnowledgeDocumentStageEmbed = "embed" // 切片已落库，恢复时直接从切片重新生成向量
+)
+
 // KnowledgeDocument 知识原文实体对应知识原文表，是全局知识库中的一篇完整文章。
 // 它不归属于课程。正文保存未经切分的原文，是编辑、审计和重新生成切片的唯一来源；
 // 停用后文章及其切片不会参与知识检索。更新原文后应替换其全部切片，关联向量会级联删除。
@@ -33,14 +45,29 @@ const (
 type KnowledgeDocument struct {
 	BaseModel
 
-	Title           string          `gorm:"column:title;type:varchar(300);not null;comment:文章展示名，上限 300 字；留空时由正文首个一级标题、再退到原始文件名顶替" json:"title"`                                                                                                                                                  // 文章展示标题
-	Content         string          `gorm:"column:content;type:text;not null;check:knowledge_documents_ready_has_content_check,status <> 'ready' OR length(content) > 0;comment:未切分的完整原文，不参与检索，只作为重建切片的唯一来源" json:"content"`                                                                      // 未切分的完整原文，是重建切片的唯一来源；CHECK 跨 status 与 content 两列，挂在本字段（每字段限一条 check tag）
-	SourceType      string          `gorm:"column:source_type;type:varchar(32);not null;check:knowledge_documents_source_type_check,source_type IN ('manual', 'import', 'api');comment:来源类型，取值 manual（手工录入）/ import（文件导入）/ api（接口同步）" json:"source_type"`                                         // 文章来源类型：manual、import 或 api
-	SourceURI       *string         `gorm:"column:source_uri;type:text;comment:来源标识；文件导入时是原始文件名，接口同步时是外部地址，手工录入为空" json:"source_uri"`                                                                                                                                                             // 外部来源地址、文件位置或接口标识；手工文章可为空
-	ContentChecksum *string         `gorm:"column:content_checksum;type:char(64);comment:正文的 SHA-256 摘要（64 位十六进制），用于判断内容变没变、要不要重新切片" json:"content_checksum"`                                                                                                                                     // 原文内容的 SHA-256 摘要，用于判断是否需要重新切片
-	Enabled         bool            `gorm:"column:enabled;not null;comment:是否参与知识检索；为 false 时本文档的切片不会被召回" json:"enabled"`                                                                                                                                                                         // 是否允许该文章的切片参与 RAG 检索
-	Status          string          `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_documents_status_check,status IN ('pending', 'processing', 'ready', 'failed');comment:处理状态，取值 pending（排队）/ processing（处理中）/ ready（可用）/ failed（失败，原因在 metadata）" json:"status"` // 处理状态：pending、processing、ready 或 failed
-	Metadata        json.RawMessage `gorm:"column:metadata;type:jsonb;not null;index:knowledge_documents_metadata_idx,type:gin;comment:扩展信息 JSON：分类、标签、作者，以及解析器身份、耗时与失败原因等处理产物" json:"metadata"`                                                                                                  // 扩展信息：分类、标签、作者，以及解析失败原因等处理产物
+	Title           string  `gorm:"column:title;type:varchar(300);not null;comment:文章展示名，上限 300 字；留空时由正文首个一级标题、再退到原始文件名顶替" json:"title"`                                                                                                                                                  // 文章展示标题
+	Content         string  `gorm:"column:content;type:text;not null;check:knowledge_documents_ready_has_content_check,status <> 'ready' OR length(content) > 0;comment:未切分的完整原文，不参与检索，只作为重建切片的唯一来源" json:"content"`                                                                      // 未切分的完整原文，是重建切片的唯一来源；CHECK 跨 status 与 content 两列，挂在本字段（每字段限一条 check tag）
+	SourceType      string  `gorm:"column:source_type;type:varchar(32);not null;check:knowledge_documents_source_type_check,source_type IN ('manual', 'import', 'api');comment:来源类型，取值 manual（手工录入）/ import（文件导入）/ api（接口同步）" json:"source_type"`                                         // 文章来源类型：manual、import 或 api
+	SourceURI       *string `gorm:"column:source_uri;type:text;comment:来源标识；文件导入时是原始文件名，接口同步时是外部地址，手工录入为空" json:"source_uri"`                                                                                                                                                             // 外部来源地址、文件位置或接口标识；手工文章可为空
+	ContentChecksum *string `gorm:"column:content_checksum;type:char(64);comment:正文的 SHA-256 摘要（64 位十六进制），用于判断内容变没变、要不要重新切片" json:"content_checksum"`                                                                                                                                     // 原文内容的 SHA-256 摘要，用于判断是否需要重新切片
+	Enabled         bool    `gorm:"column:enabled;not null;comment:是否参与知识检索；为 false 时本文档的切片不会被召回" json:"enabled"`                                                                                                                                                                         // 是否允许该文章的切片参与 RAG 检索
+	Status          string  `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_documents_status_check,status IN ('pending', 'processing', 'ready', 'failed');comment:处理状态，取值 pending（排队）/ processing（处理中）/ ready（可用）/ failed（失败，原因在 metadata）" json:"status"` // 处理状态：pending、processing、ready 或 failed
+
+	// IngestStage 是收录阶段。它必须是正式列而不是 metadata 里的一个键：恢复逻辑要按它
+	// 分支，而 metadata 是处理产物的自由格式，不适合承载状态机。取值见上面的阶段常量。
+	//
+	// 用指针类型是因为 ready 文档没有下一步（NULL）。三张表之间的不变量由它串起来：
+	// stage = chunk 意味着 content 已落库，stage = embed 意味着至少有一个切片，
+	// ready 意味着 stage 为 NULL。
+	IngestStage *string `gorm:"column:ingest_stage;type:varchar(16);default:parse;check:knowledge_documents_ingest_stage_check,ingest_stage IS NULL OR ingest_stage IN ('parse', 'chunk', 'embed');comment:收录阶段，表示当前正在做、失败后从哪一步恢复，取值 parse（读原文件解析）/ chunk（从正文切分）/ embed（从切片生成向量），ready 时为 NULL" json:"ingest_stage"`
+
+	// IngestAttempt 是任务租约编号：Worker 每次认领任务时原子递增，本次处理的所有阶段
+	// 写入（包括失败现场）都要求与它相等。它防的是旧 Worker 的迟到写入 —— 进程被回收、
+	// 任务被重新认领之后，旧执行者手里的编号已经对不上，更新影响 0 行。
+	// 排障时也有用：同一个编号的写入与日志属于同一次处理。
+	IngestAttempt int32 `gorm:"column:ingest_attempt;type:integer;not null;default:0;check:knowledge_documents_ingest_attempt_check,ingest_attempt >= 0;comment:任务租约编号，Worker 每次认领时原子递增，所有阶段写入都要求与它相等，用来挡住旧执行者的迟到写入" json:"ingest_attempt"`
+
+	Metadata json.RawMessage `gorm:"column:metadata;type:jsonb;not null;index:knowledge_documents_metadata_idx,type:gin;comment:扩展信息 JSON：分类、标签、作者，以及解析器身份、耗时与失败原因等处理产物" json:"metadata"` // 扩展信息：分类、标签、作者，以及解析失败原因等处理产物
 
 	// CreatedAt / UpdatedAt 遮蔽 BaseModel 的同名字段，只为给它们挂索引。
 	// 遮蔽在 GORM schema 里是安全的：直接声明的字段 BindNames 更短，会覆盖嵌入字段

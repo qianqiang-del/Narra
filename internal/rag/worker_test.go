@@ -20,9 +20,9 @@ import (
 // 用真文件系统而不是替身：这一段的正确性全在文件系统语义里（目录改名、目标已存在
 // 时先清、源不存在时安静返回），假的目录层次测不出来。
 //
-// 替身只承担"库里的 metadata 长什么样"：fakeDocumentStore 的 SetUploadPath
-// 是按真仓储的合并语义写的（见 ingest_test.go），所以下面能顺带验到
-// "归档时不会把失败现场抹掉"。
+// 替身只承担"库里的 metadata 长什么样"与"失败租约还持不持有"：
+// fakeDocumentStore 的 SetUploadPath 是按真仓储的合并语义与条件写写的（见 ingest_test.go），
+// 所以下面能顺带验到"归档时不会把失败现场抹掉"。
 
 // stageFile 在暂存目录里造一份待处理的文件，返回它的路径。
 func stageFile(t *testing.T, root, name, content string) string {
@@ -47,6 +47,7 @@ func archiveDir(root string, documentID uint64) string {
 func TestWorkerArchivesFailedFile(t *testing.T) {
 	root := t.TempDir()
 	store := &fakeDocumentStore{}
+	store.failedLeaseHeld = true
 	worker := NewWorker(store, nil, root, 1)
 
 	staged := stageFile(t, root, "1789807643538534200", "# 标题")
@@ -62,7 +63,7 @@ func TestWorkerArchivesFailedFile(t *testing.T) {
 	}
 	store.metadata = payload
 
-	worker.archiveStagedFile(context.Background(), testDocumentID, staged)
+	worker.archiveStagedFile(context.Background(), testDocumentID, 1, staged)
 
 	archived := filepath.Join(archiveDir(root, testDocumentID), "upload.md")
 	if _, err := os.Stat(archived); err != nil {
@@ -89,10 +90,11 @@ func TestWorkerArchivesFailedFile(t *testing.T) {
 func TestWorkerArchivesMissingFileQuietly(t *testing.T) {
 	root := t.TempDir()
 	store := &fakeDocumentStore{}
+	store.failedLeaseHeld = true
 	worker := NewWorker(store, nil, root, 1)
 
 	missing := filepath.Join(root, "pending", "1", "upload.md")
-	worker.archiveStagedFile(context.Background(), testDocumentID, missing)
+	worker.archiveStagedFile(context.Background(), testDocumentID, 1, missing)
 
 	if store.metadata != nil {
 		t.Errorf("原件不在时不该动 metadata，实际 %v", store.metadata)
@@ -110,11 +112,12 @@ func TestWorkerArchivesMissingFileQuietly(t *testing.T) {
 func TestWorkerArchivesFileAlreadyInPlace(t *testing.T) {
 	root := t.TempDir()
 	store := &fakeDocumentStore{}
+	store.failedLeaseHeld = true
 	worker := NewWorker(store, nil, root, 1)
 	ctx := context.Background()
 
 	staged := stageFile(t, root, "pending-1", "# 标题")
-	worker.archiveStagedFile(ctx, testDocumentID, staged)
+	worker.archiveStagedFile(ctx, testDocumentID, 1, staged)
 
 	archived := filepath.Join(archiveDir(root, testDocumentID), "upload.md")
 	content, err := os.ReadFile(archived)
@@ -123,7 +126,7 @@ func TestWorkerArchivesFileAlreadyInPlace(t *testing.T) {
 	}
 
 	// 重试：worker 拿到的 path 就是归档位置。
-	worker.archiveStagedFile(ctx, testDocumentID, archived)
+	worker.archiveStagedFile(ctx, testDocumentID, 1, archived)
 
 	again, err := os.ReadFile(archived)
 	if err != nil {
@@ -140,12 +143,13 @@ func TestWorkerArchivesFileAlreadyInPlace(t *testing.T) {
 func TestWorkerArchivesReplacesPreviousArchive(t *testing.T) {
 	root := t.TempDir()
 	store := &fakeDocumentStore{}
+	store.failedLeaseHeld = true
 	worker := NewWorker(store, nil, root, 1)
 	ctx := context.Background()
 
 	archive := func(content string) {
 		staged := stageFile(t, root, fmt.Sprintf("pending-%d", time.Now().UnixNano()), content)
-		worker.archiveStagedFile(ctx, testDocumentID, staged)
+		worker.archiveStagedFile(ctx, testDocumentID, 1, staged)
 	}
 
 	archive("第一次上传的内容")
@@ -166,6 +170,63 @@ func TestWorkerArchivesReplacesPreviousArchive(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("归档目录里应当只有一份文件，实际 %d 份", len(entries))
+	}
+}
+
+// 失败现场刚写下、用户就点了重试：新一轮已经接手，旧 Worker 的归档必须彻底停手 ——
+// 把新一轮正在读的原文件挪走会让它直接失败。核对不过时连 metadata 都不该碰。
+func TestWorkerArchiveStopsAfterRetry(t *testing.T) {
+	root := t.TempDir()
+	store := &fakeDocumentStore{}
+	store.failedLeaseHeld = false // 已经有人重试或接手
+	worker := NewWorker(store, nil, root, 1)
+
+	staged := stageFile(t, root, "1", "新一轮还要用的内容")
+	payload, err := json.Marshal(map[string]any{"upload_path": staged})
+	if err != nil {
+		t.Fatalf("构造 metadata 失败: %v", err)
+	}
+	store.metadata = payload
+
+	worker.archiveStagedFile(context.Background(), testDocumentID, 1, staged)
+
+	if _, err := os.Stat(staged); err != nil {
+		t.Errorf("旧租约不该移动原件: %v", err)
+	}
+	if _, err := os.Stat(archiveDir(root, testDocumentID)); !os.IsNotExist(err) {
+		t.Error("不该产生归档目录")
+	}
+	if string(store.metadata) != string(payload) {
+		t.Errorf("核对不过时不该改 metadata，实际 %s", store.metadata)
+	}
+}
+
+// 归档与"用户点重试"挤进同一个微秒级窗口：核对时租约还在、写指针时已经失效。
+// 文件已经挪走，必须再挪回来 —— 新一轮按 metadata 里的旧位置仍能找到它。
+func TestWorkerArchiveMovesFileBackWhenLeaseLost(t *testing.T) {
+	root := t.TempDir()
+	store := &fakeDocumentStore{}
+	store.failedLeaseHeld = true
+	store.uploadPathRejected = true // 写指针时租约已失效
+	worker := NewWorker(store, nil, root, 1)
+
+	staged := stageFile(t, root, "1", "内容")
+	payload, err := json.Marshal(map[string]any{"upload_path": staged})
+	if err != nil {
+		t.Fatalf("构造 metadata 失败: %v", err)
+	}
+	store.metadata = payload
+
+	worker.archiveStagedFile(context.Background(), testDocumentID, 1, staged)
+
+	if _, err := os.Stat(staged); err != nil {
+		t.Errorf("租约失效后原件应当挪回暂存目录: %v", err)
+	}
+	if _, err := os.Stat(archiveDir(root, testDocumentID)); !os.IsNotExist(err) {
+		t.Error("挪回之后不该留下归档目录")
+	}
+	if string(store.metadata) != string(payload) {
+		t.Errorf("指针没写进去时 metadata 不该变，实际 %s", store.metadata)
 	}
 }
 
@@ -190,7 +251,7 @@ func TestHeartbeatTouchesUntilStopped(t *testing.T) {
 	worker := NewWorker(store, nil, t.TempDir(), 1)
 	worker.heartbeatEvery = 5 * time.Millisecond
 
-	stop := worker.startHeartbeat(context.Background(), testDocumentID)
+	stop := worker.startHeartbeat(context.Background(), testDocumentID, 1)
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) && store.touchCalls() < 3 {
@@ -266,7 +327,7 @@ func TestProcessOneKeepsStagedFileOnCancel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		worker.processOne(ctx, document)
+		worker.processOne(ctx, document, 1)
 	}()
 
 	select {
@@ -313,7 +374,7 @@ func TestProcessOneDiscardsStagedFileWhenDocumentGone(t *testing.T) {
 	}
 	document.ID = testDocumentID
 
-	worker.processOne(context.Background(), document)
+	worker.processOne(context.Background(), document, 1)
 
 	if _, err := os.Stat(directory); !os.IsNotExist(err) {
 		t.Errorf("文档已删除时暂存目录应当被清掉，实际 stat: %v", err)

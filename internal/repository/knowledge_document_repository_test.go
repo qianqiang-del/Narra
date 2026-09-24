@@ -135,6 +135,10 @@ func TestKnowledgeReplaceChunksWritesThreeTables(t *testing.T) {
 	if reloaded.ContentChecksum == nil || *reloaded.ContentChecksum != input.Checksum {
 		t.Errorf("摘要没有写对: %v", reloaded.ContentChecksum)
 	}
+	// ready ⟺ 阶段为 NULL：同步链路也必须清空阶段，否则会留下 ready + parse 的组合。
+	if reloaded.IngestStage != nil {
+		t.Errorf("ready 文档的 ingest_stage 必须是 NULL，实际 %q", *reloaded.IngestStage)
+	}
 
 	if got := countRows(t, tx, &entity.KnowledgeChunk{}, "document_id = ?", document.ID); got != 3 {
 		t.Errorf("切片数 = %d，期望 3", got)
@@ -335,8 +339,10 @@ func TestKnowledgeStatusUpdatesBumpUpdatedAt(t *testing.T) {
 	}
 
 	metadata := json.RawMessage(`{"stage":"embed","error":"上游 429"}`)
-	if err := repo.MarkFailed(ctx, document.ID, metadata, "上游 429"); err != nil {
+	if applied, err := repo.MarkFailed(ctx, document.ID, 0, metadata, "上游 429"); err != nil {
 		t.Fatalf("标记失败状态出错: %v", err)
+	} else if !applied {
+		t.Fatal("处理中的文档应当能写入失败现场")
 	}
 	failed, err := repo.GetByID(ctx, document.ID)
 	if err != nil {
@@ -448,7 +454,7 @@ func TestKnowledgeListFiltersByStatusAndKeyword(t *testing.T) {
 	if err := repo.MarkProcessing(ctx, failed.ID); err != nil {
 		t.Fatalf("推进状态失败: %v", err)
 	}
-	if err := repo.MarkFailed(ctx, failed.ID, json.RawMessage(`{"error":"测试失败"}`), "测试失败"); err != nil {
+	if _, err := repo.MarkFailed(ctx, failed.ID, 0, json.RawMessage(`{"error":"测试失败"}`), "测试失败"); err != nil {
 		t.Fatalf("标记失败状态出错: %v", err)
 	}
 
@@ -549,7 +555,7 @@ func TestKnowledgeCountActiveExcludesFinished(t *testing.T) {
 	if err := repo.MarkProcessing(ctx, failed.ID); err != nil {
 		t.Fatalf("推进状态失败: %v", err)
 	}
-	if err := repo.MarkFailed(ctx, failed.ID, json.RawMessage(`{"error":"测试失败"}`), "测试失败"); err != nil {
+	if _, err := repo.MarkFailed(ctx, failed.ID, 0, json.RawMessage(`{"error":"测试失败"}`), "测试失败"); err != nil {
 		t.Fatalf("标记失败状态出错: %v", err)
 	}
 	afterFailed, err := repo.CountActive(ctx)

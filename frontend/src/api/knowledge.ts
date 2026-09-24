@@ -18,6 +18,8 @@ interface KnowledgeDocumentDTO {
   source_uri?: string
   enabled: boolean
   status: string
+  stage?: string
+  failed_stage?: string
   parser?: string
   error?: string
   chunks: number
@@ -37,6 +39,15 @@ interface PageDTO<T> {
 
 /** 文档处理状态，对应后端 knowledge_documents.status */
 export type KnowledgeDocumentStatus = 'pending' | 'processing' | 'ready' | 'failed'
+
+/**
+ * 收录阶段，对应后端 knowledge_documents.ingest_stage。
+ *
+ * 它是"当前正在做、失败后下次从哪一步恢复"的步骤：parse 读原文件解析、
+ * chunk 从正文切分、embed 从切片生成向量。ready 的文档没有下一步，后端返回空串。
+ * 界面上只在失败行显示它，用来说明"卡在哪一步"——具体原因在 error 里。
+ */
+export type KnowledgeDocumentStage = 'parse' | 'chunk' | 'embed'
 
 /**
  * 上传记录一行上出现的状态徽章，**只有四个**。
@@ -66,6 +77,13 @@ export interface KnowledgeDocument {
    */
   enabled: boolean
   status: KnowledgeDocumentStatus
+  /** 收录阶段；ready 或后端没给时为空串 */
+  stage: KnowledgeDocumentStage | ''
+  /**
+   * 失败卡在哪一步的**细粒度**位置（select_parser / vector / store / worker……）；
+   * 成功或后端没给时为空串。界面用它挑说明文案，避免把"写库失败"说成"向量化失败"。
+   */
+  failedStage: string
   parser: string
   /** 处理失败的原因；成功时为空串 */
   error: string
@@ -96,6 +114,8 @@ interface KnowledgeUploadRecordDTO {
   original_name: string
   size_bytes: number
   status: string
+  stage?: string
+  failed_stage?: string
   error?: string
   created_at: string
   updated_at: string
@@ -120,6 +140,10 @@ export interface KnowledgeUploadRecord {
   /** 文件字节数；0 表示未知（回填出来的历史记录拿不到这个信息） */
   sizeBytes: number
   status: KnowledgeDocumentStatus
+  /** 关联文档的收录阶段；文档已删除或 ready 时为空串 */
+  stage: KnowledgeDocumentStage | ''
+  /** 关联文档失败卡在哪一步（细粒度）；成功、未结束或文档已删除时为空串 */
+  failedStage: string
   /** 失败原因；成功或未结束时为空串 */
   error: string
   createdAt: string
@@ -219,6 +243,37 @@ function toParserStatus(d: KnowledgeParserStatusDTO): KnowledgeParserStatus {
   }
 }
 
+/** 后端可能不返回 stage、或将来返回新取值；只有三个已知阶段会被界面使用，其余归空串。 */
+function toStage(value: string | undefined): KnowledgeDocumentStage | '' {
+  return value === 'parse' || value === 'chunk' || value === 'embed' ? value : ''
+}
+
+/**
+ * 细粒度失败位置（后端 metadata.stage）→ 展示分组键（i18n 的 `knowledge.stage.*`）。
+ *
+ * 分组的依据是"用户看到的这一步是什么"：model / vector / embed 都属于向量化，
+ * 而 store（写库失败）单独成组 —— 向量已经算好了、只是没写进去，说成"向量化失败"
+ * 会把人引到错误的方向。位置未知（历史数据）时回落到粗粒度的收录阶段。
+ */
+const FAILURE_STAGE_KEYS: Record<string, string> = {
+  select_parser: 'parse',
+  parse: 'parse',
+  chunk: 'chunk',
+  model: 'embed',
+  embed: 'embed',
+  vector: 'embed',
+  store: 'store',
+  status: 'status',
+  worker: 'worker',
+}
+
+/** 取失败位置对应的展示分组键；非失败或位置未知时返回空串，界面不显示前缀。 */
+export function failureStageKey(failedStage: string, stage: KnowledgeDocumentStage | ''): string {
+  const key = FAILURE_STAGE_KEYS[failedStage]
+  if (key) return key
+  return stage
+}
+
 function toDocument(d: KnowledgeDocumentDTO): KnowledgeDocument {
   return {
     id: d.id,
@@ -227,6 +282,8 @@ function toDocument(d: KnowledgeDocumentDTO): KnowledgeDocument {
     sourceUri: d.source_uri ?? '',
     enabled: d.enabled,
     status: d.status as KnowledgeDocumentStatus,
+    stage: toStage(d.stage),
+    failedStage: d.failed_stage ?? '',
     parser: d.parser ?? '',
     error: d.error ?? '',
     chunks: d.chunks,
@@ -342,6 +399,8 @@ function toUploadRecord(r: KnowledgeUploadRecordDTO): KnowledgeUploadRecord {
     originalName: r.original_name,
     sizeBytes: r.size_bytes,
     status: r.status as KnowledgeDocumentStatus,
+    stage: toStage(r.stage),
+    failedStage: r.failed_stage ?? '',
     error: r.error ?? '',
     createdAt: r.created_at,
     updatedAt: r.updated_at,

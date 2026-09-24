@@ -131,7 +131,7 @@ func TestUploadRecordStatusSyncsWithDocument(t *testing.T) {
 	if err := documents.MarkProcessing(ctx, failing.ID); err != nil {
 		t.Fatalf("推进状态失败: %v", err)
 	}
-	if err := documents.MarkFailed(ctx, failing.ID, json.RawMessage(`{"stage":"embed"}`), "上游返回 429"); err != nil {
+	if _, err := documents.MarkFailed(ctx, failing.ID, 0, json.RawMessage(`{"stage":"embed"}`), "上游返回 429"); err != nil {
 		t.Fatalf("标记失败状态出错: %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestUploadRecordStatusSyncsWithDocument(t *testing.T) {
 	if err := documents.MarkProcessing(ctx, manual.ID); err != nil {
 		t.Fatalf("推进状态失败: %v", err)
 	}
-	if err := documents.MarkFailed(ctx, manual.ID, json.RawMessage(`{"stage":"chunk"}`), "空正文"); err != nil {
+	if _, err := documents.MarkFailed(ctx, manual.ID, 0, json.RawMessage(`{"stage":"chunk"}`), "空正文"); err != nil {
 		t.Fatalf("没有记录时标记失败不该出错: %v", err)
 	}
 	again, err := records.GetByID(ctx, record.ID)

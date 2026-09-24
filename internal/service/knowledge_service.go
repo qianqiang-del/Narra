@@ -91,8 +91,9 @@ type asyncIngester interface {
 // 与 asyncIngester 同一个路数（类型断言而非并进 ingester）：它后加，并进去会要求
 // 所有已有的测试替身再补一个方法。代价同样是这层保障从编译期退到运行期。
 type fileRetrier interface {
-	// Retry 把一行 failed 文档改回 pending 重新排队；返回 false 表示它不满足重试条件。
-	Retry(ctx context.Context, id uint64) (bool, error)
+	// Retry 把一行 failed 文档改回 pending 重新排队；stage 是按现实材料算出的恢复点。
+	// 返回 false 表示它不满足重试条件。
+	Retry(ctx context.Context, id uint64, stage string) (bool, error)
 }
 
 // retriever 是本服务对检索能力的最小依赖面。
@@ -121,11 +122,13 @@ var ErrIngestBusy = errors.New("已有文件正在收录，请等它处理完再
 // 与 ErrIngestBusy 同属"现在不行"这一类的可判定错误，接口层一并翻成 409。
 var ErrRetryNotFailed = errors.New("这份文档不是失败状态，不需要重试")
 
-// ErrStagedFileMissing 表示这次上传的原始文件已经不在服务器上，重试没有输入源。
+// ErrRecoveryInputMissing 表示恢复所需的材料全都不在了：原件、正文、切片一个都没有。
 //
 // 它和上面两个的区别在处置方式：用户能做的是**重新上传**这份文件，
 // 而不是等一会儿再点一次。所以文案里要把这句话说出来。
-var ErrStagedFileMissing = errors.New("这次上传的原始文件已不在服务器上，请重新上传")
+//
+// 直接复用 rag 侧的哨兵：恢复点由 rag.ResolveRecoveryStage 计算，两边认的必须是同一个值。
+var ErrRecoveryInputMissing = rag.ErrRecoveryInputMissing
 
 // ErrEmptyQuery 表示检索词是空的。
 //
@@ -173,16 +176,17 @@ func (s *knowledgeService) SubmitFile(ctx context.Context, input requestdto.Know
 
 // Retry 把一条收录失败的文档重新排队，让它再跑一遍。
 //
-// **原地重试**：复用同一行文档与同一条上传记录，不新建任何东西。输入是失败时
-// 归档在服务器上的原件（data/uploads/failed/<文档ID>/），所以用户不用重新选文件 ——
-// 上次上传的是什么，这次重试的就是什么。
+// **原地重试**：复用同一行文档与同一条上传记录，不新建任何东西。起点不是失败时停在的
+// 阶段，而是按现实材料算出来的恢复点（见 resolveRecoveryStage）：有切片就直接重新
+// 向量化，切片没了但有正文就重新分块，正文也没了才重新解析原文件 —— 所以
+// "向量服务故障、原件已被清掉"的文档仍然可以重试，不必重新上传。
 //
 // 三道检查按"最可能是哪个原因"排序，每一道都给出可判定的错误：
 //   - 文档不存在 → 照常报"文档不存在"；
 //   - 状态不是 failed → ErrRetryNotFailed（正在跑的不需要重试，ready 的更不需要）；
-//   - 原件不在磁盘上 → ErrStagedFileMissing（归档的文件被清掉了，只能重新上传）。
+//   - 原件、正文、切片三者全都不在 → ErrRecoveryInputMissing（只能重新上传）。
 //
-// 原件那一道放在进闸门之前：它是一次磁盘探测，不该和正在跑的收录抢那把锁。
+// 恢复点那一道放在进闸门之前：它最多是一次磁盘探测与两次查询，不该和正在跑的收录抢那把锁。
 //
 // 闸门与 SubmitFile 是同一套，而且是必要的 —— 重试同样会占住后台的收录位。
 // 两次检查之间那一行可能被别人重试或删掉，所以 Requeue 返回 false 时
@@ -198,13 +202,9 @@ func (s *knowledgeService) Retry(ctx context.Context, id uint64) (responsedto.Kn
 	if document.Status != entity.KnowledgeDocumentStatusFailed {
 		return responsedto.KnowledgeDocument{}, ErrRetryNotFailed
 	}
-
-	path := metadataUploadPath(document.Metadata)
-	if path == "" || !s.isUploadPath(path) {
-		return responsedto.KnowledgeDocument{}, ErrStagedFileMissing
-	}
-	if _, err := os.Stat(path); err != nil {
-		return responsedto.KnowledgeDocument{}, ErrStagedFileMissing
+	stage, err := s.resolveRecoveryStage(ctx, document)
+	if err != nil {
+		return responsedto.KnowledgeDocument{}, err
 	}
 
 	if !s.ingestMu.TryLock() {
@@ -224,7 +224,7 @@ func (s *knowledgeService) Retry(ctx context.Context, id uint64) (responsedto.Kn
 	if !ok {
 		return responsedto.KnowledgeDocument{}, fmt.Errorf("知识库异步收录不可用")
 	}
-	requeued, err := retrier.Retry(ctx, id)
+	requeued, err := retrier.Retry(ctx, id, stage)
 	if err != nil {
 		return responsedto.KnowledgeDocument{}, fmt.Errorf("重新排队失败: %w", err)
 	}
@@ -235,6 +235,34 @@ func (s *knowledgeService) Retry(ctx context.Context, id uint64) (responsedto.Kn
 	// 回读一次再返回：上面那份文档还是 failed，被改成 pending 的是库里的行。
 	// 走 Get 而不是自己拼响应，顺带把切片数也按同一个口径算出来。
 	return s.Get(ctx, id)
+}
+
+// resolveRecoveryStage 按现实材料算重试从哪一步开始，规则见 rag.ResolveRecoveryStage。
+//
+// 材料三样：原始文件（还在服务器上）、正文（documents.content）、切片（已落库的数量）。
+// 优先复用最靠后的产物 —— 切片还在就直接重新向量化，连切分都省了；正文还在就重新分块；
+// 都没了才重新解析原文件。只有三者都不在才返回 ErrRecoveryInputMissing。
+//
+// 这里算出的阶段会写回行上（Requeue），Worker 开始处理前还会用同一个函数再算一次：
+// 两次之间材料若又少了，Worker 会自己再退一步，而不是走进死胡同。
+func (s *knowledgeService) resolveRecoveryStage(ctx context.Context, document *entity.KnowledgeDocument) (string, error) {
+	counts, err := s.documents.CountChunksByDocument(ctx, []uint64{document.ID})
+	if err != nil {
+		return "", fmt.Errorf("统计已落库的切片失败: %w", err)
+	}
+
+	hasOriginal := false
+	if path := metadataUploadPath(document.Metadata); path != "" && s.isUploadPath(path) {
+		if _, err := os.Stat(path); err == nil {
+			hasOriginal = true
+		}
+	}
+
+	return rag.ResolveRecoveryStage(rag.RecoveryMaterial{
+		HasOriginal: hasOriginal,
+		HasContent:  strings.TrimSpace(document.Content) != "",
+		HasChunks:   counts[document.ID] > 0,
+	})
 }
 
 // knowledgeService 是 KnowledgeService 的实现。
@@ -441,8 +469,12 @@ func (s *knowledgeService) Get(ctx context.Context, id uint64) (responsedto.Know
 // Preview 返回单篇文档的解析正文，供前端打开预览。
 //
 // 与 Get 的唯一差别是响应里带上 Content：正文可能有几十万字，只有这个接口需要它，
-// 列表与详情刻意不带。文档还在 pending / processing 时 Content 是空的（正文要等
-// worker 处理完才写进去），失败时它同样是空串，失败原因在 Error 字段里。
+// 列表与详情刻意不带。
+//
+// Content 的可用性跟着收录阶段走：分阶段收录下，解析成功（stage 推进到 chunk）
+// 正文就已经落库，所以一篇卡在 chunk / embed 阶段的 failed 文档也能预览到正文 ——
+// 那是"解析产物是可信中间结果"的直接体现。只有还没解析的文档（pending / processing +
+// parse 阶段，或解析本身失败）Content 才是空串。
 func (s *knowledgeService) Preview(ctx context.Context, id uint64) (responsedto.KnowledgeDocumentPreview, error) {
 	document, err := s.documents.GetByID(ctx, id)
 	if err != nil {
@@ -610,6 +642,12 @@ func toUploadRecordResponse(view entity.KnowledgeUploadRecordView) responsedto.K
 	if view.ErrorMessage != nil {
 		out.Error = *view.ErrorMessage
 	}
+	if view.DocumentIngestStage != nil {
+		out.Stage = *view.DocumentIngestStage
+	}
+	if view.DocumentFailedStage != nil {
+		out.FailedStage = *view.DocumentFailedStage
+	}
 	return out
 }
 
@@ -711,22 +749,33 @@ func toDocumentResponse(document *entity.KnowledgeDocument, chunks int) response
 	}
 
 	out := responsedto.KnowledgeDocument{
-		ID:         document.ID,
-		Title:      document.Title,
-		SourceType: document.SourceType,
-		Enabled:    document.Enabled,
-		Status:     document.Status,
-		Parser:     parserName(document.Metadata),
-		Error:      failureReason(document.Metadata),
-		Chunks:     chunks,
-		Characters: len([]rune(document.Content)),
-		CreatedAt:  document.CreatedAt,
-		UpdatedAt:  document.UpdatedAt,
+		ID:          document.ID,
+		Title:       document.Title,
+		SourceType:  document.SourceType,
+		Enabled:     document.Enabled,
+		Status:      document.Status,
+		Stage:       stageName(document.IngestStage),
+		FailedStage: failureStage(document.Metadata),
+		Parser:      parserName(document.Metadata),
+		Error:       failureReason(document.Metadata),
+		Chunks:      chunks,
+		Characters:  len([]rune(document.Content)),
+		CreatedAt:   document.CreatedAt,
+		UpdatedAt:   document.UpdatedAt,
 	}
 	if document.SourceURI != nil {
 		out.SourceURI = *document.SourceURI
 	}
 	return out
+}
+
+// stageName 取文档的收录阶段。ready 文档没有下一步（列是 NULL），返回空串；
+// 响应里该字段 omitempty，前端会整列隐藏。
+func stageName(stage *string) string {
+	if stage == nil {
+		return ""
+	}
+	return *stage
 }
 
 // parserName 从 metadata 里取本次解析用的解析器身份，没有记录时返回空串
@@ -742,6 +791,25 @@ func parserName(metadata json.RawMessage) string {
 		return ""
 	}
 	return payload.Parser
+}
+
+// failureStage 从 metadata 里取出失败卡在哪一步（细粒度：select_parser / parse /
+// chunk / model / vector / store / worker / status）。
+//
+// 它与粗粒度的 ingest_stage 分工不同：阶段回答"失败后从哪一步恢复"，这里回答
+// "具体是哪一环失败" —— 两者都带出去，前端才不会把"向量已算好、写库失败"
+// 误说成"向量化失败"。
+func failureStage(metadata json.RawMessage) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	var payload struct {
+		Stage string `json:"stage"`
+	}
+	if err := json.Unmarshal(metadata, &payload); err != nil {
+		return ""
+	}
+	return payload.Stage
 }
 
 // failureReason 从 metadata 里取出失败原因。

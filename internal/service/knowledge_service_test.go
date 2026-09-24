@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,7 +73,8 @@ func (q *fakeDocumentQuerier) CountChunksByDocument(ctx context.Context, ids []u
 }
 
 // fakeIngester 是 ingester 的替身：只记录收到的输入，不真的切分与向量化。
-// 它也实现了 asyncIngester（SubmitFile）—— 服务层的上传闸门正是走那条路。
+// 它也实现了 asyncIngester（SubmitFile）与 fileRetrier（Retry）—— 服务层的上传闸门
+// 与重试入口正是走那两条路。
 type fakeIngester struct {
 	fileInput rag.FileInput
 	textInput rag.TextInput
@@ -81,12 +83,27 @@ type fakeIngester struct {
 
 	// submitted 累计 SubmitFile 被调用的次数，用来断言"被拒时根本没提交任务"。
 	submitted int
+
+	// retried 累计 Retry 被调用的次数，retriedStage 记录最后一次收到的恢复点；
+	// retryResult 是入队是否被接受。
+	retried      int
+	retriedStage string
+	retryResult  bool
+	retryErr     error
 }
 
 var (
 	_ ingester      = (*fakeIngester)(nil)
 	_ asyncIngester = (*fakeIngester)(nil)
+	_ fileRetrier   = (*fakeIngester)(nil)
 )
+
+// Retry 记录重试入队被调用过，以及收到的恢复点。服务层的材料检查必须先通过，才会走到这里。
+func (f *fakeIngester) Retry(ctx context.Context, id uint64, stage string) (bool, error) {
+	f.retried++
+	f.retriedStage = stage
+	return f.retryResult, f.retryErr
+}
 
 func (f *fakeIngester) SubmitFile(ctx context.Context, input rag.FileInput) (rag.IngestResult, error) {
 	f.submitted++
@@ -508,6 +525,88 @@ func TestSubmitFileRejectsWhileQueueBusy(t *testing.T) {
 	}
 	if ingestion.submitted != 0 {
 		t.Errorf("被拒时不该提交收录任务，实际提交了 %d 次", ingestion.submitted)
+	}
+}
+
+// 重试的起点按现实材料计算：有切片直接重向量化，切片没了有正文就重分块，
+// 正文也没了还有原件就重新解析；三者都不在才拒绝（ErrRecoveryInputMissing）。
+// 这里钉住四种组合算出来的恢复点，以及"有没有真的入队"。
+func TestRetryResolvesRecoveryStageFromMaterial(t *testing.T) {
+	root := t.TempDir()
+	staged := filepath.Join(root, "pending", "1", "upload.md")
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+		t.Fatalf("创建暂存目录失败: %v", err)
+	}
+	if err := os.WriteFile(staged, []byte("内容"), 0o600); err != nil {
+		t.Fatalf("写入暂存文件失败: %v", err)
+	}
+	withFile, err := json.Marshal(map[string]any{"upload_path": staged})
+	if err != nil {
+		t.Fatalf("构造 metadata 失败: %v", err)
+	}
+	// 原件已被清掉：metadata 里的路径不再存在。
+	missingFile, err := json.Marshal(map[string]any{"upload_path": filepath.Join(root, "pending", "gone", "upload.md")})
+	if err != nil {
+		t.Fatalf("构造 metadata 失败: %v", err)
+	}
+
+	parseStage := entity.KnowledgeDocumentStageParse
+	embedStage := entity.KnowledgeDocumentStageEmbed
+
+	cases := []struct {
+		name      string
+		stage     *string
+		content   string
+		chunks    int64
+		metadata  json.RawMessage
+		wantStage string
+		wantErr   error
+	}{
+		{name: "有切片：直接重向量化", stage: &embedStage, chunks: 3, metadata: missingFile, wantStage: entity.KnowledgeDocumentStageEmbed},
+		{name: "切片没了有正文：退回分块", stage: &embedStage, content: "已落库的正文", metadata: missingFile, wantStage: entity.KnowledgeDocumentStageChunk},
+		{name: "正文没了有原件：退回解析", stage: &embedStage, metadata: withFile, wantStage: entity.KnowledgeDocumentStageParse},
+		{name: "只剩原件（普通解析失败）", stage: &parseStage, metadata: withFile, wantStage: entity.KnowledgeDocumentStageParse},
+		{name: "三者全无：请重新上传", stage: &embedStage, metadata: missingFile, wantErr: ErrRecoveryInputMissing},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			querier := &fakeDocumentQuerier{
+				document: &entity.KnowledgeDocument{
+					BaseModel:   entity.BaseModel{ID: testDocumentID},
+					Title:       "重试文档",
+					SourceType:  testDocumentSource,
+					Status:      entity.KnowledgeDocumentStatusFailed,
+					IngestStage: tc.stage,
+					Content:     tc.content,
+					Metadata:    tc.metadata,
+				},
+				counts: map[uint64]int64{testDocumentID: tc.chunks},
+			}
+			ingestion := &fakeIngester{retryResult: true}
+			svc := NewKnowledgeService(querier, &fakeUploadRecordStore{}, ingestion, &fakeRetriever{}, root)
+
+			_, err := svc.Retry(context.Background(), testDocumentID)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("期望 %v，实际 %v", tc.wantErr, err)
+				}
+				if ingestion.retried != 0 {
+					t.Error("材料检查没过时不该入队")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("期望重试被接受，实际 %v", err)
+			}
+			if ingestion.retried != 1 {
+				t.Fatalf("应当入队一次，实际 %d 次", ingestion.retried)
+			}
+			if ingestion.retriedStage != tc.wantStage {
+				t.Errorf("恢复点 = %q，期望 %q", ingestion.retriedStage, tc.wantStage)
+			}
+		})
 	}
 }
 

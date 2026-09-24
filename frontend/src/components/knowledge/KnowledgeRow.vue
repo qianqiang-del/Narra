@@ -18,8 +18,10 @@ import { useI18n } from 'vue-i18n'
 import type {
   KnowledgeBadgeStatus,
   KnowledgeDocument,
+  KnowledgeDocumentStage,
   KnowledgeUploadRecord,
 } from '@/api/knowledge'
+import { failureStageKey } from '@/api/knowledge'
 import { cn } from '@/lib/utils'
 
 const props = defineProps<{
@@ -81,11 +83,24 @@ interface RowModel {
   title: string
   subtitle: string
   error: string
+  /** 失败行的粗粒度阶段（"解析阶段失败"等）；非失败或阶段未知时为空串 */
+  stageLabel: string
   icon: Component
   iconClass: string
   badge: { label: string; class: string } | null
   tag: string | null
   meta: string[]
+}
+
+/**
+ * 把失败位置翻成一句粗粒度说明，拼在具体错误前面。
+ *
+ * 位置映射（细粒度优先、粗粒度兜底）统一在 `failureStageKey` 里，两个组件共用一份。
+ */
+function failureStageLabel(status: string, stage: KnowledgeDocumentStage | '', failedStage: string): string {
+  if (status !== 'failed') return ''
+  const key = failureStageKey(failedStage, stage)
+  return key ? t(`knowledge.stage.${key}`) : ''
 }
 
 const model = computed<RowModel>(() => {
@@ -97,6 +112,7 @@ const model = computed<RowModel>(() => {
       // 文档被删之后标题会回落到原始文件名，此时两行字一模一样 —— 别重复显示
       subtitle: record.title === record.originalName ? '' : record.originalName,
       error: record.error,
+      stageLabel: failureStageLabel(record.status, record.stage, record.failedStage),
       icon: marks[status].icon,
       iconClass: marks[status].class,
       badge: { label: t(`knowledge.records.status.${status}`), class: badgeStyles[status] },
@@ -113,6 +129,7 @@ const model = computed<RowModel>(() => {
     title: document.title,
     subtitle: document.sourceUri,
     error: document.error,
+    stageLabel: failureStageLabel(document.status, document.stage, document.failedStage),
     icon: marks.ready.icon,
     iconClass: marks.ready.class,
     badge: null,
@@ -164,11 +181,12 @@ const model = computed<RowModel>(() => {
         {{ model.subtitle }}
       </p>
 
-      <!-- 失败原因原样展示：后端那句里写着卡在哪一步 -->
+      <!-- 失败原因原样展示：后端那句里写着卡在哪一步；前面再补一个粗粒度阶段，两者分开读 -->
       <p
         v-if="model.error"
         class="mt-1.5 rounded-md bg-red-50 px-2 py-1.5 text-xs break-words text-red-700 dark:bg-red-950/30 dark:text-red-300"
       >
+        <span v-if="model.stageLabel" class="font-medium">{{ model.stageLabel }}：</span>
         {{ model.error }}
       </p>
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -58,12 +59,16 @@ const (
 // 这样一份需要几分钟的 PDF 不会再让请求撞上写超时，前端也能靠文档状态轮询进度。
 //
 // 队列就是 knowledge_documents 表本身，没有独立的任务表：ListPending 取行、
-// Claim 抢行、状态字段标记完成或失败。好处是任务与文档同生共死 ——
-// 删除文档不会留下孤儿任务，重启也不会丢队列。
+// ClaimAndReturnAttempt 抢行并领取租约编号、状态字段标记完成或失败。好处是任务与文档
+// 同生共死 —— 删除文档不会留下孤儿任务，重启也不会丢队列。
+//
+// 处理是分阶段的：任务行上的 ingest_stage 记着下一步做什么，解析与切分的中间结果
+// 各自落库。所以进程崩溃、向量服务抖动都不会让昂贵的解析白跑 —— 重新入队后从
+// 失败的那一步继续（见 processOne 与 Ingester.processExistingFile）。
 //
 // concurrency 控制同时处理几篇；调度在单个进程内是串行的（每轮 process 内部
-// 等所有任务跑完才开始下一轮）。多实例部署时靠 Claim 的乐观更新保证同一行
-// 只被一个实例拿到。
+// 等所有任务跑完才开始下一轮）。多实例部署时靠 ClaimAndReturnAttempt 的乐观更新
+// 保证同一行只被一个实例拿到，租约编号保证旧执行者的迟到写入会被挡掉。
 type Worker struct {
 	store       FileTaskStore
 	ingester    *Ingester
@@ -173,9 +178,9 @@ func (w *Worker) run() {
 
 // process 取一批 pending 文档并发处理，全部跑完才返回。
 //
-// 每个候选都要先 Claim 再处理：ListPending 只是一次查询，两个实例可能查到同一行。
-// Claim 是一条带 status = 'pending' 条件的 UPDATE，谁把行改成了 processing
-// 谁才算真的拿到任务（返回 false 就是被别人抢先了，直接跳过）。
+// 每个候选都要先抢再处理：ListPending 只是一次查询，两个实例可能查到同一行。
+// ClaimAndReturnAttempt 是一条带 status = 'pending' 条件的 UPDATE，谁把行改成
+// processing 谁才算真的拿到任务，同时领到本次处理的租约编号（返回 false 就是被别人抢先了）。
 func (w *Worker) process(ctx context.Context) {
 	documents, err := w.store.ListPending(ctx, w.concurrency)
 	if err != nil {
@@ -184,7 +189,7 @@ func (w *Worker) process(ctx context.Context) {
 	}
 	var group sync.WaitGroup
 	for _, document := range documents {
-		claimed, err := w.store.Claim(ctx, document.ID)
+		attempt, claimed, err := w.store.ClaimAndReturnAttempt(ctx, document.ID)
 		if err != nil {
 			logger.Warn("抢占任务失败，跳过这一条",
 				zap.Uint64("document_id", document.ID), zap.Error(err))
@@ -194,7 +199,7 @@ func (w *Worker) process(ctx context.Context) {
 			continue
 		}
 		group.Add(1)
-		go func(document entity.KnowledgeDocument) {
+		go func(document entity.KnowledgeDocument, attempt int32) {
 			defer group.Done()
 			// 一个任务的 panic 不能带走整个进程：Go 里任何 goroutine 的未捕获 panic
 			// 都会终止程序。这里兜住并放弃本次处理 —— 心跳会随之停止，
@@ -203,48 +208,84 @@ func (w *Worker) process(ctx context.Context) {
 				if recovered := recover(); recovered != nil {
 					logger.Error("收录任务 panic，已放弃本次处理",
 						zap.Uint64("document_id", document.ID),
+						zap.Int32("ingest_attempt", attempt),
 						zap.Any("panic", recovered),
 						zap.Stack("stack"),
 					)
 				}
 			}()
-			w.processOne(ctx, document)
-		}(document)
+			w.processOne(ctx, document, attempt)
+		}(document, attempt)
 	}
 	group.Wait()
 }
 
-// processOne 处理一条已经抢到手的任务。
+// processOne 处理一条已经抢到手的任务，attempt 是这次处理的租约编号。
 //
-// 暂存文件不在上传根目录下时直接判失败：路径是从 metadata 里读出来的，
-// 而 metadata 的写入者对路径没有任何约束力，不加这道判断就等于允许
-// "构造一条记录、让后台进程删掉任意目录"。这条分支**不清理任何目录** ——
-// 路径本身就不可信，filepath.Dir 指到哪儿都有可能。
+// 开始处理前先按现实材料算恢复点（resolveRecoveryStage）：切片还在就直接重新向量化，
+// 切片没了但有正文就重新分块，正文也没了才重新解析原文件，三者都不在才判"请重新上传"。
+// 这样既不会死守一个已经不成立的阶段，也不会在材料缺失时白白重做最贵的那一步。
 //
-// 成败对暂存文件的处置不同：
+// 阶段决定它需要什么输入：parse 必须有一份可读的原件，chunk / embed 的输入在库里，
+// 原文件已经不是必需品 —— 所以路径校验只在 parse 阶段强制（见下）。校验本身仍然必要：
+// 路径从 metadata 里读出来，而 metadata 的写入者对路径没有任何约束力，
+// 不加这道判断就等于允许"构造一条记录、让后台进程删掉任意目录"。这道分支
+// **不清理任何目录** —— 路径本身就不可信，filepath.Dir 指到哪儿都有可能。
+//
+// 成败对暂存文件的处置：
 //   - 成功：内容已经进库，原件没有用了，删掉整个暂存目录；
-//   - 失败：原件**留下来**并归档到 failed/<文档ID>/ —— 它是重试的输入，
-//     删掉就等于把"重试这一份"的能力一起删了，用户只能重新上传一遍；
-//   - 失败但文档已被删除：直接清掉暂存目录。没有重试对象，留着只会变成
-//     两张表都查不到的孤儿文件（见 processOne 里 documentExists 那一步）；
+//   - 失败且失败现场已落库：原件**留下来**并归档到 failed/<文档ID>/ —— 它是 parse
+//     阶段重试的输入，删掉就等于把"重试这一份"的能力一起删了。归档本身还受租约
+//     保护：如果用户已经点了重试、新一轮接手，旧 Worker 彻底停手（见 archiveStagedFile）；
+//   - 失败但失败现场没落库（旧租约迟到、行已被删、写库本身失败）：文件一个字节都不动。
+//     旧租约归档会把新一轮正在用的输入挪走；写库失败时留在原地，下一轮还能用。
+//     只有"文档确实已经不在了"这一种情况才清理暂存目录；
 //   - 取消（服务关停）：既不归档也不落终态，原件留在暂存目录不动 ——
 //     这一行很快会被周期 ResetStale 打回 pending，下次处理还要原样用它。
-func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocument) {
+func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocument, attempt int32) {
 	path := uploadPath(document.Metadata)
-	if path == "" || !w.isUnderRoot(path) {
-		payload, _ := json.Marshal(map[string]any{"error": unusablePathReason, "stage": "worker"})
-		_ = w.store.MarkFailed(ctx, document.ID, payload, unusablePathReason)
+
+	// 处理之前按现实材料再算一次恢复点，而不是照抄行上的 ingest_stage：
+	// 用户点重试之后材料又少了（人工动库、操作失误）时，这里会自己退回还能走的那一步。
+	stage, err := w.resolveRecoveryStage(ctx, &document, path)
+	if err != nil {
+		if errors.Is(err, ErrRecoveryInputMissing) {
+			// 原件、正文、切片全都不在了：只能失败并请用户重新上传。
+			_, _ = w.ingester.failIngest(ctx, &document, attempt, "worker", ErrRecoveryInputMissing)
+			return
+		}
+		// 算不出恢复点（DB 抖动）不是文档的错：不写终态，留给周期回收重试。
+		logger.Warn("计算收录恢复点失败，本轮放弃，等待周期回收",
+			zap.Uint64("document_id", document.ID), zap.Error(err))
 		return
 	}
 
-	stopHeartbeat := w.startHeartbeat(ctx, document.ID)
+	// 只有真的要读原文件（parse）时才强制校验路径：chunk / embed 的输入在库里，
+	// 原件已经不在了也不该挡下它们。校验本身仍然必要 —— 路径从 metadata 里读出来，
+	// 而 metadata 的写入者对路径没有任何约束力，不加这道判断就等于允许
+	// "构造一条记录、让后台进程删掉任意目录"。这道分支**不清理任何目录** ——
+	// 路径本身就不可信，filepath.Dir 指到哪儿都有可能。
+	if stage == entity.KnowledgeDocumentStageParse && (path == "" || !w.isUnderRoot(path)) {
+		payload, _ := json.Marshal(map[string]any{"error": unusablePathReason, "stage": "worker"})
+		applied, err := w.store.MarkFailed(ctx, document.ID, attempt, payload, unusablePathReason)
+		if err != nil {
+			logger.Error("标记暂存路径无效时出错，文档可能停在中间状态",
+				zap.Uint64("document_id", document.ID), zap.Error(err))
+		} else if !applied {
+			logger.Warn("暂存路径无效的失败现场未写入：文档已不在处理中或租约已失效",
+				zap.Uint64("document_id", document.ID), zap.Int32("ingest_attempt", attempt))
+		}
+		return
+	}
+
+	stopHeartbeat := w.startHeartbeat(ctx, document.ID, attempt)
 	defer stopHeartbeat() // 必须用 defer：任务 panic 时也要把心跳停掉，否则这一行永远不会被回收
 
-	_, err := w.ingester.processExistingFile(ctx, &document, FileInput{
+	_, err = w.ingester.processExistingFile(ctx, &document, FileInput{
 		Path:      path,
 		Title:     taskTitle(document.Metadata, document.Title),
 		SourceURI: sourceURI(document),
-	})
+	}, attempt, stage)
 
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -259,23 +300,54 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 		// 这里再留一条日志：排障时不该为了看一句 traceback 去翻某一行文档的 JSON。
 		logger.Warn("文件收录失败",
 			zap.Uint64("document_id", document.ID),
+			zap.Int32("ingest_attempt", attempt),
 			zap.String("path", path),
 			zap.Error(err),
 		)
 
-		// 归档之前先确认这一行还在：用户可能在处理期间把文档或上传记录删了。
-		// 那时归档出来的 failed/<ID>/ 两张表都查不到、任何清理路径也够不着，
-		// 只会永远留在磁盘上。文档都没了，也就没有重试对象，原件不必保留。
+		if failureRecorded(err) {
+			w.archiveStagedFile(ctx, document.ID, attempt, path)
+			return
+		}
+
+		// 失败现场没写进库里：这一行可能已被删除，也可能已经属于新一轮任务。
+		// 只有确认文档真的没了才清理暂存目录；其余情况一律不动文件。
 		if !w.ingester.documentExists(document.ID) {
 			logger.Info("文档已被删除，不再归档失败原件，直接清理暂存目录",
 				zap.Uint64("document_id", document.ID))
 			w.discardStagedFile(path)
-			return
 		}
-		w.archiveStagedFile(ctx, document.ID, path)
 		return
 	}
 	w.discardStagedFile(path)
+}
+
+// resolveRecoveryStage 按现实材料算这次从哪一步开始（见 ResolveRecoveryStage）。
+//
+// 它不信任行上的 ingest_stage：阶段只是记录，材料才是事实。DB 出错时返回错误
+// （调用方不该把一次查询失败记成文档失败，留给周期回收重试）；材料全无时返回
+// ErrRecoveryInputMissing，由调用方写成终态并把"重新上传"告诉用户。
+//
+// 原件的判断只看"路径存在且文件还在"；路径是否落在上传根目录内由 processOne 在
+// 确定要走 parse 之后再核对（那是防越界删除的安全边界，不是恢复点计算的一部分）。
+func (w *Worker) resolveRecoveryStage(ctx context.Context, document *entity.KnowledgeDocument, path string) (string, error) {
+	counts, err := w.store.CountChunksByDocument(ctx, []uint64{document.ID})
+	if err != nil {
+		return "", fmt.Errorf("统计已落库的切片失败: %w", err)
+	}
+
+	hasOriginal := false
+	if strings.TrimSpace(path) != "" {
+		if _, err := os.Stat(path); err == nil {
+			hasOriginal = true
+		}
+	}
+
+	return ResolveRecoveryStage(RecoveryMaterial{
+		HasOriginal: hasOriginal,
+		HasContent:  strings.TrimSpace(document.Content) != "",
+		HasChunks:   counts[document.ID] > 0,
+	})
 }
 
 // startHeartbeat 在任务存续期间持续推 updated_at，返回一个停止函数。
@@ -284,9 +356,12 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 // 进程被 kill、goroutine 消失时心跳立即停，几分钟后行就被回收 ——
 // 不需要等下一次进程重启，也不需要把阈值调到几十分钟。
 //
+// 心跳带上租约编号：旧执行者若在任务被回收、重新认领之后才醒过来，它的心跳
+// 影响 0 行 —— 否则一个已经死掉的新任务会被旧心跳一直"续命"，永远等不到回收。
+//
 // ⚠️ 契约：今后任何新增的长阶段都必须跑在这个 ctx 下（或同样有报活），
 // 否则会被 ResetStale 当成僵尸误杀。
-func (w *Worker) startHeartbeat(ctx context.Context, id uint64) func() {
+func (w *Worker) startHeartbeat(ctx context.Context, id uint64, attempt int32) func() {
 	ticker := time.NewTicker(w.heartbeatEvery)
 	done := make(chan struct{})
 	var once sync.Once
@@ -298,7 +373,7 @@ func (w *Worker) startHeartbeat(ctx context.Context, id uint64) func() {
 				return
 			case <-ticker.C:
 				// 关停时 ctx 已取消，心跳失败是预期内的，不必记 Warn
-				if err := w.store.Touch(ctx, id); err != nil && ctx.Err() == nil {
+				if err := w.store.Touch(ctx, id, attempt); err != nil && ctx.Err() == nil {
 					logger.Warn("收录心跳失败", zap.Uint64("document_id", id), zap.Error(err))
 				}
 			}
@@ -315,10 +390,35 @@ func (w *Worker) startHeartbeat(ctx context.Context, id uint64) func() {
 
 // archiveStagedFile 把失败的原件从暂存目录挪到 failed/<文档ID>/，再把新位置写回 metadata。
 //
-// 归档失败不阻断流程：原件留在暂存目录、upload_path 也不改 —— 它仍然在 uploadRoot
-// 之下，所以重试与删除时的清理照样找得到它（见 isUnderRoot 与 service.isUploadPath）。
-// 代价是它不会再被自动清理，所以这里必须留日志：那是"文件为什么残留"唯一的线索。
-func (w *Worker) archiveStagedFile(ctx context.Context, documentID uint64, path string) {
+// 全程受租约保护，分成三道：
+//  1. 动文件之前先核对"这一行仍由这次失败持有"（FailedLeaseOwned）。用户可能在
+//     失败现场写下的下一秒就点了重试、新一轮已经接手并在读原文件 —— 核对不过就
+//     彻底停手，连指针都不碰。
+//  2. 挪完之后写指针也带同样的条件（SetUploadPath）。万一在"核对通过 → 挪文件"
+//     这微秒级窗口里租约被抢走，写入影响 0 行，我们就把文件挪回原位，
+//     让新一轮按 metadata 里的旧位置仍能找到它。
+//  3. 归档失败不阻断流程：原件留在暂存目录、upload_path 也不改 —— 它仍然在 uploadRoot
+//     之下，所以重试与删除时的清理照样找得到它（见 isUnderRoot 与 service.isUploadPath）。
+//     代价是它不会再被自动清理，所以这里必须留日志：那是"文件为什么残留"唯一的线索。
+func (w *Worker) archiveStagedFile(ctx context.Context, documentID uint64, attempt int32, path string) {
+	if strings.TrimSpace(path) == "" {
+		// chunk / embed 阶段的重试不需要原文件，路径可能是空的（甚至整个文件已丢）。
+		// 没有东西要归档，安静返回。
+		return
+	}
+
+	owned, err := w.store.FailedLeaseOwned(ctx, documentID, attempt)
+	if err != nil {
+		logger.Warn("核对失败租约出错，放弃归档原件",
+			zap.Uint64("document_id", documentID), zap.Int32("ingest_attempt", attempt), zap.Error(err))
+		return
+	}
+	if !owned {
+		logger.Info("文档已被重试或接手，放弃归档原件",
+			zap.Uint64("document_id", documentID), zap.Int32("ingest_attempt", attempt))
+		return
+	}
+
 	source := filepath.Dir(path)
 	if _, err := os.Stat(source); err != nil {
 		// 原件已经不在了（metadata 里的路径可能早被人工动过），没有东西要归档。
@@ -362,12 +462,29 @@ func (w *Worker) archiveStagedFile(ctx context.Context, documentID uint64, path 
 	}
 
 	archived := filepath.Join(target, filepath.Base(path))
-	if err := w.store.SetUploadPath(ctx, documentID, archived); err != nil {
+	applied, err := w.store.SetUploadPath(ctx, documentID, attempt, archived)
+	if err != nil {
 		// 文件挪走了、库里还指着旧位置 —— 这是必须让人看见的坏状态：
 		// 重试会报"原件已不在"，删除时的清理也会漏掉这一份。
 		logger.Error("失败原件已归档但 upload_path 未更新，重试会找不到它",
 			zap.Uint64("document_id", documentID), zap.String("path", archived), zap.Error(err))
+		return
 	}
+	if applied {
+		return
+	}
+
+	// 归档与"用户点重试"挤进了同一个瞬间：指针没写进去，新一轮会按 metadata 里的
+	// 旧位置找文件。把文件挪回原位，让它仍然找得到（窗口只有微秒级，挪回去时
+	// 新一轮还没来得及开始读）。
+	if err := os.Rename(target, source); err != nil {
+		logger.Error("租约已失效且原件挪不回暂存目录，下一次重试会找不到它",
+			zap.Uint64("document_id", documentID),
+			zap.String("from", target), zap.String("to", source), zap.Error(err))
+		return
+	}
+	logger.Info("归档期间租约失效，原件已挪回暂存目录",
+		zap.Uint64("document_id", documentID), zap.Int32("ingest_attempt", attempt))
 }
 
 // discardStagedFile 删掉收录成功后不再需要的暂存目录。
@@ -381,6 +498,11 @@ func (w *Worker) archiveStagedFile(ctx context.Context, documentID uint64, path 
 // path 来自 metadata、写入者不受约束；如果它直接落在 root 下，
 // filepath.Dir 就是 root 本身，RemoveAll 会把整棵上传目录（含别的待处理原件）清空。
 func (w *Worker) discardStagedFile(path string) {
+	if strings.TrimSpace(path) == "" {
+		// 没有路径可清理（chunk / embed 阶段的重试可能不再持有原文件）。
+		return
+	}
+
 	directory := filepath.Dir(path)
 	if !w.isStagingDir(directory) {
 		logger.Warn("暂存目录不在可清理范围内，跳过删除", zap.String("dir", directory))

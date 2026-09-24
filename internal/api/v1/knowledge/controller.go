@@ -273,8 +273,9 @@ func isSettled(status string) bool {
 // 所以这次请求不需要 multipart，一个空 POST 就够。返回的文档是 pending，
 // 调用方接着订阅 Events 看进度 —— 与上传之后的流程完全一样。
 //
-// 三种"现在不行"翻成 409 而不是 400：问题不在这次请求的参数，而在此刻的状态 ——
-// 文档已经不是失败态、后台正忙着收别的、或者原件已经不在了（那只能重新上传）。
+// 四种"现在不行"翻成 409 而不是 400：问题不在这次请求的参数，而在此刻的状态 ——
+// 文档已经不是失败态、后台正忙着收别的、或者恢复所需的材料全都没了（原件、正文、
+// 切片一个不剩，只能重新上传）。
 func (c *Controller) Retry(ctx *gin.Context) {
 	id, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
 	if err != nil || id == 0 {
@@ -287,7 +288,7 @@ func (c *Controller) Retry(ctx *gin.Context) {
 		switch {
 		case errors.Is(err, service.ErrIngestBusy),
 			errors.Is(err, service.ErrRetryNotFailed),
-			errors.Is(err, service.ErrStagedFileMissing):
+			errors.Is(err, service.ErrRecoveryInputMissing):
 			response.Conflict(ctx, err.Error())
 		default:
 			response.BadRequest(ctx, err.Error())
