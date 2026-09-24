@@ -25,6 +25,7 @@ type Config struct {
 
 type StorageConfig struct {
 	UploadDir string `mapstructure:"upload_dir"`
+	AudioDir  string `mapstructure:"audio_dir"`
 }
 
 // WorkerConfig 是后台生成任务的执行配置。

@@ -40,6 +40,7 @@ export interface ClassroomAgentBrief {
 /** 后端 `responsedto.Classroom` 的原样形状 */
 export interface ClassroomDTO {
   id: number
+  folder_id?: number | null
   title: string
   requirement: string
   mode: string
@@ -62,4 +63,12 @@ export function createClassroom(input: CreateClassroomInput): Promise<ClassroomD
 /** 查询一门课；生成期间轮询它拿状态。 */
 export function fetchClassroom(id: number): Promise<ClassroomDTO> {
   return request<ClassroomDTO>(`/classrooms/${id}`)
+}
+
+export function fetchClassrooms(): Promise<ClassroomDTO[]> {
+  return request<ClassroomDTO[]>('/classrooms')
+}
+
+export function deleteClassroom(id: number): Promise<{ id: number }> {
+  return request<{ id: number }>(`/classrooms/${id}`, { method: 'DELETE' })
 }

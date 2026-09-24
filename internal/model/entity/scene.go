@@ -46,6 +46,7 @@ type Scene struct {
 	SortOrder   int32  `gorm:"column:sort_order;not null;uniqueIndex:scenes_classroom_id_sort_order_key;check:scenes_sort_order_check,sort_order >= 0;comment:场景在课程里的顺序，从 0 开始；与 classroom_id 组成唯一约束" json:"sort_order"`                                                   // 场景顺序，从 0 开始
 	Type        string `gorm:"column:type;type:varchar(32);not null;check:scenes_type_check,type IN ('slide', 'quiz', 'interactive', 'pbl', 'complete');comment:场景分类标签，不参与渲染（前端按 content 里每个 block 的 type 渲染），取值 slide / quiz / interactive / pbl / complete" json:"type"` // 场景分类标签，不参与渲染；slide | quiz | interactive | pbl | complete
 	Title       string `gorm:"column:title;type:varchar(200);not null;comment:场景标题；由大模型产出，写入前截断到 200 字以内" json:"title"`                                                                                                                                                    // 场景标题；由大模型产出，写入前须按字符截断到 200 以内
+	Brief       string `gorm:"column:brief;type:text;not null;default:'';comment:大纲阶段生成的场景内容摘要；供场景生成及任务重入恢复" json:"brief"`
 
 	Status string `gorm:"column:status;type:varchar(32);not null;check:scenes_status_check,status IN ('pending', 'generating', 'ready', 'failed');comment:场景状态，取值 pending / generating / ready / failed；ready 表示页面 JSON 与它全部讲解段落都已就绪" json:"status"` // 场景状态，见 §5.2；Ready = 页面 JSON 与全部讲解段落都已就绪
 

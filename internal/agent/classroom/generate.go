@@ -2,6 +2,7 @@ package classroom
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 	"narra/pkg/logger"
 )
 
-// Generate 跑一趟完整生成并返回错误，置失败由调用方在重试耗尽时决定。段二（逐场景）待接。
+// Generate 跑一趟完整生成并返回错误，置失败由调用方在重试耗尽时决定。
 func Generate(ctx context.Context, deps Deps, classroomID uint64) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -25,11 +26,17 @@ func Generate(ctx context.Context, deps Deps, classroomID uint64) (err error) {
 		return fmt.Errorf("读取课程失败: %w", err)
 	}
 
-	if _, err := generateOutline(ctx, deps, classroom); err != nil {
-		return err
+	if classroom.Status == entity.ClassroomStatusGenerating {
+		if _, err := generateOutline(ctx, deps, classroom); err != nil {
+			return err
+		}
+		logger.Info("课堂大纲生成完成", zap.Uint64("classroom_id", classroomID))
 	}
-	logger.Info("课堂大纲生成完成", zap.Uint64("classroom_id", classroomID))
-	return nil
+	var config GenerationConfig
+	if err := json.Unmarshal(classroom.GenerationConfig, &config); err != nil {
+		return fmt.Errorf("解析生成配置失败: %w", err)
+	}
+	return generateScenes(ctx, deps, classroom, config)
 }
 
 // MarkFailed 把课程置为 failed 并写入失败原因，供调用方在重试耗尽时调用。

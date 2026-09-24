@@ -113,6 +113,7 @@ func saveScenes(ctx context.Context, deps Deps, classroomID uint64, plan *outlin
 			SortOrder:   int32(index),
 			Type:        plan.Scenes[index].Type,
 			Title:       plan.Scenes[index].Title,
+			Brief:       plan.Scenes[index].Brief,
 			Status:      entity.SceneStatusPending,
 			Content:     json.RawMessage("{}"),
 		})

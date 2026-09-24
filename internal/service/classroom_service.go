@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/rand/v2"
 	"strings"
 
+	"gorm.io/gorm"
 	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
@@ -240,6 +242,30 @@ func (s *classroomService) Get(ctx context.Context, id uint64) (*responsedto.Cla
 	}
 	detail.Agents = agents
 	return detail, nil
+}
+
+func (s *classroomService) List(ctx context.Context) ([]*responsedto.Classroom, error) {
+	classrooms, err := s.classrooms.List(ctx)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂列表失败", err)
+	}
+	items := make([]*responsedto.Classroom, 0, len(classrooms))
+	for _, classroom := range classrooms {
+		item := toClassroomResponse(classroom)
+		item.Agents = []responsedto.ClassroomAgentBrief{}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *classroomService) Delete(ctx context.Context, id uint64) error {
+	if err := s.classrooms.Delete(ctx, id); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
+		}
+		return apperrors.NewWithErr(apperrors.CodeInternalError, "删除课堂失败", err)
+	}
+	return nil
 }
 
 // listAgentBriefs 取课堂角色的最小信息：音色来自快照表，agent_key 由角色池换回。

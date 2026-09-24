@@ -18,7 +18,11 @@ func (r *sceneSegmentRepository) CreateBatch(ctx context.Context, segments []*en
 	if len(segments) == 0 {
 		return nil
 	}
-	return r.db.WithContext(ctx).CreateInBatches(segments, len(segments)).Error
+	return conn(ctx, r.db).CreateInBatches(segments, len(segments)).Error
+}
+
+func (r *sceneSegmentRepository) DeleteByScene(ctx context.Context, sceneID uint64) error {
+	return conn(ctx, r.db).Where("scene_id = ?", sceneID).Delete(&entity.SceneSegment{}).Error
 }
 
 func (r *sceneSegmentRepository) ListByScene(ctx context.Context, sceneID uint64) ([]entity.SceneSegment, error) {

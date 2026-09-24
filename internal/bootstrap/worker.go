@@ -2,6 +2,8 @@ package bootstrap
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -99,7 +101,16 @@ func BuildWorker(deps classroom.Deps, cfg *config.Config) (service.JobQueue, *Wo
 		}
 		// 同一门课的重试归到同一条 session，便于在 Langfuse 里按课堂查。
 		if cfg.Langfuse.Enabled {
-			ctx = langfuse.SetTrace(ctx, langfuse.WithSessionID(fmt.Sprintf("%d", classroomID)))
+			traceID, traceErr := newLangfuseTraceID()
+			if traceErr != nil {
+				return worker.Permanent(fmt.Errorf("生成 Langfuse trace ID 失败: %w", traceErr))
+			}
+			ctx = langfuse.SetTrace(ctx,
+				langfuse.WithID(traceID),
+				langfuse.WithName("classroom-generation"),
+				langfuse.WithSessionID(fmt.Sprintf("%d", classroomID)),
+				langfuse.WithMetadata(map[string]string{"classroom_id": fmt.Sprintf("%d", classroomID)}),
+			)
 		}
 		if err := classroom.Generate(ctx, deps, classroomID); err != nil {
 			logger.Error("课堂生成失败",
@@ -124,6 +135,14 @@ func BuildWorker(deps classroom.Deps, cfg *config.Config) (service.JobQueue, *Wo
 		interval: cfg.Worker.ReconcileInterval,
 	}
 	return queue, runtime, nil
+}
+
+func newLangfuseTraceID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 // redisOpt 返回 asynq 连接 Redis 的配置。

@@ -28,6 +28,27 @@ func (c *Controller) Create(ctx *gin.Context) {
 	response.Success(ctx, item)
 }
 
+func (c *Controller) List(ctx *gin.Context) {
+	items, err := c.svc.List(ctx.Request.Context())
+	if err != nil {
+		response.BizError(ctx, err)
+		return
+	}
+	response.Success(ctx, items)
+}
+
+func (c *Controller) Delete(ctx *gin.Context) {
+	id, ok := parseID(ctx)
+	if !ok {
+		return
+	}
+	if err := c.svc.Delete(ctx.Request.Context(), id); err != nil {
+		response.BizError(ctx, err)
+		return
+	}
+	response.Success(ctx, gin.H{"id": id})
+}
+
 func (c *Controller) Get(ctx *gin.Context) {
 	id, ok := parseID(ctx)
 	if !ok {
