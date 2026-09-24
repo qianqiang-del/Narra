@@ -116,6 +116,7 @@ type fixture struct {
 	runs          repository.RunRepository
 	turns         repository.TurnRepository
 	compactions   repository.ContextCompactionRepository
+	memories      repository.SharedMemoryRepository
 	tx            repository.TransactionManager
 
 	cleanup func()
@@ -167,6 +168,7 @@ func newFixture(t *testing.T) *fixture {
 		runs:          repository.NewRunRepository(db),
 		turns:         repository.NewTurnRepository(db),
 		compactions:   repository.NewContextCompactionRepository(db),
+		memories:      repository.NewSharedMemoryRepository(db),
 		tx:            repository.NewTransactionManager(db),
 	}
 
@@ -182,6 +184,9 @@ func newFixture(t *testing.T) *fixture {
 		// 摘要在对话之后才可能存在，删对话时数据库会把它级联带走；这里仍然显式删一次，
 		// 理由和上面一样 —— 清理不该建立在"级联规则没被改过"这个假设上。
 		db.Where("conversation_id = ?", f.conversation.ID).Delete(&entity.ContextCompaction{})
+		// 共享记忆按 classroom_id 删：课堂级记忆的 conversation_id 是空的，
+		// 只按 conversation_id 删会留下一堆残留（这一列两种作用域都有值）。
+		db.Where("classroom_id = ?", f.classroom.ID).Delete(&entity.SharedContextMemory{})
 		db.Where("id = ?", f.conversation.ID).Delete(&entity.ClassroomConversation{})
 		db.Where("classroom_id = ?", f.classroom.ID).Delete(&entity.ClassroomAgent{})
 		if len(f.presetAgentIDs) > 0 {
@@ -194,6 +199,12 @@ func newFixture(t *testing.T) *fixture {
 		db.Model(&entity.OrchestrationRun{}).Where("conversation_id = ?", f.conversation.ID).Count(&leftovers)
 		if leftovers != 0 {
 			t.Errorf("测试数据未清理干净：对话 %d 下仍有 %d 条记录", f.conversation.ID, leftovers)
+		}
+
+		var leftoverMemories int64
+		db.Model(&entity.SharedContextMemory{}).Where("classroom_id = ?", f.classroom.ID).Count(&leftoverMemories)
+		if leftoverMemories != 0 {
+			t.Errorf("测试数据未清理干净：课堂 %d 下仍有 %d 条共享记忆", f.classroom.ID, leftoverMemories)
 		}
 	}
 
@@ -276,11 +287,15 @@ func (f *fixture) newOrchestrator(t *testing.T, model Model) *Orchestrator {
 		Runs:          f.runs,
 		Turns:         f.turns,
 		Compactions:   f.compactions,
+		Memories:      f.memories,
 		Model:         model,
 		// 摘要器沿用假模型：这些用例的消息量远低于预算，不会真的触发压缩；
 		// 但装配校验要求它非空 —— 真正的压缩行为由 context_test.go 用例覆盖。
 		Summarizer: FakeModel{},
-		Director:   RoundRobinDirector{},
+		// 提炼器同样用假模型：这些用例不关心提炼出来的内容，只要求收尾时不报错。
+		// 提炼与落库的行为由 memory_test.go 覆盖。
+		Extractor: FakeModel{},
+		Director:  RoundRobinDirector{},
 	})
 	if err != nil {
 		t.Fatalf("装配编排器失败: %v", err)

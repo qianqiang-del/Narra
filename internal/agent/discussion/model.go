@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"narra/internal/model/entity"
 )
 
 // Model 是本包对"大模型"的唯一依赖。
@@ -70,6 +72,27 @@ type GenerationResponse struct {
 // 输出里刻意带上角色名和轮次，方便人工核对"每个回合确实换了人、序号确实递增"。
 type FakeModel struct{}
 
+// MemoryCandidate 是"这场讨论里值得记住的一件事"，由提炼器从发言里挑出来。
+//
+// 它只是**候选**：三个字段是否合法（类型在五个取值内、重要度 1~5、正文非空）由编排层再校一遍，
+// 因为它是模型给的 —— 模型完全可能给出库里 CHECK 不接受的值。
+type MemoryCandidate struct {
+	MemoryType string // 取值同 entity.MemoryType*：fact / decision / learning_state / preference / open_question
+	Content    string // 一句话说清这件事
+	Importance int16  // 1~5，越大越优先被带进上下文；0 表示没给，按默认值处理
+}
+
+// MemoryExtractor 是"把一场讨论提炼成几条记忆"的能力。
+//
+// 和 Summarizer 一样单开一个接口，不复用 Model：Generate 的返回里带着"下一步动作"，
+// 那是轮到某个角色发言才需要的东西；提炼要的是几条结构化的事实，两者的提示词也完全不同。
+type MemoryExtractor interface {
+	// Extract 从这场讨论的发言里挑出值得记住的事。
+	//
+	// 允许返回空切片（这场没聊出什么值得长期记的），调用方不得把"空"当成错误。
+	Extract(ctx context.Context, history []HistoryMessage) ([]MemoryCandidate, error)
+}
+
 // Generate 返回一段格式固定、内容可辨识的假回复。
 func (FakeModel) Generate(ctx context.Context, request GenerationRequest) (GenerationResponse, error) {
 	if err := ctx.Err(); err != nil {
@@ -102,6 +125,30 @@ func (FakeModel) Summarize(ctx context.Context, previous string, messages []Hist
 		"【摘要】此前 %d 条发言已压缩：围绕主题来回讨论过，更早的结论继续有效。（假模型生成，未调用真实大模型）",
 		len(messages),
 	), nil
+}
+
+// Extract 返回两条固定的假候选：一条事实、一条决定。
+//
+// 条数刻意很少：假实现只是为了让"提炼 → 落库 → 下次带上"这条链路能在不花钱、结果确定的前提下跑通，
+// 它不需要（也不应该）模仿真实模型的判断力 —— 那属于第 8 步接真模型之后的事。
+//
+// 正文里带上发言条数，是为了测试能一眼看出"提炼器收到的材料是不是整场讨论"。
+func (FakeModel) Extract(ctx context.Context, history []HistoryMessage) ([]MemoryCandidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return []MemoryCandidate{
+		{
+			MemoryType: entity.MemoryTypeFact,
+			Content:    fmt.Sprintf("这场讨论一共 %d 条发言，围绕用户提出的问题展开。（假提炼器生成，未调用真实大模型）", len(history)),
+			Importance: defaultMemoryImportance,
+		},
+		{
+			MemoryType: entity.MemoryTypeDecision,
+			Content:    "已确认：操作前先确认枪口安全。（假提炼器生成，未调用真实大模型）",
+			Importance: 4,
+		},
+	}, nil
 }
 
 // topicAndHistory 把这次请求的输入拼成一段文本，只为估算 token 用。

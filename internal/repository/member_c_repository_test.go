@@ -90,6 +90,7 @@ func openMemberCTestDB(t *testing.T) *gorm.DB {
 
 // memberCTestFixture 是一套测试数据的句柄与收尾动作。
 type memberCTestFixture struct {
+	db            *gorm.DB
 	classroom     *entity.Classroom
 	conversation  *entity.ClassroomConversation
 	conversations ConversationRepository
@@ -97,6 +98,8 @@ type memberCTestFixture struct {
 	runs          RunRepository
 	turns         TurnRepository
 	compactions   ContextCompactionRepository
+	memories      SharedMemoryRepository
+	events        ConversationEventRepository
 	tx            TransactionManager
 	cleanup       func()
 }
@@ -121,12 +124,15 @@ func newMemberCTestFixture(t *testing.T) *memberCTestFixture {
 	}
 
 	f := &memberCTestFixture{
+		db:            db,
 		classroom:     classroom,
 		conversations: NewConversationRepository(db),
 		messages:      NewMessageRepository(db),
 		runs:          NewRunRepository(db),
 		turns:         NewTurnRepository(db),
 		compactions:   NewContextCompactionRepository(db),
+		memories:      NewSharedMemoryRepository(db),
+		events:        NewConversationEventRepository(db),
 		tx:            NewTransactionManager(db),
 	}
 
@@ -154,6 +160,11 @@ func newMemberCTestFixture(t *testing.T) *memberCTestFixture {
 		// UNIQUE (conversation_id, covered_to_sequence)：留着不仅算残留，
 		// 还会让下一次用例存同一个 covered_to 时撞唯一约束，症状看起来像"实现写错了"。
 		db.Where("conversation_id = ?", conversation.ID).Delete(&entity.ContextCompaction{})
+		// 共享记忆按 classroom_id 删：课堂级记忆的 conversation_id 是空的，
+		// 只按 conversation_id 删会留下一堆课堂级残留（这一列两种作用域都有值）。
+		db.Where("classroom_id = ?", classroom.ID).Delete(&entity.SharedContextMemory{})
+		// 事件先删：它引用 run 与 turn，虽然外键是 SET NULL，但显式删掉更干净。
+		db.Where("conversation_id = ?", conversation.ID).Delete(&entity.ConversationEvent{})
 		db.Where("id = ?", conversation.ID).Delete(&entity.ClassroomConversation{})
 		db.Where("id = ?", classroom.ID).Delete(&entity.Classroom{})
 
@@ -162,6 +173,18 @@ func newMemberCTestFixture(t *testing.T) *memberCTestFixture {
 		db.Model(&entity.OrchestrationRun{}).Where("conversation_id = ?", conversation.ID).Count(&leftovers)
 		if leftovers != 0 {
 			t.Errorf("测试数据未清理干净：对话 %d 下仍有 %d 条记录", conversation.ID, leftovers)
+		}
+
+		var leftoverMemories int64
+		db.Model(&entity.SharedContextMemory{}).Where("classroom_id = ?", classroom.ID).Count(&leftoverMemories)
+		if leftoverMemories != 0 {
+			t.Errorf("测试数据未清理干净：课堂 %d 下仍有 %d 条共享记忆", classroom.ID, leftoverMemories)
+		}
+
+		var leftoverEvents int64
+		db.Model(&entity.ConversationEvent{}).Where("conversation_id = ?", conversation.ID).Count(&leftoverEvents)
+		if leftoverEvents != 0 {
+			t.Errorf("测试数据未清理干净：对话 %d 下仍有 %d 条事件", conversation.ID, leftoverEvents)
 		}
 	}
 	return f
@@ -545,5 +568,456 @@ func TestMemberCContextCompactionRejectsSummaryLongerThanSource(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "token_count_check") {
 		t.Errorf("报错里没带上约束名，排查时看不出根因: %v", err)
+	}
+}
+
+// ---- 共享记忆（shared_context_memories，第 5 步）----
+
+// newMemory 存一条记忆，落库后回填 ID。
+//
+// 不走事务：这张表没有需要原子分配的东西（没有序号列），单条 INSERT 本身就是一个隐式事务。
+func (f *memberCTestFixture) newMemory(t *testing.T, ctx context.Context, memory *entity.SharedContextMemory) *entity.SharedContextMemory {
+	t.Helper()
+
+	if err := f.memories.Create(ctx, memory); err != nil {
+		t.Fatalf("存共享记忆失败: %v", err)
+	}
+	return memory
+}
+
+// conversationMemory 造一条"对话级"记忆：只在本条对话里有效。
+//
+// conversation_id 必须填：库上有一条 CHECK 要求 scope = 'conversation' 时它不能为空。
+func (f *memberCTestFixture) conversationMemory(memoryType, content string, importance int16) *entity.SharedContextMemory {
+	return &entity.SharedContextMemory{
+		ClassroomID:    f.classroom.ID,
+		ConversationID: &f.conversation.ID,
+		Scope:          entity.MemoryScopeConversation,
+		MemoryType:     memoryType,
+		Content:        content,
+		Importance:     importance,
+		Status:         entity.MemoryStatusActive,
+	}
+}
+
+// classroomMemory 造一条"课堂级"记忆：同一门课的其他对话也能用。
+//
+// conversation_id 必须留空：反过来那条 CHECK 要求 scope = 'classroom' 时它必须为空。
+func (f *memberCTestFixture) classroomMemory(content string, importance int16) *entity.SharedContextMemory {
+	return &entity.SharedContextMemory{
+		ClassroomID: f.classroom.ID,
+		Scope:       entity.MemoryScopeClassroom,
+		MemoryType:  entity.MemoryTypeFact,
+		Content:     content,
+		Importance:  importance,
+		Status:      entity.MemoryStatusActive,
+	}
+}
+
+// newOtherConversation 造同一门课下的第二条对话，用来验证"对话级记忆不会串到别的话题去"。
+//
+// 收尾用 t.Cleanup 而不是 defer：Cleanup 在用例函数返回之后才执行，正好排在 defer f.cleanup()
+// 后面 —— 先删主体、再删这条附属数据，互不干扰。
+func (f *memberCTestFixture) newOtherConversation(t *testing.T) *entity.ClassroomConversation {
+	t.Helper()
+
+	conversation := &entity.ClassroomConversation{
+		ClassroomID: f.classroom.ID,
+		Title:       "另一条对话（隔离性验证）",
+		Type:        entity.ConversationTypeDiscussion,
+		Status:      entity.ConversationStatusActive,
+	}
+	if err := f.conversations.Create(context.Background(), conversation); err != nil {
+		t.Fatalf("建第二条对话失败: %v", err)
+	}
+
+	t.Cleanup(func() {
+		f.db.Where("conversation_id = ?", conversation.ID).Delete(&entity.SharedContextMemory{})
+		f.db.Where("id = ?", conversation.ID).Delete(&entity.ClassroomConversation{})
+	})
+	return conversation
+}
+
+// newOtherClassroom 造另一门课，用来验证"课堂级记忆不会串到别的课去"。
+func (f *memberCTestFixture) newOtherClassroom(t *testing.T) *entity.Classroom {
+	t.Helper()
+
+	classroom := &entity.Classroom{
+		Title:            "另一门课（隔离性验证）",
+		Requirement:      "测试数据，跑完即删",
+		Mode:             entity.ClassroomModeInteractive,
+		Status:           entity.ClassroomStatusPlayable,
+		GenerationConfig: json.RawMessage("{}"),
+		AgentConfig:      json.RawMessage("{}"),
+	}
+	if err := f.db.WithContext(context.Background()).Create(classroom).Error; err != nil {
+		t.Fatalf("建第二门课失败: %v", err)
+	}
+
+	t.Cleanup(func() {
+		f.db.Where("classroom_id = ?", classroom.ID).Delete(&entity.SharedContextMemory{})
+		f.db.Where("id = ?", classroom.ID).Delete(&entity.Classroom{})
+	})
+	return classroom
+}
+
+// memoryIDs 把记忆列表压成 ID 列表，方便断言顺序。
+func memoryIDs(memories []entity.SharedContextMemory) []uint64 {
+	ids := make([]uint64, 0, len(memories))
+	for _, memory := range memories {
+		ids = append(ids, memory.ID)
+	}
+	return ids
+}
+
+// equalIDs 比较两个 ID 列表是否完全一致（含顺序）。
+func equalIDs(got, want []uint64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestMemberCSharedMemoryEmptyReturnsEmptyList 验证"一条记忆都没有"是空列表而不是错误。
+//
+// 编排每次组装上下文都会问一句"有没有记忆"，第一次当然没有 —— 那是正常流程，不是异常。
+func TestMemberCSharedMemoryEmptyReturnsEmptyList(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	memories, err := f.memories.ListForContext(ctx, f.classroom.ID, f.conversation.ID, 10)
+	if err != nil {
+		t.Fatalf("没有任何记忆时不该报错，实际返回: %v", err)
+	}
+	if len(memories) != 0 {
+		t.Fatalf("没有任何记忆时应返回空列表，实际 %d 条", len(memories))
+	}
+}
+
+// TestMemberCSharedMemoryListCoversBothScopes 验证"该带上的带上、不该带上的都不带"。
+//
+// 两条正例：本条对话的对话级记忆 + 同一门课的课堂级记忆。
+// 两条反例（重要度都填 5，比正例高）：同一门课**另条对话**的对话级记忆、**另一门课**的课堂级记忆。
+// 反例的重要度故意设得最高 —— 过滤一旦写错，它们会排在最前面，一眼就能看出是"串了"。
+//
+// ⚠️ 这个用例的分辨力**全靠那两条反例**，不是靠正例：
+// 夹具每次只建一间课、一条对话，两张表的序列同步递增，所以 `classroom.ID == conversation.ID` 恒成立。
+// 也就是说，"按对话过滤"和"按课堂过滤"两种写法对**本条对话**的对话级记忆都会命中，单看正例分不出来。
+// 而两条反例的 id 是错开的（另一条对话 451 / 另一门课 451，都不等于本课 450）：
+//   - 把对话级误写成按 classroom_id 过滤 → 反例会露出来（它的 classroom_id 本课有值）；
+//   - 把课堂级误写成按 conversation_id 过滤 → 正例里的课堂级那条会消失（它的 conversation_id 是空的）；
+//   - 干脆漏掉一条 ID 条件 → 两条反例都会露出来。
+//
+// 三种写法都逃不掉。
+func TestMemberCSharedMemoryListCoversBothScopes(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	own := f.newMemory(t, ctx, f.conversationMemory(entity.MemoryTypeFact, "用户叫熊大", 3))
+	sameClassroom := f.newMemory(t, ctx, f.classroomMemory("这门课统一先确认枪口安全", 4))
+
+	otherConversation := f.newOtherConversation(t)
+	f.newMemory(t, ctx, &entity.SharedContextMemory{
+		ClassroomID:    f.classroom.ID,
+		ConversationID: &otherConversation.ID,
+		Scope:          entity.MemoryScopeConversation,
+		MemoryType:     entity.MemoryTypeFact,
+		Content:        "在另一条对话里说的话",
+		Importance:     5,
+		Status:         entity.MemoryStatusActive,
+	})
+
+	otherClassroom := f.newOtherClassroom(t)
+	f.newMemory(t, ctx, &entity.SharedContextMemory{
+		ClassroomID: otherClassroom.ID,
+		Scope:       entity.MemoryScopeClassroom,
+		MemoryType:  entity.MemoryTypeFact,
+		Content:     "在另一门课里确认的事",
+		Importance:  5,
+		Status:      entity.MemoryStatusActive,
+	})
+
+	memories, err := f.memories.ListForContext(ctx, f.classroom.ID, f.conversation.ID, 10)
+	if err != nil {
+		t.Fatalf("读取共享记忆失败: %v", err)
+	}
+	if len(memories) != 2 {
+		t.Fatalf("取到 %d 条记忆，期望 2 条（本条对话的对话级 + 本门课的课堂级），实际 ID = %v",
+			len(memories), memoryIDs(memories))
+	}
+	// 重要度 4 排在 3 前面。
+	if memories[0].ID != sameClassroom.ID || memories[1].ID != own.ID {
+		t.Errorf("顺序不对：ID = %v，期望 [%d %d]", memoryIDs(memories), sameClassroom.ID, own.ID)
+	}
+}
+
+// TestMemberCSharedMemorySkipsInactiveAndExpired 验证只有"生效且没过期"的记忆才会被读出来。
+//
+// 三条反例都填重要度 5（最高），过滤写错时它们会排在合法记忆前面 —— 失败信息一眼可见。
+// 撤回（retracted）与取代（superseded）都覆盖：表上允许三种状态，但只有 active 是"现在还成立"。
+func TestMemberCSharedMemorySkipsInactiveAndExpired(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	active := f.newMemory(t, ctx, f.conversationMemory(entity.MemoryTypeFact, "现在仍成立的结论", 3))
+
+	superseded := f.conversationMemory(entity.MemoryTypeFact, "已经被新结论取代", 5)
+	superseded.Status = entity.MemoryStatusSuperseded
+	f.newMemory(t, ctx, superseded)
+
+	retracted := f.conversationMemory(entity.MemoryTypeFact, "已经被撤回", 5)
+	retracted.Status = entity.MemoryStatusRetracted
+	f.newMemory(t, ctx, retracted)
+
+	expired := f.conversationMemory(entity.MemoryTypeFact, "已经过期", 5)
+	past := time.Now().UTC().Add(-time.Hour)
+	expired.ExpiresAt = &past
+	f.newMemory(t, ctx, expired)
+
+	notYetExpired := f.conversationMemory(entity.MemoryTypeFact, "还没到期", 1)
+	later := time.Now().UTC().Add(time.Hour)
+	notYetExpired.ExpiresAt = &later
+	f.newMemory(t, ctx, notYetExpired)
+
+	memories, err := f.memories.ListForContext(ctx, f.classroom.ID, f.conversation.ID, 10)
+	if err != nil {
+		t.Fatalf("读取共享记忆失败: %v", err)
+	}
+	if len(memories) != 2 {
+		t.Fatalf("取到 %d 条记忆，期望 2 条（生效的 + 没过期的），实际 ID = %v",
+			len(memories), memoryIDs(memories))
+	}
+	if memories[0].ID != active.ID || memories[1].ID != notYetExpired.ID {
+		t.Errorf("取到的记忆 ID = %v，期望 [%d %d]", memoryIDs(memories), active.ID, notYetExpired.ID)
+	}
+}
+
+// TestMemberCSharedMemoryOrdersByImportanceAndRespectsLimit 验证按重要度倒序取、且真的按 limit 截断。
+//
+// 同样重要度时用 id 倒序兜底：没有这个兜底，同重要度的行顺序由数据库随意决定，
+// 每次跑出来可能不一样（"这次带了这几条、下次带了那几条"），行为不可复现。
+func TestMemberCSharedMemoryOrdersByImportanceAndRespectsLimit(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	low := f.newMemory(t, ctx, f.conversationMemory(entity.MemoryTypeFact, "次要的", 2))
+	highFirst := f.newMemory(t, ctx, f.conversationMemory(entity.MemoryTypePreference, "最重要的（先写）", 5))
+	middle := f.newMemory(t, ctx, f.conversationMemory(entity.MemoryTypeDecision, "中间的", 3))
+	highSecond := f.newMemory(t, ctx, f.conversationMemory(entity.MemoryTypeOpenQuestion, "最重要的（后写）", 5))
+
+	wantAll := []uint64{highSecond.ID, highFirst.ID, middle.ID, low.ID}
+
+	all, err := f.memories.ListForContext(ctx, f.classroom.ID, f.conversation.ID, 10)
+	if err != nil {
+		t.Fatalf("读取共享记忆失败: %v", err)
+	}
+	if !equalIDs(memoryIDs(all), wantAll) {
+		t.Errorf("全部记忆的 ID = %v，期望 %v（按重要度倒序，同重要度按 id 倒序）", memoryIDs(all), wantAll)
+	}
+
+	limited, err := f.memories.ListForContext(ctx, f.classroom.ID, f.conversation.ID, 2)
+	if err != nil {
+		t.Fatalf("读取共享记忆失败: %v", err)
+	}
+	if !equalIDs(memoryIDs(limited), wantAll[:2]) {
+		t.Errorf("limit=2 时取到的 ID = %v，期望 %v（只留重要度最高的两条）", memoryIDs(limited), wantAll[:2])
+	}
+}
+
+// ---- SSE 事件（conversation_events，第 6 步）----
+
+// newEvent 在事务里追加一条事件，返回分配到的序号。
+//
+// 和消息一样，序号必须在事务里分配：AppendNext 会先锁对话行再取号。
+func (f *memberCTestFixture) newEvent(t *testing.T, ctx context.Context, eventType string) *entity.ConversationEvent {
+	t.Helper()
+
+	event := &entity.ConversationEvent{
+		ConversationID: f.conversation.ID,
+		EventType:      eventType,
+		Payload:        json.RawMessage(`{"test":true}`),
+	}
+	if err := f.tx.Run(ctx, func(ctx context.Context) error {
+		return f.events.AppendNext(ctx, event)
+	}); err != nil {
+		t.Fatalf("追加事件失败: %v", err)
+	}
+	return event
+}
+
+// TestMemberCEventSequenceIsSequential 验证事件序号从 1 开始递增，且增量拉取接得上。
+//
+// 增量拉取是断线续传走的那条路：客户端提交最后收到的序号，服务端返回更大的那些。
+// 这条错了，用户一断线就会重复收到已经看过的内容，或者直接跳过一段。
+func TestMemberCEventSequenceIsSequential(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	empty, err := f.events.ListByConversation(ctx, f.conversation.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("空取事件失败: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("还没有事件时应返回空列表，实际 %d 条", len(empty))
+	}
+
+	for i := 1; i <= 3; i++ {
+		event := f.newEvent(t, ctx, entity.ConversationEventAgentStarted)
+		if event.SequenceNo != int64(i) {
+			t.Fatalf("第 %d 条事件拿到序号 %d，期望 %d", i, event.SequenceNo, i)
+		}
+	}
+
+	all, err := f.events.ListByConversation(ctx, f.conversation.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("读事件列表失败: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("事件条数 = %d，期望 3", len(all))
+	}
+	for index, event := range all {
+		if event.SequenceNo != int64(index+1) {
+			t.Errorf("第 %d 条事件序号 = %d，期望 %d", index+1, event.SequenceNo, index+1)
+		}
+	}
+
+	after, err := f.events.ListByConversation(ctx, f.conversation.ID, 1, 100)
+	if err != nil {
+		t.Fatalf("增量读取事件失败: %v", err)
+	}
+	if len(after) != 2 || after[0].SequenceNo != 2 || after[1].SequenceNo != 3 {
+		t.Errorf("从序号 1 之后读取的结果 = %+v，期望序号 2、3", after)
+	}
+}
+
+// TestMemberCEventSequenceSurvivesConcurrency 是这一层最关键的用例：
+// 多个 goroutine 同时往同一条会话里写事件，序号必须是 1..N 的排列，不重不漏。
+//
+// 为什么它重要：同一个后端会同时服务多个 SSE 连接，事件也会被不同 goroutine 产出。
+// 序号一旦重复 → 插入被 UNIQUE 拒绝，SSE 流断；序号一旦跳号 → 客户端的"最后收到的序号"
+// 会跳过一段永远不会重发的区间。
+func TestMemberCEventSequenceSurvivesConcurrency(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	const workers = 12
+	start := make(chan struct{})
+	errs := make([]error, workers)
+	sequences := make([]int64, workers)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // 统一放行，尽量制造真实的并发争抢
+
+			event := &entity.ConversationEvent{
+				ConversationID: f.conversation.ID,
+				EventType:      entity.ConversationEventMessageCompleted,
+				Payload:        json.RawMessage("{}"),
+			}
+			errs[i] = f.tx.Run(ctx, func(ctx context.Context) error {
+				return f.events.AppendNext(ctx, event)
+			})
+			sequences[i] = event.SequenceNo
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("第 %d 个并发写入失败: %v", i, err)
+		}
+	}
+
+	seen := make(map[int64]int, workers)
+	for _, seq := range sequences {
+		if seq < 1 || seq > workers {
+			t.Errorf("序号 %d 超出 1..%d 的范围", seq, workers)
+		}
+		seen[seq]++
+	}
+	for seq := int64(1); seq <= workers; seq++ {
+		switch seen[seq] {
+		case 0:
+			t.Errorf("序号 %d 没有被分配（漏号）", seq)
+		case 1:
+			// 正常
+		default:
+			t.Errorf("序号 %d 被分配了 %d 次（重复）", seq, seen[seq])
+		}
+	}
+}
+
+// TestMemberCEventClosedConversationRejectsAppend 验证对话结束后不再追加事件。
+//
+// 为什么事件也要跟着拒绝：事件和消息写在**同一笔事务**里，
+// 消息会被锁拒绝、事件却写进去的话，B 的 SSE 就会推出一条"有事件、没消息"的假象。
+func TestMemberCEventClosedConversationRejectsAppend(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	f.newEvent(t, ctx, entity.ConversationEventRunStarted)
+	if err := f.conversations.Close(ctx, f.conversation.ID, time.Now().UTC()); err != nil {
+		t.Fatalf("结束对话失败: %v", err)
+	}
+
+	event := &entity.ConversationEvent{
+		ConversationID: f.conversation.ID,
+		EventType:      entity.ConversationEventRunCompleted,
+		Payload:        json.RawMessage("{}"),
+	}
+	err := f.tx.Run(ctx, func(ctx context.Context) error {
+		return f.events.AppendNext(ctx, event)
+	})
+	if !errors.Is(err, ErrConversationNotActive) {
+		t.Fatalf("对已结束对话追加事件返回 %v，期望 ErrConversationNotActive", err)
+	}
+
+	count, err := f.events.ListByConversation(ctx, f.conversation.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("读取事件失败: %v", err)
+	}
+	if len(count) != 1 {
+		t.Errorf("被拒绝后事件条数 = %d，期望仍是 1", len(count))
+	}
+}
+
+// TestMemberCEventExpiresInSevenDays 验证"默认 7 天过期"是**数据库给的**，不是 Go 侧算的。
+//
+// 为什么专门测它：写事件时 Go 里那个 ExpiresAt 是零值（0001 年）。如果 GORM 把零值也写进去，
+// 每条事件一出生就已过期 —— 清理任务立刻删掉它们，断线续传窗口直接变成 0，而这种失效
+// 平时完全看不出来（新连接照常收得到实时事件）。
+func TestMemberCEventExpiresInSevenDays(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	event := f.newEvent(t, ctx, entity.ConversationEventRunStarted)
+
+	var stored entity.ConversationEvent
+	if err := f.db.WithContext(ctx).First(&stored, event.ID).Error; err != nil {
+		t.Fatalf("回查事件失败: %v", err)
+	}
+
+	expected := time.Now().UTC().Add(7 * 24 * time.Hour)
+	if diff := stored.ExpiresAt.Sub(expected); diff > time.Minute || diff < -time.Minute {
+		t.Errorf("expires_at = %s，期望约为 %s（相差 %s）—— 数据库那条 7 天默认值没生效？",
+			stored.ExpiresAt.UTC().Format(time.RFC3339),
+			expected.Format(time.RFC3339), diff)
 	}
 }

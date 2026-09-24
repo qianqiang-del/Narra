@@ -79,11 +79,14 @@ func (f *fixture) newOrchestratorWith(t *testing.T, model Model, director Direct
 		Runs:          f.runs,
 		Turns:         f.turns,
 		Compactions:   f.compactions,
+		Memories:      f.memories,
 		Model:         model,
 		// 摘要器沿用假模型，理由同 orchestrator_test.go 的 newOrchestrator：
 		// 这些用例不触发压缩，只是装配校验要求非空。
 		Summarizer: FakeModel{},
-		Director:   director,
+		// 提炼器同理：收尾时要有个非空的实现，内容由 memory_test.go 覆盖。
+		Extractor: FakeModel{},
+		Director:  director,
 	})
 	if err != nil {
 		t.Fatalf("装配编排器失败: %v", err)

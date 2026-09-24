@@ -4,23 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"go.uber.org/zap"
 
 	"narra/internal/model/entity"
 )
 
-// 上下文组装（第 4 步）。
+// 上下文组装（第 4 步 + 第 5 步）。
 //
 // 每次让某个角色发言之前，都要先把"他现在需要知道的"拼出来。顺序由设计文档 §5.5 定死：
 //
 //	系统提示词 → 最新摘要 → 摘要之后的完整消息 → 共享记忆 → 当前用户消息
 //
-// 其中系统提示词在提示词那一层拼（不在本文件），共享记忆是第 5 步的事（这里留位），
-// 所以本文件负责中间两段：**最新摘要 + 摘要之后的完整消息**。
+// 其中系统提示词在提示词那一层拼（不在本文件），所以本文件负责中间三段：
+// **最新摘要 + 摘要之后的完整消息 + 共享记忆**。
 //
 // 拼完还要做预算判断：总长度超过阈值就把老消息压成摘要。
 // 不这么做的后果不是"慢一点"，而是某一轮突然超出模型窗口、整场讨论直接报错。
+//
+// 本文件只管"发言前把记忆带进来"（读）；"讨论结束后把结论记下来"（写）在 memory.go。
 
 const (
 	// defaultMaxContextTokens 是没配时使用的上下文 token 上限。
@@ -46,6 +49,20 @@ const (
 	// 让它以"一条历史发言"的形式出现，是为了模型能看出这段不是谁刚说的话，
 	// 而是更早内容的浓缩 —— 否则它可能会把摘要当成新观点去回应。
 	summarySpeaker = "历史摘要"
+
+	// defaultMaxMemoriesInContext 是每次发言最多带几条共享记忆进上下文。
+	//
+	// 记忆同样要占提示词的位置，带太多就把最近的原文挤掉了。10 条是当前约定的量
+	// （决策清单 S5-2，用户定的），可用 Deps.ContextMaxMemories 覆盖。
+	//
+	// ⚠️ 这是"每次带进去几条"，不是"库里只能存几条"：同一场讨论聊上几轮会不断累积新的记忆，
+	// 每次只挑最重要的那几条带上。
+	defaultMaxMemoriesInContext = 10
+
+	// sharedMemorySpeaker 是共享记忆进入上下文时用的说话人名字。
+	//
+	// 和摘要一样，让它以"一条发言"的形式出现，模型才不会把记忆误当成谁刚说的话。
+	sharedMemorySpeaker = "共享记忆"
 )
 
 // buildContext 组装这次发言要带的上下文，必要时就地压一次。
@@ -53,7 +70,12 @@ const (
 // 压缩失败不返回错误：这里是讨论的必经之路，一次摘要没写好不该让整场讨论失败。
 // 三种"没压成"的情况（可压内容为空、摘要没比原文短、落库失败）都会记日志并按原样送出 ——
 // 代价只是这一轮上下文长一点。
-func (o *Orchestrator) buildContext(ctx context.Context, conversationID uint64, log *zap.Logger) ([]HistoryMessage, error) {
+//
+// 读共享记忆失败**同样不返回错误**，理由一样：记忆是辅助信息，数据库抖一下不该让讨论哑掉。
+//
+// 两个 ID 都要传：共享记忆分"对话级"和"课堂级"（设计文档 §5.6），
+// 只给对话 ID 就查不出课堂级那一半 —— 而课堂级记忆恰恰是跨对话共享的载体。
+func (o *Orchestrator) buildContext(ctx context.Context, classroomID uint64, conversationID uint64, log *zap.Logger) ([]HistoryMessage, error) {
 	previous, err := o.deps.Compactions.LatestByConversation(ctx, conversationID)
 	if err != nil {
 		return nil, fmt.Errorf("读取历史摘要失败: %w", err)
@@ -73,7 +95,9 @@ func (o *Orchestrator) buildContext(ctx context.Context, conversationID uint64, 
 		return nil, fmt.Errorf("读取对话历史失败: %w", err)
 	}
 
-	history := assembleHistory(previousSummary, messages)
+	memories := o.loadMemories(ctx, classroomID, conversationID, log)
+
+	history := withMemories(assembleHistory(previousSummary, messages), memories)
 	if estimateHistoryTokens(history) <= o.contextBudget() {
 		return history, nil
 	}
@@ -82,7 +106,100 @@ func (o *Orchestrator) buildContext(ctx context.Context, conversationID uint64, 
 	if !ok {
 		return history, nil
 	}
-	return compacted, nil
+	// 压缩只动"摘要 + 原文"那两段；记忆块原样接回去 ——
+	// 它本来就只有几条，而且是挑出来的结论，正是最不该被压掉的东西。
+	return withMemories(compacted, memories), nil
+}
+
+// loadMemories 读这次发言要带的共享记忆；读不到就返回 nil（等于"这次不带记忆"）。
+//
+// 失败只记日志、不返回错误：记忆是辅助信息，一次查询没成功不该让整场讨论发不出话。
+// 真返回错误会让调用方在"带不带记忆"和"要不要中断讨论"之间做选择，而那个选择是错的 ——
+// 正确答案永远是"继续讨论，只是这次少带几条"。
+func (o *Orchestrator) loadMemories(ctx context.Context, classroomID uint64, conversationID uint64, log *zap.Logger) []entity.SharedContextMemory {
+	memories, err := o.deps.Memories.ListForContext(ctx, classroomID, conversationID, o.memoriesInContext())
+	if err != nil {
+		log.Warn("读取共享记忆失败，这次发言不带记忆",
+			zap.Uint64("classroom_id", classroomID),
+			zap.Uint64("conversation_id", conversationID),
+			zap.Error(err),
+		)
+		return nil
+	}
+	return memories
+}
+
+// memoriesInContext 取生效的"一次带几条记忆"，没配就用默认值。
+func (o *Orchestrator) memoriesInContext() int {
+	if o.deps.ContextMaxMemories > 0 {
+		return o.deps.ContextMaxMemories
+	}
+	return defaultMaxMemoriesInContext
+}
+
+// withMemories 把记忆块接在上下文最末。
+//
+// 位置由设计文档 §5.5 定死：系统提示词 → 摘要 → 摘要之后的原文 → **共享记忆** → 当前用户消息。
+// 当前用户消息不进 history（它是 Topic 单独传给模型的），所以记忆接在 history 末尾，
+// 正好落在它前面。
+//
+// 这里**新建一个切片**再拼，而不是直接在传进来的那份上 append：追加会复用底层数组，
+// 万一调用方还留着原切片，就会看到一段悄悄多出来的内容。
+func withMemories(history []HistoryMessage, memories []entity.SharedContextMemory) []HistoryMessage {
+	block := assembleMemoryBlock(memories)
+	if len(block) == 0 {
+		return history
+	}
+
+	combined := make([]HistoryMessage, 0, len(history)+len(block))
+	combined = append(combined, history...)
+	return append(combined, block...)
+}
+
+// assembleMemoryBlock 把记忆拼成一条汇总块；没有记忆时返回 nil（调用方据此"不加这一块"）。
+//
+// 拼成一条而不是每条一块：每条各带一个发言人标签纯属浪费位置，而且块头说明一次来源，
+// 模型更不容易把某条记忆当成"某人刚说过的话"（决策清单 S5-6）。
+//
+// ⚠️ 这里**不重排**：仓储的 SQL 已经按重要度排好序了，编排再排一遍就是同一套规则写两处，
+// 早晚会不一致。
+func assembleMemoryBlock(memories []entity.SharedContextMemory) []HistoryMessage {
+	if len(memories) == 0 {
+		return nil
+	}
+
+	var builder strings.Builder
+	builder.WriteString("同一场讨论里已经确认过的信息：")
+	for _, memory := range memories {
+		builder.WriteString("\n- ")
+		builder.WriteString(memoryTypeLabel(memory.MemoryType))
+		builder.WriteString("：")
+		builder.WriteString(memory.Content)
+	}
+	return []HistoryMessage{{Speaker: sharedMemorySpeaker, Content: builder.String()}}
+}
+
+// memoryTypeLabels 把记忆类型翻成中文标签。
+//
+// 为什么要翻：类型本身是给程序看的（五个英文取值），而这行文字是给模型看的 ——
+// "事实"和"待解问题"对它意味着完全不同的东西，认得出标签它才知道该怎么用这条信息。
+var memoryTypeLabels = map[string]string{
+	entity.MemoryTypeFact:          "事实",
+	entity.MemoryTypeDecision:      "决定",
+	entity.MemoryTypeLearningState: "学习状态",
+	entity.MemoryTypePreference:    "偏好",
+	entity.MemoryTypeOpenQuestion:  "待解问题",
+}
+
+// memoryTypeLabel 取中文标签；认不出来的类型原样返回。
+//
+// 兜底而不是丢掉：能走到这里说明数据已经在库里了（写入时校验过），
+// 显示原始取值总比"这条记忆凭空消失"好 —— 而"凭空消失"正是最难查的那种问题。
+func memoryTypeLabel(memoryType string) string {
+	if label, ok := memoryTypeLabels[memoryType]; ok {
+		return label
+	}
+	return memoryType
 }
 
 // compact 把"除最近几条之外"的原文压成一版新摘要，返回压缩后的上下文。
