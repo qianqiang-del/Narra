@@ -283,6 +283,17 @@ func (a *App) initDependencies() error {
 	}
 
 	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey)
+	audioDir := a.cfg.Storage.AudioDir
+	if audioDir == "" {
+		audioDir = "data/audio"
+	}
+	audioDir, err = filepath.Abs(audioDir)
+	if err != nil {
+		return fmt.Errorf("解析音频目录失败: %w", err)
+	}
+	if err := os.MkdirAll(audioDir, 0o755); err != nil {
+		return fmt.Errorf("创建音频目录失败: %w", err)
+	}
 
 	// ========== 课堂受理 + 生成任务 ==========
 	classroomDeps := classroom.Deps{
@@ -290,6 +301,11 @@ func (a *App) initDependencies() error {
 		Classrooms:    classroomRepo,
 		Scenes:        sceneRepo,
 		Segments:      sceneSegmentRepo,
+		Agents:        classroomAgentRepo,
+		Roles:         roleRepo,
+		Tx:            txManager,
+		TTS:           ttsClient,
+		AudioDir:      audioDir,
 		Tools:         a.mcpManager,
 		EncryptionKey: encryptionKey,
 	}

@@ -54,8 +54,8 @@ type SceneSegment struct {
 	Scene *Scene `gorm:"foreignKey:SceneID;constraint:scene_segments_scene_id_fkey,OnDelete:CASCADE" json:"-"`
 
 	// ready_has_audio 这条 CHECK 跨 status 与 audio_path 两列，挂在 AudioPath 上（每字段限一条 check tag）。
-	AudioPath    *string `gorm:"column:audio_path;type:text;check:scene_segments_ready_has_audio_check,status <> 'ready' OR audio_path IS NOT NULL;comment:TTS 音频文件的相对路径；status 为 ready 时必须有值" json:"audio_path"` // TTS 音频文件相对路径；ready 时必须非空
-	ErrorMessage *string `gorm:"column:error_message;type:text;comment:讲稿或语音合成的失败摘要" json:"error_message"`                                                                                                        // 讲稿或 TTS 失败摘要，禁止写入密钥
+	AudioPath    *string `gorm:"column:audio_path;type:text;check:scene_segments_ready_has_content_check,status <> 'ready' OR text <> '';comment:TTS 音频文件的相对路径；为空表示仅有文本讲稿" json:"audio_path"`
+	ErrorMessage *string `gorm:"column:error_message;type:text;comment:讲稿或语音合成的失败摘要" json:"error_message"` // 讲稿或 TTS 失败摘要，禁止写入密钥
 }
 
 // TableName 返回表名。

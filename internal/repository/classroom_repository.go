@@ -28,6 +28,26 @@ func (r *classroomRepository) FindByID(ctx context.Context, id uint64) (*entity.
 	return &classroom, nil
 }
 
+func (r *classroomRepository) List(ctx context.Context) ([]entity.Classroom, error) {
+	classrooms := make([]entity.Classroom, 0)
+	err := r.db.WithContext(ctx).
+		Where("status <> ?", entity.ClassroomStatusFailed).
+		Order("updated_at DESC, id DESC").
+		Find(&classrooms).Error
+	return classrooms, err
+}
+
+func (r *classroomRepository) Delete(ctx context.Context, id uint64) error {
+	result := conn(ctx, r.db).Where("id = ?", id).Delete(&entity.Classroom{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 // UpdateTitle 更新课程标题。
 func (r *classroomRepository) UpdateTitle(ctx context.Context, id uint64, title string) error {
 	return r.db.WithContext(ctx).
@@ -46,12 +66,13 @@ func (r *classroomRepository) UpdateStatus(ctx context.Context, id uint64, statu
 		Error
 }
 
-// ListGeneratingIDs 列出所有正在生成的课程 ID。
+// ListGeneratingIDs 列出所有仍应有后台任务推进的课程 ID。
+// playable 且 generation_error 为空表示大纲已完成、场景仍在生成。
 func (r *classroomRepository) ListGeneratingIDs(ctx context.Context) ([]uint64, error) {
 	var ids []uint64
 	err := r.db.WithContext(ctx).
 		Model(&entity.Classroom{}).
-		Where("status = ?", entity.ClassroomStatusGenerating).
+		Where("status = ? OR (status = ? AND generation_error IS NULL)", entity.ClassroomStatusGenerating, entity.ClassroomStatusPlayable).
 		Pluck("id", &ids).
 		Error
 	return ids, err

@@ -26,12 +26,14 @@ import UiTooltip from '@/components/ui/UiTooltip.vue'
 import { cn } from '@/lib/utils'
 import { useLlmStore } from '@/stores/llm'
 import { useProfileStore } from '@/stores/profile'
+import { useLibraryStore } from '@/stores/library'
 import { storeToRefs } from 'pinia'
 
 const { t } = useI18n()
 const router = useRouter()
 const llmStore = useLlmStore()
 const profileStore = useProfileStore()
+const library = useLibraryStore()
 const { availableModels } = storeToRefs(llmStore)
 
 const settingsOpen = ref(false)
@@ -76,7 +78,9 @@ function selectFirstAvailableModel() {
 }
 
 onMounted(async () => {
-  try { await llmStore.loadAvailableModels() } catch { /* 首页按无可用模型处理 */ }
+  try {
+    await Promise.all([llmStore.loadAvailableModels(), library.loadClassrooms()])
+  } catch { /* 保留当前空状态 */ }
   selectFirstAvailableModel()
 })
 

@@ -6,6 +6,7 @@
  */
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
+import { deleteClassroom as deleteClassroomRequest, fetchClassrooms } from '@/api/classroom'
 
 export interface Classroom {
   id: string
@@ -20,6 +21,9 @@ export interface Classroom {
   thumbnail?: string
   /** 模式徽章：职教 / 交互 */
   mode?: 'vocational' | 'interactive'
+  status?: 'generating' | 'playable' | 'ready' | 'failed'
+  generationError?: string | null
+  updatedAt?: number
 }
 
 export interface Folder {
@@ -77,8 +81,20 @@ function load(): LibraryState {
 
 export const useLibraryStore = defineStore('library', () => {
   const initial = load()
-  const classrooms = ref<Classroom[]>(initial.classrooms)
+  // 课堂数据以服务端为唯一来源，不能使用本地 seed/mock 数据。
+  const classrooms = ref<Classroom[]>([])
   const folders = ref<Folder[]>(initial.folders)
+
+  async function loadClassrooms() {
+    const items = await fetchClassrooms()
+    classrooms.value = items.map((item) => ({
+      id: String(item.id), name: item.title, pages: 0,
+      createdAt: Date.parse(item.created_at), updatedAt: Date.parse(item.updated_at),
+      folderId: item.folder_id == null ? null : String(item.folder_id),
+      mode: item.mode === 'interactive' ? 'interactive' : 'vocational',
+      status: item.status, generationError: item.generation_error,
+    }))
+  }
 
   watch(
     [classrooms, folders],
@@ -129,7 +145,8 @@ export const useLibraryStore = defineStore('library', () => {
     if (c) c.name = name
   }
 
-  function deleteClassroom(id: string) {
+  async function deleteClassroom(id: string) {
+    await deleteClassroomRequest(Number(id))
     classrooms.value = classrooms.value.filter((c) => c.id !== id)
   }
 
@@ -155,5 +172,6 @@ export const useLibraryStore = defineStore('library', () => {
     renameFolderOf,
     deleteClassroom,
     moveClassroom,
+    loadClassrooms,
   }
 })

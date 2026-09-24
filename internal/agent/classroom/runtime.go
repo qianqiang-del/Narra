@@ -16,6 +16,10 @@ import (
 	"narra/pkg/llm"
 )
 
+type Synthesizer interface {
+	Synthesize(ctx context.Context, text, voice string) ([]byte, error)
+}
+
 // ToolSource 提供 Eino 工具，webSearch 表示本次生成是否允许联网搜索。
 //
 // webSearch 只关系**远端**工具（V1 是联网搜索）；内置工具（知识库检索）与它无关，
@@ -30,6 +34,11 @@ type Deps struct {
 	Classrooms    repository.ClassroomRepository
 	Scenes        repository.SceneRepository
 	Segments      repository.SceneSegmentRepository
+	Agents        repository.ClassroomAgentRepository
+	Roles         repository.RoleRepository
+	Tx            repository.TransactionManager
+	TTS           Synthesizer
+	AudioDir      string
 	Tools         ToolSource
 	EncryptionKey []byte
 }
