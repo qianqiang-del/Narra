@@ -322,26 +322,16 @@ func TestMemoryNormalizeTruncatesLongContent(t *testing.T) {
 // ---- 真库 ----
 
 // newMemoryOrchestrator 用真仓储装配一个"能跑完整趟活"的编排器，提炼器由调用方指定。
+//
+// 复用 newOrchestratorWith 之后只覆盖两个字段，而不是把整份依赖清单再抄一遍 ——
+// 抄第二份的代价刚刚就显现过：依赖清单多了一项（事件仓储）时，抄出来的那份漏了它，
+// 三个用例当场全红，而报出来的只是"装配失败"，看不出是漏了哪一项。
 func (f *fixture) newMemoryOrchestrator(t *testing.T, model Model, extractor MemoryExtractor, maxMemories int) *Orchestrator {
 	t.Helper()
 
-	orchestrator, err := New(Deps{
-		Tx:                 f.tx,
-		Conversations:      f.conversations,
-		Messages:           f.messages,
-		Runs:               f.runs,
-		Turns:              f.turns,
-		Compactions:        f.compactions,
-		Memories:           f.memories,
-		Model:              model,
-		Summarizer:         FakeModel{},
-		Extractor:          extractor,
-		ContextMaxMemories: maxMemories,
-		Director:           RoundRobinDirector{},
-	})
-	if err != nil {
-		t.Fatalf("装配编排器失败: %v", err)
-	}
+	orchestrator := f.newOrchestratorWith(t, model, RoundRobinDirector{})
+	orchestrator.deps.Extractor = extractor
+	orchestrator.deps.ContextMaxMemories = maxMemories
 	return orchestrator
 }
 

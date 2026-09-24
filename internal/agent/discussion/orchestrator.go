@@ -52,6 +52,12 @@ type Deps struct {
 	// Extractor 把一场讨论提炼成几条值得长期记住的事。
 	Extractor MemoryExtractor
 
+	// Events 追加讨论过程中的事件（第 6 步）—— 前端靠它边聊边看。
+	//
+	// 注意这里**只写库、不推送**：事件先落库，再由 SSE 那一层按序号读出去发给前端。
+	// 走表而不是直接推，是因为断线续传只能靠落在库里的序号（见交接文档的"通路铁律"）。
+	Events repository.ConversationEventRepository
+
 	// ContextBudget 是组装上下文时的 token 上限，超过就触发摘要压缩；0 表示用默认值。
 	// 做成可配是为了让测试能用很小的值把压缩逼出来 —— 真要造出几千 token 的对话，
 	// 用例又慢又难读。
@@ -89,6 +95,8 @@ func New(deps Deps) (*Orchestrator, error) {
 		return nil, fmt.Errorf("编排器缺少摘要仓储")
 	case deps.Memories == nil:
 		return nil, fmt.Errorf("编排器缺少共享记忆仓储")
+	case deps.Events == nil:
+		return nil, fmt.Errorf("编排器缺少事件仓储")
 	case deps.Model == nil:
 		return nil, fmt.Errorf("编排器缺少模型")
 	case deps.Summarizer == nil:
@@ -154,6 +162,16 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 		zap.String("trace_id", run.TraceID),
 		zap.Uint64("conversation_id", request.ConversationID),
 	)
+
+	// 让前端先知道"这一趟开工了、桌上有谁"。事务外发：它不同生共死于任何一条记录，
+	// 写不进去最多是这次的流少个头，不该让讨论跑不起来。
+	o.emitEvent(ctx, request.ConversationID, &run.ID, nil,
+		entity.ConversationEventRunStarted, runStartedPayload{
+			TriggerMessageID: request.TriggerMessageID,
+			MaxTurns:         run.MaxTurns,
+			Participants:     participantBriefs(request.Participants),
+		})
+
 	log.Info("讨论开始", zap.Int16("max_turns", run.MaxTurns), zap.Int("participants", len(request.Participants)))
 
 	spoken := make([]int, len(request.Participants))
@@ -189,6 +207,16 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 		}
 
 		participant := request.Participants[decision.SpeakerIndex]
+		// 选完人就把结论告诉前端：用户看得见"为什么现在轮到他"。
+		// 放在下标检查之后 —— 越界时那不是一个真的决定，不该发出去。
+		o.emitEvent(ctx, request.ConversationID, &run.ID, nil,
+			entity.ConversationEventDirectorDecision, directorDecisionPayload{
+				TurnNo:    turnNo,
+				AgentID:   participant.ClassroomAgentID,
+				AgentName: participant.Name,
+				Reason:    decision.Reason,
+			})
+
 		outcome, err := o.speak(ctx, request, run, conversation.ClassroomID, participant, turnNo, trigger.Content)
 		if err != nil {
 			return o.abandon(run, err, outcomes, log)
@@ -219,11 +247,29 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 	}
 
 	if err := o.closeRun(ctx, run, status, stopReason, nil, log); err != nil {
+		// 连终态都没写进去，前端最需要一个"结束信号"来停止转圈 —— 尽力补一条。
+		o.emitEvent(ctx, request.ConversationID, &run.ID, nil,
+			entity.ConversationEventRunFailed, runFailedPayload{
+				Error: truncate(err.Error(), errorMessageLimit),
+			})
 		return Result{
 			RunID: run.ID, TraceID: run.TraceID,
 			Status: entity.RunStatusFailed, StopReason: entity.RunStopError,
 			Turns: outcomes,
 		}, err
+	}
+
+	// 整趟讨论的终态。挂起等用户与正常结束是两件事，前端对应两种界面 ——
+	// 把挂起写成"已结束"，用户就会以为这堂课聊完了。
+	if status == entity.RunStatusWaitingUser {
+		o.emitEvent(ctx, request.ConversationID, &run.ID, nil,
+			entity.ConversationEventRunWaitingUser, runWaitingUserPayload{Reason: stopReason})
+	} else {
+		o.emitEvent(ctx, request.ConversationID, &run.ID, nil,
+			entity.ConversationEventRunCompleted, runCompletedPayload{
+				StopReason: stopReason,
+				Turns:      len(outcomes),
+			})
 	}
 
 	// 记忆在收尾之后提炼：它不参与"这次讨论算不算成功"的判定（决策 S5-7 / S5-8），
@@ -304,7 +350,18 @@ func (o *Orchestrator) speak(
 		Status:           entity.AgentTurnStatusRunning,
 	}
 	if err := o.deps.Tx.Run(ctx, func(ctx context.Context) error {
-		return o.deps.Turns.CreateNext(ctx, turn)
+		if err := o.deps.Turns.CreateNext(ctx, turn); err != nil {
+			return err
+		}
+		// 回合记录与"他开始说话了"这条事件同事务：回合没建成，
+		// 前端就不该以为有人已经开口（否则圆桌上会挂着一个不存在的人）。
+		return o.appendEvent(ctx, request.ConversationID, &run.ID, &turn.ID,
+			entity.ConversationEventAgentStarted, agentStartedPayload{
+				TurnID:    turn.ID,
+				TurnNo:    turn.TurnNo,
+				AgentID:   participant.ClassroomAgentID,
+				AgentName: participant.Name,
+			})
 	}); err != nil {
 		return TurnOutcome{}, fmt.Errorf("建立第 %d 个回合失败: %w", turnNo, err)
 	}
@@ -344,6 +401,28 @@ func (o *Orchestrator) speak(
 		if err := o.deps.Messages.AppendNext(ctx, message); err != nil {
 			return err
 		}
+		// 正文与"说完了"两条事件必须跟着消息一起提交：它们的载荷里有 message_id，
+		// 而且前端正是靠它们把这句话画上屏幕 —— 消息没落库，它们就该一起消失。
+		//
+		// 当前模型一次返回整段，所以 delta 只发一批；接上流式模型后同一个字段分多次发，
+		// 这段代码要改成"边收边发"，但事件契约不变。
+		if err := o.appendEvent(ctx, request.ConversationID, &run.ID, &turn.ID,
+			entity.ConversationEventMessageDelta, messageDeltaPayload{
+				TurnID:    turn.ID,
+				MessageID: message.ID,
+				Delta:     response.Content,
+			}); err != nil {
+			return err
+		}
+		if err := o.appendEvent(ctx, request.ConversationID, &run.ID, &turn.ID,
+			entity.ConversationEventMessageCompleted, messageCompletedPayload{
+				TurnID:     turn.ID,
+				MessageID:  message.ID,
+				Content:    response.Content,
+				TokenCount: response.OutputTokens,
+			}); err != nil {
+			return err
+		}
 		if err := o.deps.Turns.AttachOutputMessage(ctx, turn.ID, message.ID); err != nil {
 			return err
 		}
@@ -353,6 +432,17 @@ func (o *Orchestrator) speak(
 			OutputTokens: response.OutputTokens,
 			FinishedAt:   finishedAt,
 		}); err != nil {
+			return err
+		}
+		// 回合收尾的事件也在这笔事务里：它的载荷里有 message_id 与下一步动作，
+		// 与前面几条是同一个"这一轮说完了"的完整交代。
+		if err := o.appendEvent(ctx, request.ConversationID, &run.ID, &turn.ID,
+			entity.ConversationEventAgentCompleted, agentCompletedPayload{
+				TurnID:     turn.ID,
+				TurnNo:     turn.TurnNo,
+				MessageID:  message.ID,
+				NextAction: nextAction,
+			}); err != nil {
 			return err
 		}
 		// 顺手把对话的"最近一条消息时间"往前推：这是课堂列表排序的依据，
@@ -451,6 +541,14 @@ func (o *Orchestrator) abandon(run *entity.OrchestrationRun, cause error, outcom
 	if err := o.closeRun(finalizeCtx, run, entity.RunStatusFailed, entity.RunStopError, cause, log); err != nil {
 		log.Error("标记运行失败状态时又出错了", zap.Error(err))
 	}
+
+	// 失败也要让前端知道，否则它会一直转圈等一个不会来的结果。
+	// 用 finalizeCtx：调用方的 ctx 很可能正是失败的原因（超时/取消），
+	// 拿它去写事件会立刻再失败一次，连"这次失败了"都送不出去。
+	o.emitEvent(finalizeCtx, run.ConversationID, &run.ID, nil,
+		entity.ConversationEventRunFailed, runFailedPayload{
+			Error: truncate(cause.Error(), errorMessageLimit),
+		})
 
 	return Result{
 		RunID:      run.ID,
