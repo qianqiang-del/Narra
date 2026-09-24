@@ -94,15 +94,20 @@ func (s *stubSummarizer) Summarize(_ context.Context, previous string, messages 
 	return fmt.Sprintf("第 %d 版摘要", s.calls), nil
 }
 
-// newBareOrchestrator 只装配上下文组装需要的三个依赖。
+// newBareOrchestrator 只装配上下文组装需要的几个依赖。
 //
-// 不走 New()：那个函数会校验七个依赖一个不少，而事务管理器、对话仓储这些
+// 不走 New()：那个函数会校验全部依赖一个不少，而事务管理器、运行仓储这些
 // 组装逻辑根本用不到 —— 为它们准备替身只会让用例看不清重点。
+//
+// 共享记忆给一个空替身：第 4 步这些用例关心的是摘要与原文，记忆块为空时组装结果与第 4 步一致
+// （"有没有记忆"的用例在 memory_test.go）。
 func newBareOrchestrator(messages repository.MessageRepository, compactions repository.ContextCompactionRepository, summarizer Summarizer) *Orchestrator {
 	return &Orchestrator{deps: Deps{
 		Messages:    messages,
 		Compactions: compactions,
 		Summarizer:  summarizer,
+		Memories:    &stubMemories{},
+		Extractor:   &stubExtractor{},
 		Logger:      zap.NewNop(),
 	}}
 }
@@ -138,7 +143,7 @@ func TestContextAssembleSummaryComesFirst(t *testing.T) {
 	summarizer := &stubSummarizer{}
 	orchestrator := newBareOrchestrator(messages, compactions, summarizer)
 
-	history, err := orchestrator.buildContext(context.Background(), 1, zap.NewNop())
+	history, err := orchestrator.buildContext(context.Background(), 1, 1, zap.NewNop())
 	if err != nil {
 		t.Fatalf("组装上下文失败: %v", err)
 	}
@@ -173,7 +178,7 @@ func TestContextAssembleSkipsCoveredMessages(t *testing.T) {
 	}}
 	orchestrator := newBareOrchestrator(messages, compactions, &stubSummarizer{})
 
-	history, err := orchestrator.buildContext(context.Background(), 1, zap.NewNop())
+	history, err := orchestrator.buildContext(context.Background(), 1, 1, zap.NewNop())
 	if err != nil {
 		t.Fatalf("组装上下文失败: %v", err)
 	}
@@ -206,7 +211,7 @@ func TestContextAssembleNoCompactionUnderBudget(t *testing.T) {
 	summarizer := &stubSummarizer{}
 	orchestrator := newBareOrchestrator(messages, compactions, summarizer)
 
-	history, err := orchestrator.buildContext(context.Background(), 1, zap.NewNop())
+	history, err := orchestrator.buildContext(context.Background(), 1, 1, zap.NewNop())
 	if err != nil {
 		t.Fatalf("组装上下文失败: %v", err)
 	}
@@ -239,7 +244,7 @@ func TestContextCompactionSkippedWhenSummaryNotShorter(t *testing.T) {
 	orchestrator := newBareOrchestrator(messages, compactions, summarizer)
 	orchestrator.deps.ContextBudget = 10 // 远小于实际长度，必然想压缩
 
-	history, err := orchestrator.buildContext(context.Background(), 1, zap.NewNop())
+	history, err := orchestrator.buildContext(context.Background(), 1, 1, zap.NewNop())
 	if err != nil {
 		t.Fatalf("压缩失败不该让组装也失败: %v", err)
 	}
@@ -299,6 +304,8 @@ func (f *fixture) newContextOrchestrator(summarizer Summarizer) *Orchestrator {
 		Messages:          f.messages,
 		Compactions:       f.compactions,
 		Summarizer:        summarizer,
+		Memories:          f.memories,
+		Extractor:         &stubExtractor{},
 		Logger:            zap.NewNop(),
 		ContextBudget:     10,
 		ContextKeepRecent: 5,
@@ -317,7 +324,7 @@ func TestContextCompactionTriggersWhenOverBudget(t *testing.T) {
 	summarizer := &stubSummarizer{}
 	orchestrator := f.newContextOrchestrator(summarizer)
 
-	history, err := orchestrator.buildContext(ctx, f.conversation.ID, zap.NewNop())
+	history, err := orchestrator.buildContext(ctx, f.classroom.ID, f.conversation.ID, zap.NewNop())
 	if err != nil {
 		t.Fatalf("组装上下文失败: %v", err)
 	}
@@ -366,7 +373,7 @@ func TestContextCompactionDoesNotRepeatSameRange(t *testing.T) {
 	summarizer := &stubSummarizer{}
 	orchestrator := f.newContextOrchestrator(summarizer)
 
-	if _, err := orchestrator.buildContext(ctx, f.conversation.ID, zap.NewNop()); err != nil {
+	if _, err := orchestrator.buildContext(ctx, f.classroom.ID, f.conversation.ID, zap.NewNop()); err != nil {
 		t.Fatalf("第一次组装失败: %v", err)
 	}
 	first, err := f.compactions.LatestByConversation(ctx, f.conversation.ID)
@@ -377,7 +384,7 @@ func TestContextCompactionDoesNotRepeatSameRange(t *testing.T) {
 	// 中间又聊了几句，制造出"新的一段可压缩内容"。
 	f.appendMessages(t, 5)
 
-	if _, err := orchestrator.buildContext(ctx, f.conversation.ID, zap.NewNop()); err != nil {
+	if _, err := orchestrator.buildContext(ctx, f.classroom.ID, f.conversation.ID, zap.NewNop()); err != nil {
 		t.Fatalf("第二次组装失败（可能是把同一段重复压了，撞上唯一约束）: %v", err)
 	}
 	second, err := f.compactions.LatestByConversation(ctx, f.conversation.ID)

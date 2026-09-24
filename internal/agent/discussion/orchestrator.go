@@ -46,6 +46,12 @@ type Deps struct {
 	// Summarizer 把过长的历史压成摘要；与 Model 分开，见 model.go 的说明。
 	Summarizer Summarizer
 
+	// Memories 读写共享上下文记忆（第 5 步）—— 讨论收尾时记下结论，下次发言时带上。
+	Memories repository.SharedMemoryRepository
+
+	// Extractor 把一场讨论提炼成几条值得长期记住的事。
+	Extractor MemoryExtractor
+
 	// ContextBudget 是组装上下文时的 token 上限，超过就触发摘要压缩；0 表示用默认值。
 	// 做成可配是为了让测试能用很小的值把压缩逼出来 —— 真要造出几千 token 的对话，
 	// 用例又慢又难读。
@@ -53,6 +59,9 @@ type Deps struct {
 
 	// ContextKeepRecent 是压缩时保留多少条最近消息不进摘要；0 表示用默认值。
 	ContextKeepRecent int
+
+	// ContextMaxMemories 是每次发言最多带几条共享记忆进上下文；0 表示用默认值。
+	ContextMaxMemories int
 }
 
 // Orchestrator 跑完一次完整的课堂讨论。
@@ -78,10 +87,14 @@ func New(deps Deps) (*Orchestrator, error) {
 		return nil, fmt.Errorf("编排器缺少回合仓储")
 	case deps.Compactions == nil:
 		return nil, fmt.Errorf("编排器缺少摘要仓储")
+	case deps.Memories == nil:
+		return nil, fmt.Errorf("编排器缺少共享记忆仓储")
 	case deps.Model == nil:
 		return nil, fmt.Errorf("编排器缺少模型")
 	case deps.Summarizer == nil:
 		return nil, fmt.Errorf("编排器缺少摘要器")
+	case deps.Extractor == nil:
+		return nil, fmt.Errorf("编排器缺少记忆提炼器")
 	}
 	if deps.Director == nil {
 		deps.Director = RoundRobinDirector{}
@@ -122,6 +135,13 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 	trigger, err := o.deps.Messages.FindByID(ctx, request.TriggerMessageID)
 	if err != nil {
 		return Result{}, fmt.Errorf("读取触发消息失败: %w", err)
+	}
+
+	// 读对话是为了拿"这属于哪门课"：共享记忆要按课堂查（课堂级记忆同一门课通用）。
+	// 也顺带把"对话不存在"挡在建运行记录之前 —— 否则会先留下一条挂在空气上的运行记录。
+	conversation, err := o.deps.Conversations.FindByID(ctx, request.ConversationID)
+	if err != nil {
+		return Result{}, fmt.Errorf("读取对话失败: %w", err)
 	}
 
 	run, err := o.openRun(ctx, request, maxTurns)
@@ -169,7 +189,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 		}
 
 		participant := request.Participants[decision.SpeakerIndex]
-		outcome, err := o.speak(ctx, request, run, participant, turnNo, trigger.Content)
+		outcome, err := o.speak(ctx, request, run, conversation.ClassroomID, participant, turnNo, trigger.Content)
 		if err != nil {
 			return o.abandon(run, err, outcomes, log)
 		}
@@ -205,6 +225,11 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 			Turns: outcomes,
 		}, err
 	}
+
+	// 记忆在收尾之后提炼：它不参与"这次讨论算不算成功"的判定（决策 S5-7 / S5-8），
+	// 所以放在运行终态写完之后，失败也只记日志、就地吞掉。
+	// 放这个位置还有个好处：即便提炼慢，讨论的成功结果也已经落库了。
+	o.extractMemories(ctx, conversation.ClassroomID, request, trigger.Content, outcomes, log)
 
 	log.Info("讨论结束",
 		zap.String("status", status),
@@ -261,10 +286,13 @@ func (o *Orchestrator) openRun(ctx context.Context, request Request, maxTurns in
 //
 // 事务二里那四步必须同生共死：只写消息不挂到回合，前端点开消息回溯不到是哪一轮产生的；
 // 只挂不写消息，回合会指向一条不存在的记录。
+//
+// classroomID 一路传到上下文组装：共享记忆要按"课堂 + 对话"两个维度查。
 func (o *Orchestrator) speak(
 	ctx context.Context,
 	request Request,
 	run *entity.OrchestrationRun,
+	classroomID uint64,
 	participant Participant,
 	turnNo int16,
 	topic string,
@@ -281,7 +309,7 @@ func (o *Orchestrator) speak(
 		return TurnOutcome{}, fmt.Errorf("建立第 %d 个回合失败: %w", turnNo, err)
 	}
 
-	history, err := o.history(ctx, request.ConversationID)
+	history, err := o.history(ctx, classroomID, request.ConversationID)
 	if err != nil {
 		o.abandonTurn(turn, err)
 		return TurnOutcome{}, err
@@ -383,10 +411,10 @@ func (o *Orchestrator) callModel(ctx context.Context, request GenerationRequest)
 
 // history 读这次发言要带的上下文，按发生顺序排列。
 //
-// 保留这个名字和签名，内部换成按预算组装的版本（context.go）：
-// 调用点只有 speak 一处，换实现不必让它知道"现在有摘要、有压缩"这些细节。
-func (o *Orchestrator) history(ctx context.Context, conversationID uint64) ([]HistoryMessage, error) {
-	return o.buildContext(ctx, conversationID, o.deps.Logger)
+// 保留这个名字和签名（只多了一个 classroomID），内部换成按预算组装的版本（context.go）：
+// 调用点只有 speak 一处，换实现不必让它知道"现在有摘要、有压缩、有共享记忆"这些细节。
+func (o *Orchestrator) history(ctx context.Context, classroomID uint64, conversationID uint64) ([]HistoryMessage, error) {
+	return o.buildContext(ctx, classroomID, conversationID, o.deps.Logger)
 }
 
 // closeRun 写运行的终态。
@@ -483,7 +511,7 @@ func speakerName(message entity.ConversationMessage) string {
 	}
 	switch message.SenderType {
 	case entity.MessageSenderUser:
-		return "用户"
+		return userSpeaker
 	case entity.MessageSenderSystem:
 		return "系统"
 	default:
