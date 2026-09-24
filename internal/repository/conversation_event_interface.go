@@ -2,30 +2,30 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"narra/internal/model/entity"
 )
 
-// ConversationEventRepository 负责 SSE 事件（conversation_events）的读写。
+// ConversationEventRepository 负责对话事件的追加与增量读取。
 //
-// 这张表是"编排层"与"SSE 推送层"之间的唯一接口：编排把发生的事写进去，
-// SSE 层按 conversation_id + sequence_no 读出来推给前端，并在重连时续上断点。
-// 所以这里只开两个方法 —— 一个写、一个按序号增量读，都是这条接口的两端各自需要的。
+// 它是 SSE 链路的数据面：写入侧把"执行过程"（谁开始说话、正文增量、谁结束）
+// 落成追加式事件，读取侧按 sequence_no 增量取，供 SSE 断线续传与重放。
 //
-// 有意**不提供** Update：事件是"当时确实发生过什么"的记录，事后再改它，
-// 等于把已经推给前端的流和库里的记录对不上了。要纠正只能在后面追加新事件。
-//
-// 也**没有** DeleteExpired：过期清理属于第 7 步（和 trace span 一起做），
-// 现在加上去只会是一个"定义了却没人调用"的方法。
+// 序号分配与消息仓储是同一条约束：AppendNext 必须经由 TransactionManager.Run 进来，
+// 取号与插入才会落在同一个事务里、受对话行锁保护（见 lockActiveConversation）。
+// 事件序号只保证单调递增，允许空洞 —— 到期清理会删掉旧事件。
 type ConversationEventRepository interface {
-	// AppendNext 追加一条事件，sequence_no 由本方法在事务内分配（会话内从 1 开始）。
-	//
-	// 必须在 TransactionManager.Run 内调用，否则行锁随语句结束即释放，序号不再安全。
+	// AppendNext 追加一条事件并分配对话内序号，成功后回填 event.SequenceNo。
+	// 对话不存在时返回 gorm.ErrRecordNotFound，已结束时返回 ErrConversationNotActive。
 	AppendNext(ctx context.Context, event *entity.ConversationEvent) error
 
-	// ListByConversation 按会话读事件，按序号升序。
-	//
-	// afterSequence 传 0 表示从头读；断线重连时传**最后收到的那个序号**，
-	// 拿到的就正好是漏掉的那一段（比较是严格大于，不会把已收到的那条重复发一次）。
-	ListByConversation(ctx context.Context, conversationID uint64, afterSequence int64, limit int) ([]entity.ConversationEvent, error)
+	// ListAfter 取该对话中 sequence_no 大于 after 的事件，按序号升序，最多 limit 条。
+	// after = 0 表示从头取（重放）；limit 会被归一化到 [1, 500]。
+	ListAfter(ctx context.Context, conversationID uint64, after int64, limit int) ([]entity.ConversationEvent, error)
+
+	// DeleteExpired 删除 expires_at 早于 before 的事件，返回删除条数。
+	// 只由过期清理任务调用（见 internal/retention）：事件只保留 7 天，
+	// 更早的过程以 conversation_messages 为准。
+	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
 }

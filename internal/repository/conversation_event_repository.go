@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -12,20 +13,17 @@ type conversationEventRepository struct {
 	db *gorm.DB
 }
 
-// NewConversationEventRepository 创建事件仓储。
+// NewConversationEventRepository 创建对话事件仓储。
 func NewConversationEventRepository(db *gorm.DB) ConversationEventRepository {
 	return &conversationEventRepository{db: db}
 }
 
-// AppendNext 追加一条事件并分配会话内序号。
+// AppendNext 追加事件并分配对话内序号。
 //
-// 三步和消息完全一样：锁对话行 → 取号 → 插入，都走在调用方的事务里。复用同一个
-// lockActiveConversation，为的是两件事保持一致：
-//
-//   - **并发**：同一会话的多个 goroutine 排队取号，不会算出同一个号。
-//     撞上 UNIQUE (conversation_id, sequence_no) 的表现是"偶发断流"，最难查。
-//   - **已结束的会话会被拒绝**：事件和消息写在**同一笔事务**里，
-//     只放行其中一个，就会给前端推出一条"有事件、没消息"的假象。
+// 与消息的 AppendNext 同一套做法（锁对话行 → 取号 → 插入，三步都在调用方事务里）：
+// 事件天然会被多个 goroutine 同时写（多个 Agent 并发产出、加上 100ms 合批的正文增量），
+// "先查 MAX 再 +1" 会让两边算出同一个号、被 UNIQUE (conversation_id, sequence_no) 拒掉 ——
+// 表现为流上偶发丢事件，而丢的恰恰是"过程"。
 func (r *conversationEventRepository) AppendNext(ctx context.Context, event *entity.ConversationEvent) error {
 	db := conn(ctx, r.db)
 
@@ -42,12 +40,10 @@ func (r *conversationEventRepository) AppendNext(ctx context.Context, event *ent
 	return db.Create(event).Error
 }
 
-// nextEventSequenceNo 取该会话的下一个事件序号。
+// nextEventSequenceNo 取该对话的下一个事件序号。
 //
-// 用 COALESCE(MAX(sequence_no), 0) + 1 而不是 COUNT(*) + 1：事件会被过期清理
-// **从最老的开始**整批删掉，删完之后 COUNT 会从 1 重新数，算出一个已经用过的号 ——
-// 一插就撞唯一约束（而且是"跑了 7 天之后才开始报错"那种）。MAX 只受现存事件影响，
-// 而清理删的永远是最老那些，所以 MAX + 1 始终是个空号。
+// 用 COALESCE(MAX(sequence_no), 0) + 1，而不是 COUNT(*) + 1：事件有 7 天到期清理，
+// 删过之后 COUNT 会算出已经用过的号，插入直接撞唯一约束。
 func nextEventSequenceNo(tx *gorm.DB, conversationID uint64) (int64, error) {
 	var current int64
 	err := tx.Model(&entity.ConversationEvent{}).
@@ -60,13 +56,24 @@ func nextEventSequenceNo(tx *gorm.DB, conversationID uint64) (int64, error) {
 	return current + 1, nil
 }
 
-// ListByConversation 按序号升序读事件。
-func (r *conversationEventRepository) ListByConversation(ctx context.Context, conversationID uint64, afterSequence int64, limit int) ([]entity.ConversationEvent, error) {
+// ListAfter 取序号大于 after 的事件，走 (conversation_id, sequence_no) 唯一索引。
+func (r *conversationEventRepository) ListAfter(ctx context.Context, conversationID uint64, after int64, limit int) ([]entity.ConversationEvent, error) {
 	var events []entity.ConversationEvent
 	err := conn(ctx, r.db).
-		Where("conversation_id = ? AND sequence_no > ?", conversationID, afterSequence).
+		Where("conversation_id = ? AND sequence_no > ?", conversationID, after).
 		Order("sequence_no ASC").
 		Limit(normalizeLimit(limit)).
 		Find(&events).Error
 	return events, err
+}
+
+// DeleteExpired 删除到期事件，返回删除条数。
+//
+// 一条 DELETE 走 idx_conversation_events_expires_at：到期清理按天计，不需要分批；
+// 单轮超时由调用方（retention.Cleaner）控制。
+func (r *conversationEventRepository) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {
+	result := conn(ctx, r.db).
+		Where("expires_at < ?", before).
+		Delete(&entity.ConversationEvent{})
+	return result.RowsAffected, result.Error
 }
