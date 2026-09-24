@@ -117,6 +117,7 @@ type fixture struct {
 	turns         repository.TurnRepository
 	compactions   repository.ContextCompactionRepository
 	memories      repository.SharedMemoryRepository
+	events        repository.ConversationEventRepository
 	tx            repository.TransactionManager
 
 	cleanup func()
@@ -169,6 +170,7 @@ func newFixture(t *testing.T) *fixture {
 		turns:         repository.NewTurnRepository(db),
 		compactions:   repository.NewContextCompactionRepository(db),
 		memories:      repository.NewSharedMemoryRepository(db),
+		events:        repository.NewConversationEventRepository(db),
 		tx:            repository.NewTransactionManager(db),
 	}
 
@@ -187,6 +189,9 @@ func newFixture(t *testing.T) *fixture {
 		// 共享记忆按 classroom_id 删：课堂级记忆的 conversation_id 是空的，
 		// 只按 conversation_id 删会留下一堆残留（这一列两种作用域都有值）。
 		db.Where("classroom_id = ?", f.classroom.ID).Delete(&entity.SharedContextMemory{})
+		// 事件要显式删：它挂在运行和回合上的外键是 SET NULL，先删运行只会把 run_id 抹成空，
+		// 事件本身还留在库里（按 conversation_id 删才干净）。
+		db.Where("conversation_id = ?", f.conversation.ID).Delete(&entity.ConversationEvent{})
 		db.Where("id = ?", f.conversation.ID).Delete(&entity.ClassroomConversation{})
 		db.Where("classroom_id = ?", f.classroom.ID).Delete(&entity.ClassroomAgent{})
 		if len(f.presetAgentIDs) > 0 {
@@ -205,6 +210,12 @@ func newFixture(t *testing.T) *fixture {
 		db.Model(&entity.SharedContextMemory{}).Where("classroom_id = ?", f.classroom.ID).Count(&leftoverMemories)
 		if leftoverMemories != 0 {
 			t.Errorf("测试数据未清理干净：课堂 %d 下仍有 %d 条共享记忆", f.classroom.ID, leftoverMemories)
+		}
+
+		var leftoverEvents int64
+		db.Model(&entity.ConversationEvent{}).Where("conversation_id = ?", f.conversation.ID).Count(&leftoverEvents)
+		if leftoverEvents != 0 {
+			t.Errorf("测试数据未清理干净：对话 %d 下仍有 %d 条事件", f.conversation.ID, leftoverEvents)
 		}
 	}
 
@@ -277,30 +288,12 @@ func newFixture(t *testing.T) *fixture {
 }
 
 // newOrchestrator 用假模型和轮流选人装配一个编排器。
+//
+// 指定选人策略的那个版本叫 newOrchestratorWith，在 turn_taking_test.go ——
+// 那是第 3 步为了换策略才加进来的，这里只需要"轮流"这一种默认。
 func (f *fixture) newOrchestrator(t *testing.T, model Model) *Orchestrator {
 	t.Helper()
-
-	orchestrator, err := New(Deps{
-		Tx:            f.tx,
-		Conversations: f.conversations,
-		Messages:      f.messages,
-		Runs:          f.runs,
-		Turns:         f.turns,
-		Compactions:   f.compactions,
-		Memories:      f.memories,
-		Model:         model,
-		// 摘要器沿用假模型：这些用例的消息量远低于预算，不会真的触发压缩；
-		// 但装配校验要求它非空 —— 真正的压缩行为由 context_test.go 用例覆盖。
-		Summarizer: FakeModel{},
-		// 提炼器同样用假模型：这些用例不关心提炼出来的内容，只要求收尾时不报错。
-		// 提炼与落库的行为由 memory_test.go 覆盖。
-		Extractor: FakeModel{},
-		Director:  RoundRobinDirector{},
-	})
-	if err != nil {
-		t.Fatalf("装配编排器失败: %v", err)
-	}
-	return orchestrator
+	return f.newOrchestratorWith(t, model, RoundRobinDirector{})
 }
 
 // TestOrchestratorRunsFullDiscussion 验证整条链路：全员说完 → 自然收尾。

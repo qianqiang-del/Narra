@@ -31,6 +31,12 @@ type Decision struct {
 	SpeakerIndex int    // 下一位发言人的下标；Stop 为 true 时无意义
 	Stop         bool   // 是否就此停下
 	StopReason   string // 停止原因，取值见 entity.RunStop*
+
+	// Reason 是"为什么轮到他"的一句话，只进事件载荷，不参与任何判断。
+	//
+	// 单独立一个字段而不是让编排层自己拼：判断"为什么是他"的正是选人策略本身，
+	// 让编排猜一句只会在换策略那天变成一句假话。
+	Reason string
 }
 
 // RoundRobinDirector 让每个角色轮流发言，全员都说过话就结束。
@@ -43,7 +49,7 @@ type RoundRobinDirector struct{}
 func (RoundRobinDirector) Decide(state DiscussionState) Decision {
 	for index := range state.Participants {
 		if index < len(state.Spoken) && state.Spoken[index] == 0 {
-			return Decision{SpeakerIndex: index}
+			return Decision{SpeakerIndex: index, Reason: "轮流发言：轮到他了"}
 		}
 	}
 	return Decision{Stop: true, StopReason: entity.RunStopCompleted}
@@ -74,7 +80,7 @@ func (TurnTakingDirector) Decide(state DiscussionState) Decision {
 		// "继续"是对同一个人的指令，所以只在确实有人说过话时才算数；
 		// 第一轮就收到 continue 时退回默认轮换，否则会挑出一个不存在的发言人。
 		if state.LastSpeaker >= 0 && state.LastSpeaker < len(state.Participants) {
-			return Decision{SpeakerIndex: state.LastSpeaker}
+			return Decision{SpeakerIndex: state.LastSpeaker, Reason: "上一轮说继续，由他补充"}
 		}
 	}
 	return nextUnspoken(state)
@@ -84,7 +90,7 @@ func (TurnTakingDirector) Decide(state DiscussionState) Decision {
 func nextUnspoken(state DiscussionState) Decision {
 	for index := range state.Participants {
 		if index < len(state.Spoken) && state.Spoken[index] == 0 {
-			return Decision{SpeakerIndex: index}
+			return Decision{SpeakerIndex: index, Reason: "换下一位还没发过言的人"}
 		}
 	}
 	return Decision{Stop: true, StopReason: entity.RunStopCompleted}
