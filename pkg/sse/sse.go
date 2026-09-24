@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -44,13 +46,39 @@ func Event(c *gin.Context, event string, data any) error {
 	return EventJSON(c, event, payload)
 }
 
-// EventJSON 写一个 data 已经是 JSON 的事件。
+// EventJSON 写一个 data 已经是 JSON 的事件（不带 id）。
 //
 // 与 Event 分开是为了让调用方能"一次序列化、两处用"：进度流要拿序列化后的字节与
 // 上一帧比对，只有变了才推，比对与写线用的是同一份字节。
 func EventJSON(c *gin.Context, event string, payload []byte) error {
-	// data 是 JSON（没有裸换行），一行就够；事件名由调用方保证不含换行。
-	if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, payload); err != nil {
+	return write(c, "", event, payload)
+}
+
+// EventWithID 写一个带 id 的事件。
+//
+// id 是断线续传的起点：浏览器原生 EventSource 重连时会把它放进 Last-Event-ID 头，
+// fetch 版客户端（api/client.ts 的 streamEvents）自己记下来、重连时带上。
+// 对话事件流用 sequence_no 当 id —— 它本来就是事件在对话里的单调序号。
+func EventWithID(c *gin.Context, id int64, event string, payload []byte) error {
+	return write(c, strconv.FormatInt(id, 10), event, payload)
+}
+
+// write 组装并写出一帧。data 是 JSON（没有裸换行），一行就够；
+// 事件名与 id 由调用方保证不含换行。
+func write(c *gin.Context, id, event string, payload []byte) error {
+	var frame strings.Builder
+	if id != "" {
+		frame.WriteString("id: ")
+		frame.WriteString(id)
+		frame.WriteByte('\n')
+	}
+	frame.WriteString("event: ")
+	frame.WriteString(event)
+	frame.WriteString("\ndata: ")
+	frame.Write(payload)
+	frame.WriteString("\n\n")
+
+	if _, err := fmt.Fprint(c.Writer, frame.String()); err != nil {
 		return err
 	}
 	c.Writer.Flush()

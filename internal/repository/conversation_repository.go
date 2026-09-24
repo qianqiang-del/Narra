@@ -71,7 +71,7 @@ func (r *conversationRepository) Close(ctx context.Context, id uint64, endedAt t
 
 // lockActiveConversation 锁住对话行，并确认它还在进行中。
 //
-// 这是"同一条对话里的序号只能由数据库串行发放"的实现基础，被消息仓储与运行仓储共用：
+// 这是"同一条对话里的序号只能由数据库串行发放"的实现基础，被消息、运行与事件仓储共用：
 //
 //   - SELECT ... FOR UPDATE 之后，同一对话上的并发写入会排队，后到的会在前一个事务
 //     提交后读到最新值。没有这把锁，两个 goroutine 会同时算出同一个 MAX+1，
