@@ -76,8 +76,14 @@ func (KnowledgeUploadRecord) TableName() string { return "knowledge_upload_recor
 // 与 ChunkReplacement、KnowledgeDocumentQuery 相同：service 与 repository 共同依赖。
 //
 // 文档已被删除时 DocumentTitle 是空串，由调用方回落到 OriginalName。
+//
+// DocumentIngestStage / DocumentFailedStage 是从关联文档带出来的收录阶段与失败位置，
+// 供抽屉在失败行上显示"卡在哪一步、哪一环"。文档被删除（LEFT JOIN 不中）时为 NULL，
+// 调用方按空串处理。
 type KnowledgeUploadRecordView struct {
 	KnowledgeUploadRecord
 
-	DocumentTitle string `gorm:"column:document_title"`
+	DocumentTitle       string  `gorm:"column:document_title"`
+	DocumentIngestStage *string `gorm:"column:document_ingest_stage"`
+	DocumentFailedStage *string `gorm:"column:document_failed_stage"`
 }

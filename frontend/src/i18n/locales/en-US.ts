@@ -397,6 +397,16 @@ export default {
       ready: 'Searchable',
       failed: 'Failed',
     },
+    // Coarse failure stage, prefixed to the specific error ("Embedding failed: upstream 429").
+    // "store" is its own group: the vectors were computed but not persisted.
+    stage: {
+      parse: 'Parsing failed',
+      chunk: 'Chunking failed',
+      embed: 'Embedding failed',
+      store: 'Saving the result failed',
+      status: 'Status update failed',
+      worker: 'Ingestion task failed',
+    },
     source: {
       manual: 'Manual',
       import: 'File import',

@@ -57,6 +57,29 @@ type fakeDocumentStore struct {
 	processing bool
 	replaceErr error
 	chunkCount int64
+
+	// 分阶段链路的替身状态。字段与真库一一对应：stage 是 ingest_stage，
+	// attempt 是租约编号，content / chunks / embeddings 是三张表上的中间产物。
+	// 有了它们，用例才能验"失败之后从哪一步恢复、恢复时用的是什么输入"。
+	stage      string
+	attempt    int32
+	content    string
+	chunks     []entity.KnowledgeChunk
+	embeddings []entity.KnowledgeEmbedding
+	ready      bool
+
+	// 各阶段可注入的错误，用来模拟"某一步失败之后重试"。
+	parseSaveErr  error
+	chunksSaveErr error
+	embedSaveErr  error
+
+	// failedLeaseHeld 模拟"这一行仍由这次失败持有"。真仓储按 status = failed 且
+	// 租约编号相符判定；替身用一个显式开关，让用例能构造"已经有人重试"的场景。
+	failedLeaseHeld bool
+
+	// uploadPathRejected 模拟"核对时还持有租约、写指针时已经被抢走"的微秒级窗口，
+	// 用来验归档后的挪回逻辑。
+	uploadPathRejected bool
 }
 
 var _ DocumentStore = (*fakeDocumentStore)(nil)
@@ -69,6 +92,10 @@ func (s *fakeDocumentStore) Create(ctx context.Context, document *entity.Knowled
 	document.CreatedAt = time.Now().UTC()
 	document.UpdatedAt = document.CreatedAt
 	s.created = document
+	// 真库的 ingest_stage 有 default 'parse'：新建的文件收录任务从解析开始。
+	if s.stage == "" {
+		s.stage = entity.KnowledgeDocumentStageParse
+	}
 	return nil
 }
 
@@ -84,45 +111,72 @@ func (s *fakeDocumentStore) MarkProcessing(ctx context.Context, id uint64) error
 	return nil
 }
 
-func (s *fakeDocumentStore) MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage, reason string) error {
+// MarkFailed 按真仓储的语义做条件写：只有仍在 processing 且租约编号相符的行
+// 才会被写成 failed。同步链路没有认领这一步，编号是 0。
+func (s *fakeDocumentStore) MarkFailed(ctx context.Context, id uint64, attempt int32, metadata json.RawMessage, reason string) (bool, error) {
+	if s.created == nil || s.created.ID != id {
+		return false, nil
+	}
+	if !s.processing || s.attempt != attempt {
+		return false, nil
+	}
 	s.failMeta = metadata
 	s.failReason = reason
-	return nil
+	s.created.Status = entity.KnowledgeDocumentStatusFailed
+	return true, nil
 }
 
-// 下面六个方法让替身同时满足 FileTaskStore —— SubmitFile 与 Retry 是异步收录的
+// 下面这些方法让替身同时满足 FileTaskStore —— SubmitFile 与 Retry 是异步收录的
 // 两个入口，它们都要先断言存储支持任务队列。队列本身（ListPending / Claim /
 // ResetStale）归 Worker 用，这里给最简实现即可，用例断言的是"任务被记下来了"。
 //
-// SetUploadPath 是例外，它按真仓储的语义做合并：失败原件归档后要靠它把指针挪过去，
-// 而那时 metadata 里已经有失败现场 —— 替身若整份覆盖，用例验到的就是替身的偷懒。
+// SetUploadPath 是例外，它按真仓储的语义做两件事：条件写（只有仍持有失败租约才命中）
+// 与 metadata 顶层合并 —— 失败原件归档后靠它把指针挪过去，而那时 metadata 里
+// 已经有失败现场，替身若整份覆盖，用例验到的就是替身的偷懒。
 func (s *fakeDocumentStore) SetMetadata(ctx context.Context, id uint64, metadata json.RawMessage) error {
 	s.metadata = metadata
 	return nil
 }
 
-func (s *fakeDocumentStore) SetUploadPath(ctx context.Context, id uint64, path string) error {
+func (s *fakeDocumentStore) SetUploadPath(ctx context.Context, id uint64, attempt int32, path string) (bool, error) {
+	if !s.failedLeaseHeld || s.uploadPathRejected {
+		return false, nil
+	}
 	merged := map[string]any{}
 	if len(s.metadata) > 0 {
 		if err := json.Unmarshal(s.metadata, &merged); err != nil {
-			return err
+			return false, err
 		}
 	}
 	merged["upload_path"] = path
 	payload, err := json.Marshal(merged)
 	if err != nil {
-		return err
+		return false, err
 	}
 	s.metadata = payload
-	return nil
+	if s.created != nil {
+		s.created.Metadata = payload
+	}
+	return true, nil
+}
+
+// FailedLeaseOwned 按替身开关判断这一行是否仍由这次失败持有。
+func (s *fakeDocumentStore) FailedLeaseOwned(ctx context.Context, id uint64, attempt int32) (bool, error) {
+	return s.failedLeaseHeld, nil
 }
 
 func (s *fakeDocumentStore) ListPending(ctx context.Context, limit int) ([]entity.KnowledgeDocument, error) {
 	return nil, nil
 }
 
-func (s *fakeDocumentStore) Claim(ctx context.Context, id uint64) (bool, error) {
-	return true, nil
+// ClaimAndReturnAttempt 像真仓储那样递增租约编号：每次认领 +1，并置 processing。
+func (s *fakeDocumentStore) ClaimAndReturnAttempt(ctx context.Context, id uint64) (int32, bool, error) {
+	s.attempt++
+	s.processing = true
+	if s.created != nil {
+		s.created.IngestAttempt = s.attempt
+	}
+	return s.attempt, true, nil
 }
 
 func (s *fakeDocumentStore) ResetStale(ctx context.Context, olderThan time.Time) error {
@@ -133,7 +187,7 @@ func (s *fakeDocumentStore) ResetStale(ctx context.Context, olderThan time.Time)
 }
 
 // Touch 记录心跳次数。真仓储做的是推 updated_at，替身只需要"被叫过几次"。
-func (s *fakeDocumentStore) Touch(ctx context.Context, id uint64) error {
+func (s *fakeDocumentStore) Touch(ctx context.Context, id uint64, attempt int32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.touchCount++
@@ -152,15 +206,26 @@ func (s *fakeDocumentStore) staleResets() int {
 	return s.resetCalls
 }
 
-// Requeue 把这一行改回 pending。替身没有真的状态机，把失败现场清掉、
-// 文档状态改回去即可 —— 用例断言的是"重试被接受，且失败现场没有残留"。
-func (s *fakeDocumentStore) Requeue(ctx context.Context, id uint64) (bool, error) {
+// Requeue 把这一行改回 pending，并记下调用方算好的恢复点。
+// 替身没有真的状态机，把失败现场清掉、文档状态改回去即可 ——
+// 用例断言的是"重试被接受、阶段被改写、且失败现场没有残留"。
+func (s *fakeDocumentStore) Requeue(ctx context.Context, id uint64, stage string) (bool, error) {
 	s.failMeta = nil
 	s.failReason = ""
+	s.stage = stage
 	if s.created != nil {
 		s.created.Status = entity.KnowledgeDocumentStatusPending
 	}
 	return true, nil
+}
+
+// CountChunksByDocument 按替身里的切片数回答，供 Worker 算恢复点。
+func (s *fakeDocumentStore) CountChunksByDocument(ctx context.Context, ids []uint64) (map[uint64]int64, error) {
+	counts := make(map[uint64]int64, len(ids))
+	for _, id := range ids {
+		counts[id] = int64(len(s.chunks))
+	}
+	return counts, nil
 }
 
 func (s *fakeDocumentStore) ReplaceChunks(ctx context.Context, id uint64, input entity.ChunkReplacement) error {
@@ -169,6 +234,8 @@ func (s *fakeDocumentStore) ReplaceChunks(ctx context.Context, id uint64, input 
 	}
 	s.replaced = &input
 	s.chunkCount = int64(len(input.Chunks))
+	s.ready = true
+	s.stage = ""
 
 	// 替身也要像真仓储那样把变化体现在"库里"：收录成功后链路会回读一次组装结果，
 	// 替身不更新的话，回读拿到的是创建时的旧值，用例会以"状态还是 pending"失败 ——
@@ -178,6 +245,89 @@ func (s *fakeDocumentStore) ReplaceChunks(ctx context.Context, id uint64, input 
 		s.created.Content = input.Content
 		s.created.Status = entity.KnowledgeDocumentStatusReady
 		s.created.Metadata = input.Metadata
+		s.created.IngestStage = nil
+		s.created.UpdatedAt = time.Now().UTC()
+	}
+	return nil
+}
+
+// mergeMetadata 按真仓储的顶层合并语义更新 metadata（upload_path / explicit_title
+// 必须活过每一次阶段写入，否则崩溃恢复会找不到原件）。
+func (s *fakeDocumentStore) mergeMetadata(payload json.RawMessage) {
+	if len(payload) == 0 {
+		return
+	}
+	merged := map[string]any{}
+	if len(s.metadata) > 0 {
+		if err := json.Unmarshal(s.metadata, &merged); err != nil {
+			merged = map[string]any{}
+		}
+	}
+	var incoming map[string]any
+	if err := json.Unmarshal(payload, &incoming); err != nil {
+		return
+	}
+	for key, value := range incoming {
+		merged[key] = value
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return
+	}
+	s.metadata = out
+	if s.created != nil {
+		s.created.Metadata = out
+	}
+}
+
+// SaveParsedContent 保存正文并推进到 chunk。
+func (s *fakeDocumentStore) SaveParsedContent(ctx context.Context, id uint64, attempt int32, input entity.ParsedContent) error {
+	if s.parseSaveErr != nil {
+		return s.parseSaveErr
+	}
+	s.content = input.Content
+	s.stage = entity.KnowledgeDocumentStageChunk
+	s.mergeMetadata(input.Metadata)
+	if s.created != nil {
+		s.created.Title = input.Title
+		s.created.Content = input.Content
+	}
+	return nil
+}
+
+// ReplaceStagedChunks 换掉切片并推进到 embed。自增主键由替身模拟分配 ——
+// 向量要挂在切片 ID 上，不分配的话 SaveEmbeddingsAndMarkReady 的校验过不去。
+func (s *fakeDocumentStore) ReplaceStagedChunks(ctx context.Context, id uint64, attempt int32, chunks []entity.KnowledgeChunk, metadata json.RawMessage) error {
+	if s.chunksSaveErr != nil {
+		return s.chunksSaveErr
+	}
+	s.chunks = make([]entity.KnowledgeChunk, len(chunks))
+	for index := range chunks {
+		s.chunks[index] = chunks[index]
+		s.chunks[index].ID = uint64(index + 1)
+	}
+	s.chunkCount = int64(len(chunks))
+	s.stage = entity.KnowledgeDocumentStageEmbed
+	s.mergeMetadata(metadata)
+	return nil
+}
+
+func (s *fakeDocumentStore) ListChunksByDocument(ctx context.Context, id uint64) ([]entity.KnowledgeChunk, error) {
+	return s.chunks, nil
+}
+
+// SaveEmbeddingsAndMarkReady 写向量并置 ready、清空阶段，同时更新"库里的行"。
+func (s *fakeDocumentStore) SaveEmbeddingsAndMarkReady(ctx context.Context, id uint64, attempt int32, embeddings []entity.KnowledgeEmbedding, metadata json.RawMessage) error {
+	if s.embedSaveErr != nil {
+		return s.embedSaveErr
+	}
+	s.embeddings = embeddings
+	s.ready = true
+	s.stage = ""
+	s.mergeMetadata(metadata)
+	if s.created != nil {
+		s.created.Status = entity.KnowledgeDocumentStatusReady
+		s.created.IngestStage = nil
 		s.created.UpdatedAt = time.Now().UTC()
 	}
 	return nil
@@ -188,7 +338,7 @@ func (s *fakeDocumentStore) status() string {
 	if s.failMeta != nil {
 		return entity.KnowledgeDocumentStatusFailed
 	}
-	if s.replaced != nil {
+	if s.replaced != nil || s.ready {
 		return entity.KnowledgeDocumentStatusReady
 	}
 	if s.created != nil {

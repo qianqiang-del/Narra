@@ -40,7 +40,10 @@ type DocumentStore interface {
 
 	// MarkFailed 把文档推进到 failed，把失败现场写进 metadata，并把 reason 同步到
 	// 这次上传的记录上（实现在同一个事务里改两行）。
-	MarkFailed(ctx context.Context, id uint64, metadata json.RawMessage, reason string) error
+	//
+	// attempt 是这次处理的租约编号（同步链路传 0，它没有认领这一步）；返回的 applied
+	// 表示失败现场是否真的落库 —— 异步链路的调用方据此决定能不能移动磁盘上的原件。
+	MarkFailed(ctx context.Context, id uint64, attempt int32, metadata json.RawMessage, reason string) (applied bool, err error)
 
 	// ReplaceChunks 用一个事务换掉这篇文档的全部切片与向量，把它标记为可检索，
 	// 并把这次上传的记录置为 ready。
@@ -115,19 +118,22 @@ const maxTitleRunes = 300
 
 // Ingester 是收录链路的门面：把一份原文变成库里可检索的切片与向量。
 //
-// 它做四件事：解析（可选）→ 切分 → 向量化 → 一个事务落三张表。
-// 每一步失败都会把文档置为 failed 并把阶段写进 metadata，所以链路是自证的：
-// 库里任何一行的状态都能说明它走到了哪一步、为什么停在那里。
+// 它做四件事：解析（可选）→ 切分 → 向量化 → 落三张表。
+// 每一步失败都会把文档置为 failed，并把细粒度阶段写进 metadata（stage / error /
+// error_detail），所以链路是自证的：库里任何一行的状态都能说明它走到了哪一步、
+// 为什么停在那里。
 //
 // 文件收录是**异步**的：SubmitFile 只建 pending 行、把文件路径写进 metadata，
-// 真正的解析与向量化由 Worker 在后台调 processExistingFile 完成（见 worker.go），
-// 状态按 pending → processing → ready / failed 推进。正文收录（IngestText）仍同步：
-// 没有解析这一步，切分与向量化是秒级的。
+// 真正的处理由 Worker 在后台调 processExistingFile 完成（见 worker.go），
+// 状态按 pending → processing → ready / failed 推进。异步链路是**分阶段**的：
+// 解析、切分、向量化各自落库，任务行的 ingest_stage 记着失败后从哪一步恢复
+// （见 processExistingFile）。正文收录（IngestText）仍同步：没有解析这一步，
+// 切分与向量化是秒级的，走 ReplaceChunks 的单事务。
 //
 // IngestFile 是文件收录的同步版本。HTTP 面已经不再走它（controller 调的是 SubmitFile），
 // 服务层接口上虽然还留着这个方法，但没有路由指向它，目前只剩测试在用。
-// 它与 processExistingFile 是同一段逻辑的两份拷贝，将来应收成
-// IngestFile = createDocument + processExistingFile。
+// 它与 processExistingFile 在持久化上已经是两条路：前者一次成型（没有队列与恢复），
+// 后者按阶段落库；解析那一段逻辑相同，将来可以再抽一层。
 type Ingester struct {
 	store     DocumentStore
 	records   UploadRecordStore
@@ -143,8 +149,9 @@ type Ingester struct {
 // FileTaskStore 是异步文件收录对任务队列的最小依赖面。
 //
 // 队列就是 knowledge_documents 表本身，没有独立的任务表。它比 DocumentStore 多出的
-// 方法全部围绕"发任务、抢任务、收任务"：提交时写元数据，取任务时查 pending，
-// 抢任务时做条件更新，失败、归档与回收各一个。之所以单独一个接口而不是并进
+// 方法全部围绕"发任务、抢任务、收任务、按阶段恢复"：提交时写元数据，取任务时查 pending，
+// 抢任务时做条件更新并领取租约编号，失败、归档与回收各一个，另有四个分阶段写入
+// （解析产物 / 切片 / 向量 / 恢复用的切片读取）。之所以单独一个接口而不是并进
 // DocumentStore，是因为同步的 IngestText 用不到其中任何一个。
 //
 // 消费方有两处：Worker（抢任务、处理、收尾）与 Ingester（SubmitFile 发任务、
@@ -155,28 +162,59 @@ type FileTaskStore interface {
 
 	// SetUploadPath 只替换 metadata 里的 upload_path，其余键（失败现场）原样保留。
 	// 失败原件归档到 failed/<文档ID>/ 之后用它把指针挪过去。
-	SetUploadPath(context.Context, uint64, string) error
+	//
+	// 只处理仍由这次失败持有的行（status = failed 且租约编号相符）；返回 false 表示
+	// 用户已经重试或任务已被重新认领，指针没有改 —— 调用方要把已挪走的文件挪回原位。
+	SetUploadPath(context.Context, uint64, int32, string) (bool, error)
+
+	// FailedLeaseOwned 判断这一行是否仍由这次失败持有。归档原件之前核对：
+	// 不匹配就说明已经有人重试或接手，旧 Worker 必须停止，不能再碰磁盘上的文件。
+	FailedLeaseOwned(context.Context, uint64, int32) (bool, error)
 
 	// MarkFailed 把文档推进到 failed 并合并写入失败现场，同时把 reason 同步到上传记录。
+	// attempt 是租约编号；返回的 applied 为 false 表示这次失败没有落库（行已删、
+	// 已被回收并重新认领、或数据库出错），调用方不得归档原件。
 	// reason 的口径见 DocumentStore.MarkFailed。
-	MarkFailed(context.Context, uint64, json.RawMessage, string) error
+	MarkFailed(context.Context, uint64, int32, json.RawMessage, string) (bool, error)
 
 	// ListPending 按创建时间取最多 limit 条 pending 文档。
 	ListPending(context.Context, int) ([]entity.KnowledgeDocument, error)
 
-	// Claim 把一条 pending 文档抢成 processing；返回 false 表示这条已经被别的执行者抢走了。
-	Claim(context.Context, uint64) (bool, error)
+	// ClaimAndReturnAttempt 把一条 pending 文档抢成 processing，并原子递增、返回
+	// 本次处理的租约编号（ingest_attempt）。claimed 为 false 表示这条已经被别的执行者抢走了。
+	ClaimAndReturnAttempt(context.Context, uint64) (attempt int32, claimed bool, err error)
 
 	// Touch 推进 processing 文档的 updated_at，作为"任务还活着"的心跳。
 	// 周期 ResetStale 靠它把"真僵尸"与"跑得慢的正常任务"区分开，见 Worker.startHeartbeat。
-	Touch(context.Context, uint64) error
+	// 带租约编号：旧租约的僵尸心跳不该给已经重新认领的任务续命。
+	Touch(context.Context, uint64, int32) error
 
 	// ResetStale 把 updated_at 早于 olderThan 的 processing 打回 pending，
 	// 用来回收上一个进程遗留的僵尸任务。
 	ResetStale(context.Context, time.Time) error
 
-	// Requeue 把一行 failed 文档改回 pending 重新排队；返回 false 表示它已经不是失败状态。
-	Requeue(context.Context, uint64) (bool, error)
+	// Requeue 把一行 failed 文档改回 pending 重新排队，并把阶段改写成按现实材料算出的
+	// 恢复点（stage 由调用方算好传入，见 ResolveRecoveryStage）；返回 false 表示它已经不是
+	// 失败状态。重试因此不会死守原来的阶段：切片没了就退回正文，正文没了就退回原文件。
+	Requeue(context.Context, uint64, string) (bool, error)
+
+	// CountChunksByDocument 统计文档已落库的切片数，供恢复点计算判断"切片还在不在"。
+	// 与查询侧共用同一个方法（服务层列表要批量统计，传多个 ID 一次查完）；
+	// 只数数、不取内容：embed 阶段真正要读切片时用 ListChunksByDocument。
+	CountChunksByDocument(context.Context, []uint64) (map[uint64]int64, error)
+
+	// SaveParsedContent 保存解析产物，并把 ingest_stage 推进到 chunk。
+	// 只处理仍在 processing 且租约编号相符的文档。
+	SaveParsedContent(context.Context, uint64, int32, entity.ParsedContent) error
+
+	// ReplaceStagedChunks 换掉这篇文档的全部切片，并把 ingest_stage 推进到 embed。
+	ReplaceStagedChunks(context.Context, uint64, int32, []entity.KnowledgeChunk, json.RawMessage) error
+
+	// ListChunksByDocument 按 chunk_index 升序取回全部切片，供 embed 阶段从库里恢复输入。
+	ListChunksByDocument(context.Context, uint64) ([]entity.KnowledgeChunk, error)
+
+	// SaveEmbeddingsAndMarkReady 在一个事务里写入向量并把文档置为 ready、阶段置 NULL。
+	SaveEmbeddingsAndMarkReady(context.Context, uint64, int32, []entity.KnowledgeEmbedding, json.RawMessage) error
 }
 
 // NewIngester 创建收录器。
@@ -244,7 +282,8 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 		return IngestResult{}, err
 	}
 
-	// 建这条投递的历史记录。它的状态往后由 MarkFailed / ReplaceChunks 顺带推进，
+	// 建这条投递的历史记录。它的状态往后由 Worker 链路的 MarkFailed /
+	// SaveEmbeddingsAndMarkReady 顺带推进（同步链路是 MarkFailed / ReplaceChunks），
 	// 这里只负责在起点写一条 pending。
 	//
 	// 建失败**不阻断这次收录**：记录只是历史，缺一条不影响文档本身能不能入库。
@@ -268,7 +307,9 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 
 // Retry 把一条收录失败的文档重新入队，由 Worker 再跑一遍。
 //
-// 它只改状态、不碰文件：原件在失败时就被 worker 归档到了 failed/<文档ID>/，
+// stage 是调用方（服务层）按现实材料算好的恢复点，见 ResolveRecoveryStage：
+// 有切片重向量化、没切片有正文重分块、都没了才重新解析原文件。
+// 它只改状态与阶段、不碰文件：原件在失败时就被 worker 归档到了 failed/<文档ID>/，
 // metadata 里的 upload_path 指着那里（见 worker.archiveStagedFile），
 // 下一轮轮询自然会照常把这一行捡起来。
 //
@@ -277,12 +318,12 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 //
 // 它是**原地重试**：复用同一行文档与同一条上传记录，不新建任何东西。
 // 一份文件一份资产，重试只是让它再跑一次，投递历史里不该凭空多出一条。
-func (i *Ingester) Retry(ctx context.Context, id uint64) (bool, error) {
+func (i *Ingester) Retry(ctx context.Context, id uint64, stage string) (bool, error) {
 	store, ok := i.store.(FileTaskStore)
 	if !ok {
 		return false, fmt.Errorf("知识库存储不支持异步文件任务")
 	}
-	return store.Requeue(ctx, id)
+	return store.Requeue(ctx, id, stage)
 }
 
 // IngestFile 读一份文件并收录。
@@ -322,15 +363,21 @@ func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResul
 		return IngestResult{}, err
 	}
 
+	// 同步链路没有 Worker 认领这一步，状态要自己在这里推进：失败现场只认
+	// processing 的行，停在 pending 会让解析失败的原因根本写不进去。
+	if err := i.store.MarkProcessing(ctx, document.ID); err != nil {
+		return IngestResult{Document: document}, fmt.Errorf("更新文档状态失败: %w", err)
+	}
+
 	parser, err := documentparser.ParserFor(path, i.parser)
 	if err != nil {
-		return i.failIngest(ctx, document, "select_parser", err)
+		return i.failIngest(ctx, document, 0, "select_parser", err)
 	}
 
 	started := time.Now().UTC()
 	result, err := parser.Parse(ctx, documentparser.Request{Path: path})
 	if err != nil {
-		return i.failIngest(ctx, document, "parse", err)
+		return i.failIngest(ctx, document, 0, "parse", err)
 	}
 	// 解析产物目录（导出的图片）归调用方清理。
 	// 已知短板：图片外链尚未接入对象存储，所以 Markdown 里指向本地图片的路径
@@ -339,7 +386,7 @@ func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResul
 
 	// 有页 OCR 失败时正文不完整，宁可整篇失败也不静默入库（Cleanup 已经挂上，临时目录照删）。
 	if err := ocrCoverageError(result); err != nil {
-		return i.failIngest(ctx, document, "parse", err)
+		return i.failIngest(ctx, document, 0, "parse", err)
 	}
 
 	// 调用方没指定标题时，用正文的首个一级标题代替文件名：
@@ -358,35 +405,151 @@ func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResul
 
 // processExistingFile 处理一条已经建好行的文件收录任务，由 Worker 调用。
 //
-// 与 IngestFile 的差别只有两处：文档行是现成的（不再新建，状态也已经由
-// worker 抢任务时置为 processing），以及标题回落的判据来自任务元数据 ——
-// 调用方当初没指定标题时，worker 会传空标题进来，这里才走到"用正文一级标题替换"。
+// stage 是 Worker 按现实材料算好的恢复点（ResolveRecoveryStage），不是行上的 ingest_stage：
+// parse 读原文件解析，chunk 从已落库的正文切分，embed 从已落库的切片生成向量。
+// 每步成功都把中间结果与阶段一起落库，所以进程崩溃、向量服务抖动都不会让昂贵的解析
+// 白跑一遍 —— 这正是分阶段收录的意义。
 //
-// 失败时和别处一样把文档置为 failed，而不是让它停在 processing：
+// 与 IngestFile 的差别有三处：文档行是现成的（不再新建，状态也已经由 worker 抢任务时
+// 置为 processing）；标题回落的判据来自任务元数据 —— 调用方当初没指定标题时，
+// worker 会传空标题进来，这里才走到"用正文一级标题替换"；以及 attempt 这个租约编号。
+//
+// 失败时和别处一样把文档置为 failed（停在失败的那一步），而不是让它停在 processing：
 // 停在 processing 的行此后没有任何执行者会再碰它，只能等下一次进程启动时
 // 被 ResetStale 打回 pending 再跑一遍 —— 等于同一份坏文件被反复解析。
-func (i *Ingester) processExistingFile(ctx context.Context, document *entity.KnowledgeDocument, input FileInput) (IngestResult, error) {
-	parser, err := documentparser.ParserFor(input.Path, i.parser)
-	if err != nil {
-		return i.failIngest(ctx, document, "select_parser", err)
+func (i *Ingester) processExistingFile(
+	ctx context.Context,
+	document *entity.KnowledgeDocument,
+	input FileInput,
+	attempt int32,
+	stage string,
+) (IngestResult, error) {
+	store, ok := i.store.(FileTaskStore)
+	if !ok {
+		return i.failIngest(ctx, document, attempt, "store", fmt.Errorf("知识库存储不支持异步文件任务"))
 	}
-	started := time.Now().UTC()
-	result, err := parser.Parse(ctx, documentparser.Request{Path: input.Path})
-	if err != nil {
-		return i.failIngest(ctx, document, "parse", err)
-	}
-	defer func() { _ = result.Cleanup() }()
 
-	// 与 IngestFile 同一条守卫：缺页的文档不能标 ready。
-	if err := ocrCoverageError(result); err != nil {
-		return i.failIngest(ctx, document, "parse", err)
+	switch stage {
+	case entity.KnowledgeDocumentStageParse, entity.KnowledgeDocumentStageChunk, entity.KnowledgeDocumentStageEmbed:
+	default:
+		// 未知取值不能静默按 parse 处理：那会把一份本可以恢复的文档重头解析一遍，
+		// 而真正的问题（比如将来加了新阶段、旧版本进程还在跑）被掩盖掉。
+		return i.failIngest(ctx, document, attempt, "worker",
+			fmt.Errorf("收录阶段 %q 无法识别，拒绝继续处理", stage))
 	}
+
+	// 两个变量在 parse 之后被解析结果顶替，在 chunk / embed 阶段则直接来自文档行 ——
+	// 中间结果落库的收益就体现在这里。
+	markdown := document.Content
 	title := document.Title
-	if strings.TrimSpace(input.Title) == "" {
-		title = preferHeadingTitle(title, result.Markdown)
+
+	if stage == entity.KnowledgeDocumentStageParse {
+		parser, err := documentparser.ParserFor(input.Path, i.parser)
+		if err != nil {
+			return i.failIngest(ctx, document, attempt, "select_parser", err)
+		}
+		started := time.Now().UTC()
+		result, err := parser.Parse(ctx, documentparser.Request{Path: input.Path})
+		if err != nil {
+			return i.failIngest(ctx, document, attempt, "parse", err)
+		}
+		defer func() { _ = result.Cleanup() }()
+
+		// 与 IngestFile 同一条守卫：缺页的文档不能标 ready。
+		if err := ocrCoverageError(result); err != nil {
+			return i.failIngest(ctx, document, attempt, "parse", err)
+		}
+		markdown = result.Markdown
+		if strings.TrimSpace(input.Title) == "" {
+			title = preferHeadingTitle(title, markdown)
+		}
+
+		metadata := marshalMetadata(map[string]any{
+			"parser":   parserName(result),
+			"parse_ms": time.Since(started).Milliseconds(),
+		})
+		if err := store.SaveParsedContent(ctx, document.ID, attempt, entity.ParsedContent{
+			Title:    truncateTitle(title),
+			Content:  markdown,
+			Checksum: checksum(markdown),
+			Metadata: metadata,
+		}); err != nil {
+			return i.failIngest(ctx, document, attempt, "store", fmt.Errorf("保存解析正文失败: %w", err))
+		}
+		stage = entity.KnowledgeDocumentStageChunk
 	}
-	metadata := map[string]any{"parser": parserName(result), "parse_ms": time.Since(started).Milliseconds()}
-	return i.ingestMarkdown(ctx, document, title, result.Markdown, metadata)
+
+	if stage == entity.KnowledgeDocumentStageChunk {
+		if strings.TrimSpace(markdown) == "" {
+			return i.failIngest(ctx, document, attempt, "chunk",
+				fmt.Errorf("%w：这篇文档没有已落库的正文，无法从切分阶段恢复；请重新上传", ErrEmptyContent))
+		}
+
+		chunkStarted := time.Now().UTC()
+		chunks, err := chunkMarkdown(ctx, markdown)
+		if err != nil {
+			return i.failIngest(ctx, document, attempt, "chunk", err)
+		}
+		metadata := marshalMetadata(map[string]any{
+			"chunks":   len(chunks),
+			"chunk_ms": time.Since(chunkStarted).Milliseconds(),
+		})
+		if err := store.ReplaceStagedChunks(ctx, document.ID, attempt, buildStoredChunks(document.ID, chunks), metadata); err != nil {
+			return i.failIngest(ctx, document, attempt, "store", fmt.Errorf("保存切片失败: %w", err))
+		}
+		stage = entity.KnowledgeDocumentStageEmbed
+	}
+
+	if stage == entity.KnowledgeDocumentStageEmbed {
+		stored, err := store.ListChunksByDocument(ctx, document.ID)
+		if err != nil {
+			return i.failIngest(ctx, document, attempt, "store", fmt.Errorf("读取已落库的切片失败: %w", err))
+		}
+		if len(stored) == 0 {
+			return i.failIngest(ctx, document, attempt, "embed",
+				fmt.Errorf("这篇文档没有已落库的切片，无法从向量阶段恢复；请重新上传"))
+		}
+
+		model, err := i.resolveModel(ctx)
+		if err != nil {
+			return i.failIngest(ctx, document, attempt, "model", err)
+		}
+		embedder, err := i.newEmbedder(model)
+		if err != nil {
+			return i.failIngest(ctx, document, attempt, "model", err)
+		}
+
+		embedStarted := time.Now().UTC()
+		vectors, err := embedInBatches(ctx, embedder, chunksFromEntities(stored))
+		if err != nil {
+			return i.failIngest(ctx, document, attempt, "embed", err)
+		}
+		embeddings, err := buildStoredEmbeddings(stored, vectors, model)
+		if err != nil {
+			return i.failIngest(ctx, document, attempt, "vector", err)
+		}
+
+		metadata := marshalMetadata(map[string]any{
+			"model":    model.Name,
+			"model_id": model.ID,
+			"embed_ms": time.Since(embedStarted).Milliseconds(),
+		})
+		if err := store.SaveEmbeddingsAndMarkReady(ctx, document.ID, attempt, embeddings, metadata); err != nil {
+			return i.failIngest(ctx, document, attempt, "store", fmt.Errorf("保存向量失败: %w", err))
+		}
+
+		// 回读一次再返回：内存里这份是 worker 取任务时读到的，中间的阶段推进与正文替换
+		// 都没有回写到它身上。
+		if refreshed, err := i.store.GetByID(ctx, document.ID); err == nil {
+			return IngestResult{Document: refreshed, Chunks: len(stored)}, nil
+		}
+		document.Status = entity.KnowledgeDocumentStatusReady
+		document.IngestStage = nil
+		return IngestResult{Document: document, Chunks: len(stored)}, nil
+	}
+
+	// 到不了这里：三个阶段各自都会在成功或失败时返回。
+	return IngestResult{Document: document}, nil
 }
 
 // IngestText 直接把正文收录为 Markdown。正文已经是目标格式，没有解析这一步。
@@ -413,8 +576,12 @@ func (i *Ingester) IngestText(ctx context.Context, input TextInput) (IngestResul
 	return i.ingestMarkdown(ctx, document, title, content, map[string]any{"parser": "direct"})
 }
 
-// ingestMarkdown 是链路的公共后半段：切分 → 向量化 → 事务落库。
-// 文件收录与正文收录在这里合流，之后的处理完全一样。
+// ingestMarkdown 是同步链路的公共后半段：切分 → 向量化 → 一次事务落三张表。
+// 文件收录（IngestFile）与正文收录（IngestText）在这里合流，之后的处理完全一样。
+//
+// 它不参与分阶段恢复：正文收录没有原文件可重试，同步文件收录也没有任务队列；
+// 两者都要"要么全成、要么全不成"，所以走 ReplaceChunks 的单事务。
+// 异步文件链路由 processExistingFile 按 ingest_stage 分阶段推进。
 func (i *Ingester) ingestMarkdown(
 	ctx context.Context,
 	document *entity.KnowledgeDocument,
@@ -423,25 +590,16 @@ func (i *Ingester) ingestMarkdown(
 	metadata map[string]any,
 ) (IngestResult, error) {
 	if strings.TrimSpace(markdown) == "" {
-		return i.failIngest(ctx, document, "parse", fmt.Errorf("%w: 没有可入库的正文", ErrEmptyContent))
+		return i.failIngest(ctx, document, 0, "parse", fmt.Errorf("%w: 没有可入库的正文", ErrEmptyContent))
 	}
 	if err := i.store.MarkProcessing(ctx, document.ID); err != nil {
-		return i.failIngest(ctx, document, "status", fmt.Errorf("更新文档状态失败: %w", err))
+		return i.failIngest(ctx, document, 0, "status", fmt.Errorf("更新文档状态失败: %w", err))
 	}
 
 	chunkStarted := time.Now().UTC()
-	chunks, err := splitMarkdown(ctx, markdown, ChunkOptions{})
+	chunks, err := chunkMarkdown(ctx, markdown)
 	if err != nil {
-		return i.failIngest(ctx, document, "chunk", err)
-	}
-	if len(chunks) == 0 {
-		return i.failIngest(ctx, document, "chunk",
-			fmt.Errorf("%w: 切分没有产出任何切片，正文可能只有空白字符", ErrEmptyContent))
-	}
-	if len(chunks) > ingestMaxChunks {
-		return i.failIngest(ctx, document, "chunk", fmt.Errorf(
-			"%w：文档切出 %d 个切片，超过单篇上限 %d；请拆成多篇后再导入",
-			ErrTooManyChunks, len(chunks), ingestMaxChunks))
+		return i.failIngest(ctx, document, 0, "chunk", err)
 	}
 	metadata["chunks"] = len(chunks)
 	metadata["chunk_ms"] = time.Since(chunkStarted).Milliseconds()
@@ -449,30 +607,30 @@ func (i *Ingester) ingestMarkdown(
 	// 模型必须在向量化之前定下来：向量的 model_id 指向它，维度校验也以它为准。
 	model, err := i.resolveModel(ctx)
 	if err != nil {
-		return i.failIngest(ctx, document, "model", err)
+		return i.failIngest(ctx, document, 0, "model", err)
 	}
 	metadata["model"] = model.Name
 	metadata["model_id"] = model.ID
 
 	embedder, err := i.newEmbedder(model)
 	if err != nil {
-		return i.failIngest(ctx, document, "model", err)
+		return i.failIngest(ctx, document, 0, "model", err)
 	}
 
 	embedStarted := time.Now().UTC()
 	vectors, err := embedInBatches(ctx, embedder, chunks)
 	if err != nil {
-		return i.failIngest(ctx, document, "embed", err)
+		return i.failIngest(ctx, document, 0, "embed", err)
 	}
 	metadata["embed_ms"] = time.Since(embedStarted).Milliseconds()
 
 	replacement, err := buildReplacement(document.ID, title, markdown, metadata, chunks, vectors, model)
 	if err != nil {
-		return i.failIngest(ctx, document, "vector", err)
+		return i.failIngest(ctx, document, 0, "vector", err)
 	}
 
 	if err := i.store.ReplaceChunks(ctx, document.ID, replacement); err != nil {
-		return i.failIngest(ctx, document, "store", err)
+		return i.failIngest(ctx, document, 0, "store", err)
 	}
 
 	// 回读一次再返回：内存里这份是创建文档时读到的，中间的状态推进和正文替换
@@ -558,6 +716,7 @@ func (i *Ingester) createDocument(ctx context.Context, title, sourceType, source
 func (i *Ingester) failIngest(
 	ctx context.Context,
 	document *entity.KnowledgeDocument,
+	attempt int32,
 	stage string,
 	cause error,
 ) (IngestResult, error) {
@@ -595,19 +754,52 @@ func (i *Ingester) failIngest(
 	writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := i.store.MarkFailed(writeCtx, document.ID, payload, reason); err != nil {
+	applied, markErr := i.store.MarkFailed(writeCtx, document.ID, attempt, payload, reason)
+	if markErr != nil {
 		// 这一步失败不影响给用户的答复，但会让文档停在中间状态，必须留下日志。
 		logger.Error("知识文档标记失败状态时出错，文档可能停在中间状态",
 			zap.Uint64("document_id", document.ID),
+			zap.Int32("ingest_attempt", attempt),
 			zap.String("stage", stage),
-			zap.Error(err),
+			zap.Error(markErr),
+		)
+	} else if !applied {
+		// 行已被删除、已被回收并重新认领：这次失败不属于当前那一轮。
+		// Worker 据此不归档原件（见 failureRecorded）。
+		logger.Warn("失败现场未写入：文档已不在处理中或租约已失效",
+			zap.Uint64("document_id", document.ID),
+			zap.Int32("ingest_attempt", attempt),
+			zap.String("stage", stage),
 		)
 	}
 
 	failed := *document
 	failed.Status = entity.KnowledgeDocumentStatusFailed
 	failed.Metadata = payload
-	return IngestResult{Document: &failed}, cause
+	return IngestResult{Document: &failed}, &ingestFailure{cause: cause, applied: applied}
+}
+
+// ingestFailure 把"失败现场有没有落库"随错误一起带给 Worker。
+//
+// 失败原因本身仍然原样可读（Error 与 Unwrap 都转发给 cause），所以日志与
+// errors.Is/As 的用法不变；多出来的 applied 只服务一个判断：能不能移动磁盘上的原件。
+type ingestFailure struct {
+	cause   error
+	applied bool
+}
+
+func (f *ingestFailure) Error() string { return f.cause.Error() }
+
+func (f *ingestFailure) Unwrap() error { return f.cause }
+
+// failureRecorded 判断一次失败是否已经写进库里。
+//
+// 只有写进去了，Worker 才能归档原件。旧租约的迟到失败（行已被重新认领）、
+// 已删除的文档、以及写库本身失败这三种情况都不能移动文件：
+// 前两种会让新一轮任务失去输入，第三种会把文件挪到一个没人认领的地方。
+func failureRecorded(err error) bool {
+	var failure *ingestFailure
+	return errors.As(err, &failure) && failure.applied
 }
 
 // userFacingReason 把一次失败折成一句给用户看的中文。
@@ -664,7 +856,7 @@ func buildReplacement(
 		Content:    markdown,
 		Checksum:   checksum(markdown),
 		Metadata:   rawMetadata,
-		Chunks:     make([]entity.KnowledgeChunk, len(chunks)),
+		Chunks:     buildStoredChunks(documentID, chunks),
 		Embeddings: make([]entity.KnowledgeEmbedding, len(chunks)),
 	}
 
@@ -672,24 +864,10 @@ func buildReplacement(
 	// 逐条取 time.Now() 只会让这一列出现毫无意义的毫秒差。
 	generatedAt := time.Now().UTC()
 
-	for index, chunk := range chunks {
+	for index := range chunks {
 		literal, err := vectorLiteral(vectors[index])
 		if err != nil {
 			return entity.ChunkReplacement{}, fmt.Errorf("第 %d 个切片的向量无效: %w", index+1, err)
-		}
-
-		replacement.Chunks[index] = entity.KnowledgeChunk{
-			DocumentID: documentID,
-			ChunkIndex: int32(chunk.Index),
-			Content:    chunk.Content,
-			// character_count 的语义是字符数而不是字节数：PostgreSQL 的 char_length
-			// 按字符算，而 check 约束要求它大于 0。这里与数据库口径保持一致。
-			CharacterCount: int32(len([]rune(chunk.Content))),
-			Metadata:       json.RawMessage(`{}`),
-		}
-		if chunk.Heading != "" {
-			heading := chunk.Heading
-			replacement.Chunks[index].Heading = &heading
 		}
 
 		replacement.Embeddings[index] = entity.KnowledgeEmbedding{
@@ -703,6 +881,97 @@ func buildReplacement(
 		}
 	}
 	return replacement, nil
+}
+
+// marshalMetadata 把处理产物折成 JSON。这里的值都是字符串与整数，编码失败
+// 只可能是内存问题，给一份空对象让流程继续 —— 与 buildReplacement 同一种兜底。
+func marshalMetadata(metadata map[string]any) json.RawMessage {
+	payload, err := json.Marshal(metadata)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return payload
+}
+
+// chunkMarkdown 把正文切成切片，并做两道校验：切不出任何切片、超过单篇上限。
+// 同步链路与异步文件链路共用它，保证两条路对"什么算合法切片"的判断一致。
+func chunkMarkdown(ctx context.Context, markdown string) ([]Chunk, error) {
+	chunks, err := splitMarkdown(ctx, markdown, ChunkOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("%w: 切分没有产出任何切片，正文可能只有空白字符", ErrEmptyContent)
+	}
+	if len(chunks) > ingestMaxChunks {
+		return nil, fmt.Errorf(
+			"%w：文档切出 %d 个切片，超过单篇上限 %d；请拆成多篇后再导入",
+			ErrTooManyChunks, len(chunks), ingestMaxChunks)
+	}
+	return chunks, nil
+}
+
+// buildStoredChunks 把切分产物折成待落库的切片行，供同步链路的 ReplaceChunks
+// 与异步链路的 ReplaceStagedChunks 共用。
+func buildStoredChunks(documentID uint64, chunks []Chunk) []entity.KnowledgeChunk {
+	stored := make([]entity.KnowledgeChunk, len(chunks))
+	for index, chunk := range chunks {
+		stored[index] = entity.KnowledgeChunk{
+			DocumentID: documentID,
+			ChunkIndex: int32(chunk.Index),
+			Content:    chunk.Content,
+			// character_count 的语义是字符数而不是字节数：PostgreSQL 的 char_length
+			// 按字符算，而 check 约束要求它大于 0。这里与数据库口径保持一致。
+			CharacterCount: int32(len([]rune(chunk.Content))),
+			Metadata:       json.RawMessage(`{}`),
+		}
+		if chunk.Heading != "" {
+			heading := chunk.Heading
+			stored[index].Heading = &heading
+		}
+	}
+	return stored
+}
+
+// chunksFromEntities 把已落库的切片折回切分产物的形状，供 embed 阶段向量化使用。
+// 恢复路径不重新切分，切片内容与顺序都以上次落库的为准。
+func chunksFromEntities(stored []entity.KnowledgeChunk) []Chunk {
+	chunks := make([]Chunk, len(stored))
+	for index, row := range stored {
+		heading := ""
+		if row.Heading != nil {
+			heading = *row.Heading
+		}
+		chunks[index] = Chunk{Index: int(row.ChunkIndex), Heading: heading, Content: row.Content}
+	}
+	return chunks
+}
+
+// buildStoredEmbeddings 把向量折成待落库的向量行，ChunkID 与 vectors 一一对应。
+// 顺序由 ListChunksByDocument 保证（按 chunk_index 升序）。
+func buildStoredEmbeddings(stored []entity.KnowledgeChunk, vectors [][]float64, model *entity.EmbeddingModel) ([]entity.KnowledgeEmbedding, error) {
+	if len(stored) != len(vectors) {
+		return nil, fmt.Errorf("切片与向量数量不一致: %d / %d", len(stored), len(vectors))
+	}
+
+	// 同一批向量的生成时间取同一个时刻，理由同 buildReplacement。
+	generatedAt := time.Now().UTC()
+	embeddings := make([]entity.KnowledgeEmbedding, len(vectors))
+	for index, vector := range vectors {
+		literal, err := vectorLiteral(vector)
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 个切片的向量无效: %w", index+1, err)
+		}
+		embeddings[index] = entity.KnowledgeEmbedding{
+			ChunkID: stored[index].ID,
+			ModelID: model.ID,
+			// 维度取真实长度，理由同 buildReplacement。
+			Dimensions:  int32(len(vector)),
+			Embedding:   literal,
+			GeneratedAt: generatedAt,
+		}
+	}
+	return embeddings, nil
 }
 
 // normalizeSourceType 校验来源类型。

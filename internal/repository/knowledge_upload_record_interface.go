@@ -13,7 +13,8 @@ import (
 //
 // 状态同步刻意不在这里开口子：记录的 ready / failed 必须和文档的状态变更在同一个事务里
 // 落地，否则会出现"文档已经 ready、记录还停在处理中"这种自相矛盾的两行 ——
-// 所以那两处由 KnowledgeDocumentRepository 的 ReplaceChunks / MarkFailed 顺带完成，
+// 所以那两处由 KnowledgeDocumentRepository 顺带完成（同步链路是 ReplaceChunks /
+// MarkFailed，异步文件链路是 SaveEmbeddingsAndMarkReady / MarkFailed），
 // 本接口只留"提交时建一条 pending 记录"和查询侧。
 type KnowledgeUploadRecordRepository interface {
 	// CreateUploadRecord 插入一条上传记录，落库后回填 record.ID。

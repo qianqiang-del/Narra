@@ -42,7 +42,9 @@ func (r *knowledgeUploadRecordRepository) List(ctx context.Context, offset, limi
 
 	var rows []entity.KnowledgeUploadRecordView
 	err := base.
-		Select("knowledge_upload_records.*, knowledge_documents.title AS document_title").
+		Select("knowledge_upload_records.*, knowledge_documents.title AS document_title, " +
+			"knowledge_documents.ingest_stage AS document_ingest_stage, " +
+			"knowledge_documents.metadata->>'stage' AS document_failed_stage").
 		Joins("LEFT JOIN knowledge_documents ON knowledge_documents.id = knowledge_upload_records.document_id").
 		Order("knowledge_upload_records.created_at DESC, knowledge_upload_records.id DESC").
 		Offset(offset).Limit(limit).

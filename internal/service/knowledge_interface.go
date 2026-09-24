@@ -35,12 +35,13 @@ type KnowledgeService interface {
 
 	// Retry 把一条收录失败的文档重新排队，让它再跑一遍（**原地重试**）。
 	//
-	// 复用同一行文档与同一条上传记录，输入是失败时归档在服务器上的原件
-	// （data/uploads/failed/<文档ID>/），所以不需要用户重新上传。
+	// 复用同一行文档与同一条上传记录，起点按现实材料计算：有切片直接重新向量化，
+	// 切片没了但有正文就重新分块，正文也没了才重新解析服务器上的原件
+	// （data/uploads/failed/<文档ID>/）。只要三者还剩一样，就不需要用户重新上传。
 	// 返回的文档 status 是 pending，调用方接着用 Get 轮询进度。
 	//
 	// 三种情形返回可判定的错误，接口层据此翻成 409 而不是 400：
-	// 状态不是 failed（ErrRetryNotFailed）、原件已不在服务器上（ErrStagedFileMissing）、
+	// 状态不是 failed（ErrRetryNotFailed）、原件与中间结果全都不在（ErrRecoveryInputMissing）、
 	// 或此刻还有其他任务在跑（ErrIngestBusy）。
 	Retry(ctx context.Context, id uint64) (responsedto.KnowledgeDocument, error)
 

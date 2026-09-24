@@ -89,7 +89,7 @@ func TestKnowledgeRetryMarkFailedMergesMetadata(t *testing.T) {
 	}
 
 	failure := knowledgeTestFailure(t, "parse", "No module named 'scipy'")
-	if err := repo.MarkFailed(ctx, document.ID, failure, "解析失败"); err != nil {
+	if _, err := repo.MarkFailed(ctx, document.ID, 0, failure, "解析失败"); err != nil {
 		t.Fatalf("标记失败状态失败: %v", err)
 	}
 
@@ -124,13 +124,17 @@ func TestKnowledgeRetrySetUploadPathKeepsFailureDetail(t *testing.T) {
 		t.Fatalf("推进到 processing 失败: %v", err)
 	}
 	failure := knowledgeTestFailure(t, "parse", "解析器不可用")
-	if err := repo.MarkFailed(ctx, document.ID, failure, "解析失败"); err != nil {
+	if _, err := repo.MarkFailed(ctx, document.ID, 0, failure, "解析失败"); err != nil {
 		t.Fatalf("标记失败状态失败: %v", err)
 	}
 
 	archived := knowledgeTestArchivedPath(document.ID)
-	if err := repo.SetUploadPath(ctx, document.ID, archived); err != nil {
+	applied, err := repo.SetUploadPath(ctx, document.ID, 0, archived)
+	if err != nil {
 		t.Fatalf("更新 upload_path 失败: %v", err)
+	}
+	if !applied {
+		t.Fatal("仍持有失败租约时应当更新成功")
 	}
 
 	metadata := knowledgeTestMetadata(t, repo, document.ID)
@@ -139,6 +143,76 @@ func TestKnowledgeRetrySetUploadPathKeepsFailureDetail(t *testing.T) {
 	}
 	if metadata["stage"] != "parse" || metadata["error"] != "解析器不可用" {
 		t.Errorf("SetUploadPath 不该动失败现场，实际 %v", metadata)
+	}
+}
+
+// 用户点了重试（或新一轮已经接手）之后，旧执行者的归档不得再改指针。
+// 两个判据各验一次：租约编号对不上、状态已经不是 failed。
+func TestKnowledgeRetrySetUploadPathRejectsStaleLease(t *testing.T) {
+	tx := testTx(t)
+	repo := NewKnowledgeDocumentRepository(tx)
+	ctx := context.Background()
+
+	document := knowledgeTestDocument()
+	if err := repo.Create(ctx, document); err != nil {
+		t.Fatalf("创建文档失败: %v", err)
+	}
+
+	staged := knowledgeTestStagedPath(document.ID)
+	payload, err := json.Marshal(map[string]any{"upload_path": staged})
+	if err != nil {
+		t.Fatalf("构造 metadata 失败: %v", err)
+	}
+	if err := repo.SetMetadata(ctx, document.ID, payload); err != nil {
+		t.Fatalf("写入 metadata 失败: %v", err)
+	}
+	if err := repo.MarkProcessing(ctx, document.ID); err != nil {
+		t.Fatalf("推进到 processing 失败: %v", err)
+	}
+	failure := knowledgeTestFailure(t, "parse", "解析器不可用")
+	if _, err := repo.MarkFailed(ctx, document.ID, 0, failure, "解析失败"); err != nil {
+		t.Fatalf("标记失败状态失败: %v", err)
+	}
+
+	owned, err := repo.FailedLeaseOwned(ctx, document.ID, 0)
+	if err != nil || !owned {
+		t.Fatalf("失败现场写下后应当持有租约: owned=%v err=%v", owned, err)
+	}
+
+	// 编号对不上：拒绝。
+	archived := knowledgeTestArchivedPath(document.ID)
+	applied, err := repo.SetUploadPath(ctx, document.ID, 7, archived)
+	if err != nil {
+		t.Fatalf("更新 upload_path 出错: %v", err)
+	}
+	if applied {
+		t.Error("租约编号不符时不该更新 upload_path")
+	}
+
+	// 用户重试：状态回到 pending，租约不再属于旧执行者。
+	requeued, err := repo.Requeue(ctx, document.ID, entity.KnowledgeDocumentStageParse)
+	if err != nil || !requeued {
+		t.Fatalf("重新排队失败: requeued=%v err=%v", requeued, err)
+	}
+	owned, err = repo.FailedLeaseOwned(ctx, document.ID, 0)
+	if err != nil {
+		t.Fatalf("核对失败租约出错: %v", err)
+	}
+	if owned {
+		t.Error("重试之后不该再持有失败租约")
+	}
+
+	applied, err = repo.SetUploadPath(ctx, document.ID, 0, archived)
+	if err != nil {
+		t.Fatalf("更新 upload_path 出错: %v", err)
+	}
+	if applied {
+		t.Error("重试之后不该再更新 upload_path")
+	}
+
+	metadata := knowledgeTestMetadata(t, repo, document.ID)
+	if metadata["upload_path"] != staged {
+		t.Errorf("指针不该被旧执行者改动：期望 %q，实际 %v", staged, metadata["upload_path"])
 	}
 }
 
@@ -180,11 +254,11 @@ func TestKnowledgeRetryRequeueResetsFailedDocumentAndRecord(t *testing.T) {
 		t.Fatalf("推进到 processing 失败: %v", err)
 	}
 	failure := knowledgeTestFailure(t, "parse", "解析器不可用")
-	if err := repo.MarkFailed(ctx, document.ID, failure, "解析失败"); err != nil {
+	if _, err := repo.MarkFailed(ctx, document.ID, 0, failure, "解析失败"); err != nil {
 		t.Fatalf("标记失败状态失败: %v", err)
 	}
 
-	requeued, err := repo.Requeue(ctx, document.ID)
+	requeued, err := repo.Requeue(ctx, document.ID, entity.KnowledgeDocumentStageChunk)
 	if err != nil {
 		t.Fatalf("重新排队失败: %v", err)
 	}
@@ -198,6 +272,10 @@ func TestKnowledgeRetryRequeueResetsFailedDocumentAndRecord(t *testing.T) {
 	}
 	if reloaded.Status != entity.KnowledgeDocumentStatusPending {
 		t.Errorf("重试后状态应为 pending，实际 %s", reloaded.Status)
+	}
+	// 阶段被改写成本次算出的恢复点，而不是保留失败时的那个。
+	if reloaded.IngestStage == nil || *reloaded.IngestStage != entity.KnowledgeDocumentStageChunk {
+		t.Errorf("重试后阶段应为 chunk，实际 %v", reloaded.IngestStage)
 	}
 
 	metadata := knowledgeTestMetadata(t, repo, document.ID)
@@ -221,7 +299,7 @@ func TestKnowledgeRetryRequeueResetsFailedDocumentAndRecord(t *testing.T) {
 		t.Errorf("记录的失败原因应当被清空，实际 %q", *stored.ErrorMessage)
 	}
 
-	again, err := repo.Requeue(ctx, document.ID)
+	again, err := repo.Requeue(ctx, document.ID, entity.KnowledgeDocumentStageParse)
 	if err != nil {
 		t.Fatalf("重复重试不该报错: %v", err)
 	}
@@ -248,8 +326,12 @@ func TestKnowledgeMarkFailedRejectsDocumentNotProcessing(t *testing.T) {
 	}
 
 	failure := knowledgeTestFailure(t, "parse", "解析器不可用")
-	if err := repo.MarkFailed(ctx, document.ID, failure, "解析失败"); err == nil {
-		t.Fatal("文档不在 processing 时必须报错，不能写失败现场")
+	applied, err := repo.MarkFailed(ctx, document.ID, 0, failure, "解析失败")
+	if err != nil {
+		t.Fatalf("未命中处理中的行不该返回数据库错误: %v", err)
+	}
+	if applied {
+		t.Fatal("文档不在 processing 时不该写入失败现场")
 	}
 
 	after, err := repo.GetByID(ctx, document.ID)

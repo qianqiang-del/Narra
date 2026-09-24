@@ -33,4 +33,9 @@ var (
 	// ErrEmptyQuery 表示检索词是空的。
 	// 与 ErrEmptyContent 对偶：那边是"没东西可入库"，这边是"没东西可查"。
 	ErrEmptyQuery = errors.New("检索词不能为空")
+
+	// ErrRecoveryInputMissing 表示恢复所需的材料全都不在了：原始文件、正文、切片一个都没有。
+	// 它是回退链的终点（见 ResolveRecoveryStage）：能退到哪一步就用哪一步，
+	// 连原文件都没了才是真的无路可走，只能请用户重新上传。
+	ErrRecoveryInputMissing = errors.New("这次收录的输入已经全部丢失，请重新上传")
 )
