@@ -49,3 +49,11 @@ type KnowledgeListQuery struct {
 	Statuses []string // 只看这些状态（HTTP 上由 status 参数按逗号拆开）；空表示不限
 	Keyword  string   // 标题与来源标识的模糊匹配关键字；空表示不限
 }
+
+// KnowledgeDocumentEnabled 是单独切换文档检索开关的请求。
+//
+// PATCH 语义：只带这一个字段，收录状态、正文、切片与向量都不受影响 ——
+// 停用只是让召回时过滤掉它，改回 true 立即恢复。
+type KnowledgeDocumentEnabled struct {
+	Enabled bool `json:"enabled"`
+}

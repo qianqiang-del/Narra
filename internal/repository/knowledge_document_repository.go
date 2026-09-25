@@ -191,6 +191,21 @@ func (r *knowledgeDocumentRepository) GetByID(ctx context.Context, id uint64) (*
 	return &document, nil
 }
 
+// SetEnabled 单独切换一篇文档的检索开关，返回是否命中一行。
+//
+// 只改 enabled 一列：状态、切片与向量都不动 —— 停用只是让两条召回 SQL 过滤掉它
+// （见 knowledge_search_repository），改回 true 立即恢复。
+//
+// 用 GORM 的 Update 而不是 UpdateColumn：updated_at 由 autoUpdateTime 维护
+// （见 migrations/README.md 的对照表），这里必须跟着刷新。
+func (r *knowledgeDocumentRepository) SetEnabled(ctx context.Context, id uint64, enabled bool) (bool, error) {
+	result := r.db.WithContext(ctx).
+		Model(&entity.KnowledgeDocument{}).
+		Where("id = ?", id).
+		Update("enabled", enabled)
+	return result.RowsAffected > 0, result.Error
+}
+
 // List 按创建时间倒序分页，条件来自 entity.KnowledgeDocumentQuery。
 //
 // id 也参与排序，因为同一批导入的文档 created_at 可能相同，只按时间排会让翻页时

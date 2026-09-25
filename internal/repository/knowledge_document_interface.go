@@ -37,6 +37,12 @@ type KnowledgeDocumentRepository interface {
 	// GetByID 按主键取文档。查不到返回 gorm.ErrRecordNotFound。
 	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error)
 
+	// SetEnabled 单独切换一篇文档的检索开关，返回是否命中一行（false = 文档不存在）。
+	//
+	// 只改 enabled 一列：收录状态、切片与向量都不动 —— 停用只是让召回 SQL 过滤掉它，
+	// 改回 true 立即恢复。updated_at 由 GORM 的 autoUpdateTime 跟着刷新。
+	SetEnabled(ctx context.Context, id uint64, enabled bool) (applied bool, err error)
+
 	// List 按创建时间倒序分页返回满足条件的文档，同时给出总数。
 	// 条件为空时等价于"全部文档"，见 entity.KnowledgeDocumentQuery。
 	List(ctx context.Context, query entity.KnowledgeDocumentQuery) ([]entity.KnowledgeDocument, int64, error)

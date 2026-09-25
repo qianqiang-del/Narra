@@ -67,6 +67,13 @@ type KnowledgeService interface {
 	// Get 返回单篇文档。文档不存在时返回带明确说明的错误。
 	Get(ctx context.Context, id uint64) (responsedto.KnowledgeDocument, error)
 
+	// SetEnabled 切换一篇文档是否参与检索，返回更新后的文档。
+	//
+	// 停用不删任何东西：切片与向量原样保留，只是两条召回 SQL 过滤掉它
+	// （见 knowledge_search_repository），改回 true 立即恢复。文档不存在时返回
+	// 带明确说明的错误；它对文档状态没有要求（字段与收录状态正交）。
+	SetEnabled(ctx context.Context, id uint64, enabled bool) (responsedto.KnowledgeDocument, error)
+
 	// Preview 返回单篇文档的解析正文。正文只有这个接口会出网。
 	Preview(ctx context.Context, id uint64) (responsedto.KnowledgeDocumentPreview, error)
 

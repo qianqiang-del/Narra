@@ -388,6 +388,30 @@ func (c *Controller) Get(ctx *gin.Context) {
 	response.Success(ctx, document)
 }
 
+// SetEnabled 切换一篇文档是否参与检索。
+//
+// 停用不删任何东西：切片与向量都还在，只是召回时不再命中它；改回 true 立即恢复。
+// 它对文档状态没有要求（字段与收录状态正交），界面上只在 ready 的行给入口。
+func (c *Controller) SetEnabled(ctx *gin.Context) {
+	id, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.BadRequest(ctx, "文档 ID 无效")
+		return
+	}
+	var input requestdto.KnowledgeDocumentEnabled
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		response.BadRequest(ctx, "请求格式无效，需要 enabled")
+		return
+	}
+
+	document, err := c.svc.SetEnabled(ctx.Request.Context(), id, input.Enabled)
+	if err != nil {
+		response.BadRequest(ctx, err.Error())
+		return
+	}
+	response.SuccessWithMessage(ctx, "已更新检索状态", document)
+}
+
 // Preview 返回单篇文档的解析正文，供前端"查看"按钮打开预览。
 //
 // 正文只在这一个接口出网：列表与详情刻意不带它（一篇文档可能几十万字）。

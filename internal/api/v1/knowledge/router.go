@@ -17,6 +17,9 @@ func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	// 收的是状态流转，不是内容。路由段与 /:id/preview 同一形状，能共存。
 	documents.POST("/:id/retry", c.Retry)
 	documents.GET("", c.List)
+	// 启停是"改这一篇的一个字段"，所以是文档的子资源式路径 + PATCH：只动 enabled，
+	// 不重传正文、也不新建资源（与 LLM provider 的 /:id/enabled 同一种写法）。
+	documents.PATCH("/:id/enabled", c.SetEnabled)
 	documents.GET("/parser/status", c.ParserStatus)
 	// 收录进度走 SSE：上传/重试返回后前端订阅这条流，直到文档到终态。
 	// 它挂在文档下面而不是另开一组资源 —— 推的就是这一篇的状态变化。

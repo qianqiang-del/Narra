@@ -72,8 +72,8 @@ export interface KnowledgeDocument {
   /** 上传时的原始文件名；手动录入的文档为空 */
   sourceUri: string
   /**
-   * 是否参与检索。**后端目前只读不可写** —— 没有改它的接口，
-   * 所以界面上不要给它做开关，点了不会有任何东西接住。
+   * 是否参与检索。停用不删切片与向量，只是召回时被过滤掉（两条检索 SQL 都带这个条件），
+   * 由 `setKnowledgeDocumentEnabled` 切换；列表里停用的行会带「已停用」徽章。
    */
   enabled: boolean
   status: KnowledgeDocumentStatus
@@ -389,6 +389,23 @@ export async function fetchKnowledgeDocumentPreview(id: number): Promise<Knowled
 
 export async function deleteKnowledgeDocument(id: number): Promise<void> {
   await request<null>(`/knowledge/documents/${id}`, { method: 'DELETE' })
+}
+
+/**
+ * 切换一篇文档是否参与检索。
+ *
+ * 停用不删任何东西：切片与向量原样保留，只是检索时不再召回它；改回 true 立即恢复。
+ * 返回更新后的文档（形状与详情接口一致）。
+ */
+export async function setKnowledgeDocumentEnabled(
+  id: number,
+  enabled: boolean,
+): Promise<KnowledgeDocument> {
+  const d = await request<KnowledgeDocumentDTO>(`/knowledge/documents/${id}/enabled`, {
+    method: 'PATCH',
+    body: JSON.stringify({ enabled }),
+  })
+  return toDocument(d)
 }
 
 function toUploadRecord(r: KnowledgeUploadRecordDTO): KnowledgeUploadRecord {
