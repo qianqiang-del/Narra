@@ -63,7 +63,6 @@ func knowledgeTestReplacement(documentID, modelID uint64, count int) entity.Chun
 			ChunkIndex:     int32(index),
 			Content:        content,
 			CharacterCount: int32(len([]rune(content))),
-			Metadata:       json.RawMessage(`{}`),
 		}
 
 		values := make([]string, knowledgeTestDimensions)

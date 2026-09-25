@@ -62,8 +62,8 @@ func seedSearchChunk(
 		ID uint64
 	}
 	err := tx.Raw(`
-		INSERT INTO knowledge_chunks (created_at, updated_at, document_id, chunk_index, heading, content, character_count, metadata)
-		VALUES (now(), now(), ?, ?, ?, ?, ?, '{}'::jsonb)
+		INSERT INTO knowledge_chunks (created_at, updated_at, document_id, chunk_index, heading, content, character_count)
+		VALUES (now(), now(), ?, ?, ?, ?, ?)
 		RETURNING id`,
 		documentID, index, heading, content, len([]rune(content))).Scan(&chunk).Error
 	if err != nil {

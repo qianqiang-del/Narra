@@ -923,7 +923,6 @@ func buildStoredChunks(documentID uint64, chunks []Chunk) []entity.KnowledgeChun
 			// character_count 的语义是字符数而不是字节数：PostgreSQL 的 char_length
 			// 按字符算，而 check 约束要求它大于 0。这里与数据库口径保持一致。
 			CharacterCount: int32(len([]rune(chunk.Content))),
-			Metadata:       json.RawMessage(`{}`),
 		}
 		if chunk.Heading != "" {
 			heading := chunk.Heading

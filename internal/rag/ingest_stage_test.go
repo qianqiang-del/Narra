@@ -103,7 +103,6 @@ func stagedChunks(count int) []entity.KnowledgeChunk {
 			ChunkIndex:     int32(index),
 			Content:        content,
 			CharacterCount: int32(len([]rune(content))),
-			Metadata:       json.RawMessage(`{}`),
 		}
 	}
 	return chunks
