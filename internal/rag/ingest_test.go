@@ -544,9 +544,6 @@ func TestIngestFileStoresChunksAndVectors(t *testing.T) {
 			t.Errorf("第 %d 片的 character_count = %d，实际字符数 %d（数据库按字符计数）",
 				index, chunk.CharacterCount, got)
 		}
-		if len(chunk.Metadata) == 0 || chunk.Metadata[0] != '{' {
-			t.Errorf("第 %d 片的 metadata 应当是 JSON 对象，实际 %s", index, chunk.Metadata)
-		}
 		// 标题要一路带到入库结构里：正文全部落在标题之下，丢了这个字段，
 		// 检索命中后就再也说不出"这段来自哪一节"。
 		if chunk.Heading == nil {

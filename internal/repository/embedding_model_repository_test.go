@@ -107,8 +107,8 @@ func seedVector(t *testing.T, tx *gorm.DB, modelID uint64, dimensions int) {
 		ID uint64
 	}
 	err = tx.Raw(`
-		INSERT INTO knowledge_chunks (created_at, updated_at, document_id, chunk_index, content, character_count, metadata)
-		VALUES (now(), now(), ?, 0, ?, ?, '{}'::jsonb)
+		INSERT INTO knowledge_chunks (created_at, updated_at, document_id, chunk_index, content, character_count)
+		VALUES (now(), now(), ?, 0, ?, ?)
 		RETURNING id`,
 		document.ID, "正文内容", len([]rune("正文内容"))).Scan(&chunk).Error
 	if err != nil {
