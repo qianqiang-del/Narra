@@ -13,4 +13,7 @@ type ClassroomService interface {
 	List(ctx context.Context) ([]*responsedto.Classroom, error)
 	Delete(ctx context.Context, id uint64) error
 	Get(ctx context.Context, id uint64) (*responsedto.Classroom, error)
+	GetOutline(ctx context.Context, id uint64) (*responsedto.ClassroomOutline, error)
+	GetAgents(ctx context.Context, id uint64) ([]responsedto.RoleItem, error)
+	ListScenes(ctx context.Context, id uint64) ([]responsedto.ClassroomSceneSummary, error)
 }

@@ -1,4 +1,4 @@
-import { request } from './client'
+import { request, streamEvents } from './client'
 
 /**
  * 课堂的创建与查询。
@@ -71,4 +71,60 @@ export function fetchClassrooms(): Promise<ClassroomDTO[]> {
 
 export function deleteClassroom(id: number): Promise<{ id: number }> {
   return request<{ id: number }>(`/classrooms/${id}`, { method: 'DELETE' })
+}
+
+export interface ClassroomOutlineDTO {
+  classroom_id: number
+  title: string
+  scenes: { id: number; sort_order: number; type: string; title: string; brief: string; status: string }[]
+}
+
+export interface ClassroomSceneSummaryDTO {
+  id: number
+  sort_order: number
+  type: string
+  title: string
+  status: 'pending' | 'generating' | 'ready' | 'failed'
+  error_message: string | null
+}
+
+export function fetchClassroomOutline(id: number): Promise<ClassroomOutlineDTO> {
+  return request<ClassroomOutlineDTO>(`/classrooms/${id}/outline`)
+}
+
+export function fetchClassroomAgents(id: number): Promise<RoleCardDTO[]> {
+  return request<RoleCardDTO[]>(`/classrooms/${id}/agents`)
+}
+
+export interface RoleCardDTO {
+  agent_key: string
+  name: string
+  role: string
+  role_type: string
+  persona: string
+  avatar: string
+  color: string
+  voice_id: string
+  sort_order: number
+}
+
+export function fetchClassroomScenes(id: number): Promise<ClassroomSceneSummaryDTO[]> {
+  return request<ClassroomSceneSummaryDTO[]>(`/classrooms/${id}/scenes`)
+}
+
+export async function* streamClassroomEvents(id: number, signal?: AbortSignal) {
+  for await (const event of streamEvents(`/classrooms/${id}/events`, signal)) {
+    if (event.event === 'classroom') yield JSON.parse(event.data) as ClassroomDTO
+  }
+}
+
+export interface SceneDetailDTO {
+  id: number; sort_order: number; type: string; title: string; brief: string; status: string
+  content: { blocks?: { key?: string; type?: string; content?: string; text?: string; interaction?: { kind?: string; controls?: Record<string, unknown>[]; options?: string[]; answer?: string; config?: Record<string, unknown> } }[] }
+  narration: { id: number; content_key: string; sort_order: number; text: string; status: string; audio_path: string | null }[]
+  error_message: string | null
+}
+
+export function fetchScene(id: number): Promise<SceneDetailDTO> {
+  return request<SceneDetailDTO>(`/scenes/${id}`)
 }

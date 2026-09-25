@@ -14,6 +14,7 @@ export interface ChatNote {
   id: string
   title: string
   body: string
+  audioPath?: string | null
 }
 
 export interface ClassroomStats {

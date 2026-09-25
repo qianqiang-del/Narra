@@ -2,6 +2,30 @@ package response
 
 import "time"
 
+type ClassroomOutline struct {
+	ClassroomID uint64         `json:"classroom_id"`
+	Title       string         `json:"title"`
+	Scenes      []OutlineScene `json:"scenes"`
+}
+
+type OutlineScene struct {
+	ID        uint64 `json:"id"`
+	SortOrder int32  `json:"sort_order"`
+	Type      string `json:"type"`
+	Title     string `json:"title"`
+	Brief     string `json:"brief"`
+	Status    string `json:"status"`
+}
+
+type ClassroomSceneSummary struct {
+	ID           uint64  `json:"id"`
+	SortOrder    int32   `json:"sort_order"`
+	Type         string  `json:"type"`
+	Title        string  `json:"title"`
+	Status       string  `json:"status"`
+	ErrorMessage *string `json:"error_message"`
+}
+
 // ClassroomAgentBrief 是课堂里一个角色的最小信息：谁、用什么音色。
 //
 // 名称 / 头像 / 定位 / 人设不在这里，前端拿 AgentKey 去角色池取，一份数据一处来源；

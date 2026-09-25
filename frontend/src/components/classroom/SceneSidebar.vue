@@ -16,8 +16,9 @@ import {
   Trophy,
 } from 'lucide-vue-next'
 
-import { SCENE_TYPE_STYLES, type Scene, type SceneType } from '@/data/scenes'
+import { SCENE_TYPE_STYLES, type Scene, type SceneType } from '@/types/scene'
 import { cn } from '@/lib/utils'
+import SceneRenderer from '@/components/classroom/SceneRenderer.vue'
 
 const props = defineProps<{
   scenes: Scene[]
@@ -136,6 +137,11 @@ const TYPE_LABEL_KEY: Record<SceneType, string> = {
             )
           "
         >
+          <div class="absolute inset-0 z-10 overflow-hidden bg-white dark:bg-gray-800">
+            <div class="pointer-events-none origin-top-left scale-[0.19]" style="width: 526%; height: 526%">
+              <SceneRenderer :scene="scene" />
+            </div>
+          </div>
           <!-- 生成中：骨架 + shimmer -->
           <template v-if="scene.status === 'generating' || scene.status === 'pending'">
             <div class="flex size-full flex-col justify-center gap-1.5 p-2">
@@ -169,11 +175,18 @@ const TYPE_LABEL_KEY: Record<SceneType, string> = {
           <!-- 正常：按类型画示意图 -->
           <template v-else>
             <!-- slide -->
-            <div v-if="scene.type === 'slide'" class="flex size-full flex-col justify-center gap-1 p-2">
-              <div class="h-1.5 w-2/3 rounded-full bg-white/80" />
-              <div class="h-1 w-1/2 rounded-full bg-white/50" />
-              <div class="h-1 w-3/5 rounded-full bg-white/50" />
-              <div class="h-1 w-2/5 rounded-full bg-white/50" />
+            <div v-if="scene.type === 'slide'" class="flex size-full flex-col gap-1 overflow-hidden bg-gradient-to-br from-violet-50 to-blue-50 p-2">
+              <div class="truncate text-[8px] font-bold text-gray-800/90">{{ scene.slide?.heading || scene.title }}</div>
+              <div
+                v-for="(bullet, bulletIndex) in (scene.slide?.bullets || []).slice(0, 3)"
+                :key="bulletIndex"
+                class="truncate rounded bg-white/70 px-1 py-0.5 text-[7px] leading-tight text-gray-700/80"
+              >
+                {{ bullet }}
+              </div>
+              <div v-if="scene.slide?.accent" class="mt-auto truncate rounded bg-violet-100/80 px-1 py-0.5 text-[6px] font-medium text-violet-700/80">
+                {{ scene.slide.accent }}
+              </div>
             </div>
 
             <!-- quiz：2×2 选项格 -->

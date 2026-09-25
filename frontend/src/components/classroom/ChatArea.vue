@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n'
 import { BookOpen, MessageSquare, PanelRightClose, PanelRightOpen } from 'lucide-vue-next'
 
 import { cn } from '@/lib/utils'
+import { registerAudio } from '@/lib/audioPlayback'
 import type { ChatNote, ChatSession } from '@/types/classroom'
 
 defineProps<{
@@ -16,6 +17,7 @@ defineProps<{
   sessions: ChatSession[]
   hasActiveSession: boolean
   notes: ChatNote[]
+  activeNoteId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -23,9 +25,22 @@ const emit = defineEmits<{
   (e: 'toggle-collapse'): void
   (e: 'resize-start', ev: MouseEvent): void
   (e: 'open-session', id: string): void
+  (e: 'audio-state', playing: boolean): void
+  (e: 'audio-caption', payload: { id: string; text: string }): void
 }>()
 
 const { t } = useI18n()
+function playAudio(path?: string | null, text?: string, id?: string) {
+  const normalized = path?.trim().replaceAll('\\', '/')
+  if (normalized) {
+    const player = new Audio(`/audio/${normalized}`)
+    registerAudio(player)
+    if (text && id) emit('audio-caption', { id, text })
+    player.onended = () => emit('audio-state', false)
+    player.onerror = () => emit('audio-state', false)
+    void player.play().then(() => emit('audio-state', true)).catch(() => emit('audio-state', false))
+  }
+}
 
 const TYPE_BADGE: Record<ChatSession['type'], string> = {
   qa: 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300',
@@ -92,14 +107,16 @@ const TYPE_BADGE: Record<ChatSession['type'], string> = {
 
     <!-- 笔记 -->
     <div v-if="tab === 'lecture'" class="scrollbar-hide flex-1 space-y-2 overflow-y-auto p-3">
-      <div
+      <button
         v-for="n in notes"
         :key="n.id"
-        class="rounded-xl border border-gray-100 bg-white p-3 shadow-sm dark:border-gray-800 dark:bg-gray-900"
+        type="button"
+        :class="n.id === activeNoteId ? 'w-full rounded-xl border border-purple-300 bg-purple-50 p-3 text-left ring-2 ring-purple-200 dark:border-purple-700 dark:bg-purple-950/30' : 'w-full rounded-xl border border-gray-100 bg-white p-3 text-left dark:border-gray-800 dark:bg-gray-900'"
+        @click="playAudio(n.audioPath, n.body, n.id)"
       >
         <div class="text-[13px] font-semibold text-gray-800 dark:text-gray-100">{{ n.title }}</div>
         <p class="mt-1 text-[12px] leading-relaxed text-gray-500 dark:text-gray-400">{{ n.body }}</p>
-      </div>
+      </button>
     </div>
 
     <!-- 对话 -->

@@ -9,7 +9,7 @@ import { Loader2, Play } from 'lucide-vue-next'
 import CanvasToolbar from '@/components/classroom/CanvasToolbar.vue'
 import ClassroomComplete from '@/components/classroom/ClassroomComplete.vue'
 import SceneRenderer from '@/components/classroom/SceneRenderer.vue'
-import type { Scene } from '@/data/scenes'
+import type { Scene } from '@/types/scene'
 
 defineProps<{
   scene: Scene
@@ -25,6 +25,7 @@ defineProps<{
   showPlayHint: boolean
   courseComplete: boolean
   stats: { scenes: number; minutes: number; agents: number; messages: number }
+  activeContentKey?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -57,7 +58,7 @@ const { t } = useI18n()
         <ClassroomComplete v-if="courseComplete" :stats="stats" />
 
         <!-- 场景内容 -->
-        <SceneRenderer v-else-if="scene.status === 'ready'" :scene="scene" />
+        <SceneRenderer v-else-if="scene.status === 'ready'" :scene="scene" :active-content-key="activeContentKey" />
 
         <!-- 生成中 -->
         <div

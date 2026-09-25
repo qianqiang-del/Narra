@@ -314,7 +314,7 @@ func (a *App) initDependencies() error {
 		return err
 	}
 	a.worker = workerRuntime
-	classroomSvc := service.NewClassroomService(classroomRepo, classroomAgentRepo, roleRepo, llmProviderSvc, queue, txManager)
+	classroomSvc := service.NewClassroomService(classroomRepo, classroomAgentRepo, roleRepo, sceneRepo, llmProviderSvc, queue, txManager)
 
 	// 对话事件流（SSE）：执行过程与最终结果从 conversation_events 里增量读、推给前端。
 	// 事件的写入不经过服务层 —— 它属于产生内容的那条链路（编排 / 工作台）的事务。
@@ -331,7 +331,8 @@ func (a *App) initDependencies() error {
 		return err
 	}
 
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, knowledgeSvc, conversationSvc, uploadDir, parser)
+	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, sceneSvc, knowledgeSvc, conversationSvc, uploadDir, parser)
 	return nil
 }
 
@@ -382,6 +383,14 @@ func (a *App) initRouter() {
 // initServer 初始化 HTTP 服务器
 func (a *App) initServer() {
 	engine := gin.New()
+	audioDir := a.cfg.Storage.AudioDir
+	if audioDir == "" {
+		audioDir = "data/audio"
+	}
+	if absoluteDir, err := filepath.Abs(audioDir); err == nil {
+		audioDir = absoluteDir
+	}
+	engine.Static("/audio", audioDir)
 
 	// 注册路由
 	a.router.Setup(engine)
