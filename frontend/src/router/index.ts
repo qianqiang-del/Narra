@@ -36,6 +36,13 @@ const router = createRouter({
       meta: { title: 'Classroom' },
     },
     {
+      path: '/classroom/:id/generating',
+      name: 'classroom-generating',
+      component: () => import('@/views/ClassroomGeneratingView.vue'),
+      props: true,
+      meta: { title: 'Generating Classroom' },
+    },
+    {
       path: '/generation-preview',
       name: 'generation-preview',
       component: () => import('@/views/GenerationPreviewView.vue'),

@@ -53,11 +53,17 @@ const { t } = useI18n()
 const profileStore = useProfileStore()
 
 const draft = ref('')
+const inputOpen = ref(false)
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 const agentScrollRef = ref<HTMLElement | null>(null)
 
 /** 只展示最近 3 条，避免 192px 高度溢出 */
-const visible = computed(() => props.bubbles.slice(-3))
+const visible = computed(() => {
+  const lecture = props.bubbles.filter((bubble) => bubble.id.startsWith('lecture-'))
+  const conversations = props.bubbles.filter((bubble) => !bubble.id.startsWith('lecture-')).slice(-3)
+  const currentLecture = lecture.at(-1)
+  return currentLecture ? [...conversations, currentLecture] : conversations
+})
 
 const teacherActive = computed(() => props.speaking === 'teacher')
 const studentActive = (id: string) => props.speakingAgentId === id
@@ -66,7 +72,7 @@ const bubbleClass: Record<Bubble['from'], string> = {
   user: 'bg-purple-600/95 backdrop-blur-sm border-purple-400/40 text-white rounded-br-sm shadow-md shadow-purple-300/30 self-end',
   agent: 'bg-blue-50/95 border-blue-200/60 text-gray-700 rounded-br-sm shadow-sm dark:bg-blue-950/40 dark:border-blue-900 dark:text-blue-100',
   teacher:
-    'bg-white border-gray-100 text-gray-700 rounded-bl-sm shadow-sm hover:shadow-md cursor-pointer dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200',
+    'relative bg-purple-50/95 border-purple-200/70 text-purple-900 rounded-bl-sm shadow-sm cursor-pointer dark:bg-purple-950/40 dark:border-purple-800 dark:text-purple-100 before:absolute before:left-[-7px] before:bottom-4 before:size-3 before:rotate-45 before:border-l before:border-b before:border-purple-200/70 before:bg-purple-50/95 dark:before:border-purple-800 dark:before:bg-purple-950/40',
 }
 
 const resolvedUserAvatar = computed(() => props.userAvatar || profileStore.profile.avatar)
@@ -79,6 +85,11 @@ function submit() {
   nextTick(() => inputRef.value?.focus())
 }
 
+function toggleInput() {
+  inputOpen.value = !inputOpen.value
+  if (inputOpen.value) nextTick(() => inputRef.value?.focus())
+}
+
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -88,6 +99,7 @@ function onKeydown(e: KeyboardEvent) {
 
 /** 聊天按钮 / 用户头像点击 → 聚焦输入框 */
 function focusInput() {
+  inputOpen.value = true
   nextTick(() => inputRef.value?.focus())
 }
 
@@ -226,13 +238,21 @@ onBeforeUnmount(stopRecognition)
                 :key="b.id"
                 :class="
                   cn(
-                    'max-h-[110px] w-[min(420px,calc(100%-3rem))] shrink-0 overflow-hidden rounded-2xl border px-4 pt-2 pb-3 text-[15px] leading-relaxed',
+                    'max-h-[100px] w-[min(520px,calc(100%-1rem))] shrink-0 overflow-y-auto rounded-2xl border px-4 py-2.5 text-[12px] leading-relaxed',
                     bubbleClass[b.from],
                   )
                 "
               >
+                <div v-if="b.from === 'teacher'" class="mb-1 flex items-center gap-1.5 pl-0.5">
+                  <div class="size-5 shrink-0 overflow-hidden rounded-full border border-purple-200">
+                    <img src="/avatars/teacher-2.png" alt="" class="size-full object-cover" />
+                  </div>
+                  <span class="text-[10px] font-bold tracking-wide text-purple-600 uppercase dark:text-purple-300">
+                    {{ b.name || t('roundtable.teacher') }}
+                  </span>
+                </div>
                 <span
-                  v-if="b.name"
+                  v-if="b.name && b.from !== 'teacher'"
                   class="mb-0.5 block text-[10px] font-bold tracking-wide text-gray-400 uppercase"
                 >
                   {{ b.name }}
@@ -280,7 +300,7 @@ onBeforeUnmount(stopRecognition)
 
           <!-- 输入框 -->
           <div
-            v-if="!recording"
+            v-if="!recording && inputOpen"
             class="mt-1.5 w-fit max-w-[85%] min-w-[200px] shrink-0 self-end rounded-2xl rounded-br-none border border-purple-200 bg-white/90 p-2 shadow-2xl ring-1 ring-purple-100/50 backdrop-blur-md sm:max-w-[65%] sm:min-w-[300px] dark:border-purple-800 dark:bg-gray-800/90 dark:ring-purple-900/40"
           >
             <div class="flex items-end gap-1.5">
@@ -299,6 +319,14 @@ onBeforeUnmount(stopRecognition)
                 @click="submit"
               >
                 <Send class="size-4" />
+              </button>
+              <button
+                type="button"
+                class="flex size-9 shrink-0 items-center justify-center rounded-xl text-gray-400 transition-colors hover:bg-purple-50 hover:text-purple-600"
+                aria-label="关闭消息输入框"
+                @click="toggleInput"
+              >
+                <MessageSquare class="size-4" />
               </button>
             </div>
           </div>
@@ -431,7 +459,7 @@ onBeforeUnmount(stopRecognition)
             <button
               type="button"
               class="flex size-8 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-400 shadow-sm transition-all hover:border-purple-200 hover:text-purple-600 active:scale-95 dark:border-gray-700 dark:bg-gray-800 dark:hover:text-purple-400"
-              @click="focusInput"
+              @click="toggleInput"
             >
               <MessageSquare class="size-3.5" />
             </button>

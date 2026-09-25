@@ -20,25 +20,27 @@ const (
 
 // block 的 type 与 internal/model/entity/scene.go 的注释一一对应。
 const (
-	blockTypeHeading   = "heading"
-	blockTypeParagraph = "paragraph"
-	blockTypeListItem  = "list-item"
-	blockTypeCallout   = "callout"
-	blockTypeCode      = "code"
-	blockTypeQuiz      = "quiz"
-	blockTypeBrowser   = "browser"
-	blockTypeColumns   = "columns"
+	blockTypeHeading     = "heading"
+	blockTypeParagraph   = "paragraph"
+	blockTypeListItem    = "list-item"
+	blockTypeCallout     = "callout"
+	blockTypeCode        = "code"
+	blockTypeQuiz        = "quiz"
+	blockTypeBrowser     = "browser"
+	blockTypeInteractive = "interactive"
+	blockTypeColumns     = "columns"
 )
 
 var allowedBlockTypes = map[string]struct{}{
-	blockTypeHeading:   {},
-	blockTypeParagraph: {},
-	blockTypeListItem:  {},
-	blockTypeCallout:   {},
-	blockTypeCode:      {},
-	blockTypeQuiz:      {},
-	blockTypeBrowser:   {},
-	blockTypeColumns:   {},
+	blockTypeHeading:     {},
+	blockTypeParagraph:   {},
+	blockTypeListItem:    {},
+	blockTypeCallout:     {},
+	blockTypeCode:        {},
+	blockTypeQuiz:        {},
+	blockTypeBrowser:     {},
+	blockTypeInteractive: {},
+	blockTypeColumns:     {},
 }
 
 // allowedSceneTypes 不含 complete，完成页由代码追加。
@@ -72,9 +74,29 @@ type sceneContent struct {
 }
 
 type contentBlock struct {
-	Key     string `json:"key"`
-	Type    string `json:"type"`
-	Content string `json:"content"`
+	Key         string             `json:"key"`
+	Type        string             `json:"type"`
+	Content     string             `json:"content"`
+	Interaction *interactionConfig `json:"interaction,omitempty"`
+}
+
+type interactionConfig struct {
+	Kind     string               `json:"kind"`
+	Controls []interactionControl `json:"controls,omitempty"`
+	Options  []string             `json:"options,omitempty"`
+	Answer   string               `json:"answer,omitempty"`
+	Config   map[string]any       `json:"config,omitempty"`
+}
+
+type interactionControl struct {
+	Name    string         `json:"name"`
+	Type    string         `json:"type"`
+	Default any            `json:"default,omitempty"`
+	Min     *float64       `json:"min,omitempty"`
+	Max     *float64       `json:"max,omitempty"`
+	Step    *float64       `json:"step,omitempty"`
+	Options []string       `json:"options,omitempty"`
+	Config  map[string]any `json:"config,omitempty"`
 }
 
 type narrationSegment struct {

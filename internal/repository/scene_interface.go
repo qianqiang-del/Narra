@@ -8,6 +8,7 @@ import (
 )
 
 type SceneRepository interface {
+	FindByID(ctx context.Context, id uint64) (*entity.Scene, error)
 	CreateBatch(ctx context.Context, scenes []*entity.Scene) error
 	DeleteByClassroom(ctx context.Context, classroomID uint64) error
 	ListByClassroom(ctx context.Context, classroomID uint64) ([]entity.Scene, error)

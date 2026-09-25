@@ -54,8 +54,16 @@ func generateScenes(ctx context.Context, deps Deps, classroom *entity.Classroom,
 			return err
 		}
 		input := &sceneChainInput{Classroom: classroom, Scenes: scenes, Current: scene, Teacher: teacher}
-		blocks, runErr := invokeWithRetryIf(ctx, maxModelRetry, retryableModelError, func() ([]contentBlock, error) {
-			return contentChain.Invoke(ctx, input)
+		blocks, runErr := invokeWithRetryIf(ctx, maxModelRetry, retryableSceneError, func() ([]contentBlock, error) {
+			generated, err := contentChain.Invoke(ctx, input)
+			if err != nil {
+				return nil, err
+			}
+			validated, validationErr := validateBlocks(generated, scene.Type)
+			if validationErr != nil {
+				input.ValidationError = validationErr.Error()
+			}
+			return validated, validationErr
 		})
 		if runErr == nil {
 			input.Blocks = blocks
@@ -224,6 +232,10 @@ func retryableModelError(err error) bool {
 }
 
 func retryableTTSError(err error) bool { return retryableModelError(err) }
+
+func retryableSceneError(err error) bool {
+	return retryableModelError(err) || strings.Contains(err.Error(), "内容块") || strings.Contains(err.Error(), "场景")
+}
 
 func persistSceneWithRetry(ctx context.Context, deps Deps, sceneID uint64, blocks []contentBlock, narration []narrationSegment, textOnly bool) ([]*entity.SceneSegment, error) {
 	return invokeWithRetryIf(ctx, 1, retryableDBError, func() ([]*entity.SceneSegment, error) {

@@ -22,6 +22,14 @@ func (r *sceneRepository) CreateBatch(ctx context.Context, scenes []*entity.Scen
 	return r.db.WithContext(ctx).CreateInBatches(scenes, len(scenes)).Error
 }
 
+func (r *sceneRepository) FindByID(ctx context.Context, id uint64) (*entity.Scene, error) {
+	var scene entity.Scene
+	if err := r.db.WithContext(ctx).First(&scene, id).Error; err != nil {
+		return nil, err
+	}
+	return &scene, nil
+}
+
 // DeleteByClassroom 删掉某课程的全部场景，讲解段落随外键级联删除。
 func (r *sceneRepository) DeleteByClassroom(ctx context.Context, classroomID uint64) error {
 	return r.db.WithContext(ctx).

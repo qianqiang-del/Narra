@@ -13,11 +13,12 @@ import (
 )
 
 type sceneChainInput struct {
-	Classroom *entity.Classroom
-	Scenes    []entity.Scene
-	Current   entity.Scene
-	Teacher   entity.PresetAgent
-	Blocks    []contentBlock
+	Classroom       *entity.Classroom
+	Scenes          []entity.Scene
+	Current         entity.Scene
+	Teacher         entity.PresetAgent
+	Blocks          []contentBlock
+	ValidationError string
 }
 
 type blocksOutput struct {
@@ -88,10 +89,13 @@ func sceneUserPrompt(in *sceneChainInput, narration bool) string {
 		raw, _ := json.Marshal(in.Blocks)
 		fmt.Fprintf(&b, "已校验内容块：%s\n每段不超过120字。", raw)
 	}
+	if in.ValidationError != "" {
+		fmt.Fprintf(&b, "\n上一次输出校验失败：%s\n请修正后重新输出完整合法 JSON，不要解释。\n", in.ValidationError)
+	}
 	return b.String()
 }
 
-func validateBlocks(blocks []contentBlock) ([]contentBlock, error) {
+func validateBlocks(blocks []contentBlock, sceneTypes ...string) ([]contentBlock, error) {
 	if len(blocks) == 0 {
 		return nil, fmt.Errorf("这一页一个内容块都没有")
 	}
@@ -111,6 +115,53 @@ func validateBlocks(blocks []contentBlock) ([]contentBlock, error) {
 			return nil, fmt.Errorf("内容块类型 %q 无效", block.Type)
 		}
 		keys[block.Key] = struct{}{}
+		if block.Interaction != nil && strings.TrimSpace(block.Interaction.Kind) == "" {
+			return nil, fmt.Errorf("内容块 %q 的 interaction.kind 不能为空", block.Key)
+		}
+		if block.Interaction != nil {
+			for _, control := range block.Interaction.Controls {
+				if strings.TrimSpace(control.Name) == "" || strings.TrimSpace(control.Type) == "" || control.Default == nil {
+					return nil, fmt.Errorf("内容块 %q 的交互控件缺少 name、type 或 default", block.Key)
+				}
+				switch control.Type {
+				case "select":
+					if len(control.Options) == 0 {
+						return nil, fmt.Errorf("内容块 %q 的 select 控件缺少 options", block.Key)
+					}
+				case "range":
+					if control.Min == nil || control.Max == nil || control.Step == nil {
+						return nil, fmt.Errorf("内容块 %q 的 range 控件缺少 min、max 或 step", block.Key)
+					}
+				}
+			}
+		}
+	}
+	if len(sceneTypes) > 0 {
+		sceneType := sceneTypes[0]
+		if sceneType == entity.SceneTypeInteractive {
+			hasInteraction := false
+			for _, block := range blocks {
+				if block.Interaction != nil || block.Type == blockTypeBrowser {
+					hasInteraction = true
+					break
+				}
+			}
+			if !hasInteraction {
+				return nil, fmt.Errorf("interactive 场景必须包含 interaction 配置或 browser 块")
+			}
+		}
+		if sceneType == entity.SceneTypeQuiz {
+			hasQuiz := false
+			for _, block := range blocks {
+				if block.Type == blockTypeQuiz && block.Interaction != nil && len(block.Interaction.Options) > 0 {
+					hasQuiz = true
+					break
+				}
+			}
+			if !hasQuiz {
+				return nil, fmt.Errorf("quiz 场景必须包含带 options 的 quiz interaction")
+			}
+		}
 	}
 	return blocks, nil
 }

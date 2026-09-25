@@ -8,6 +8,7 @@ import (
 	"narra/internal/api/v1/llm"
 	mcpv1 "narra/internal/api/v1/mcp"
 	"narra/internal/api/v1/role"
+	scenev1 "narra/internal/api/v1/scene"
 	"narra/internal/api/v1/voice"
 	"narra/internal/middleware"
 	"narra/internal/service"
@@ -26,10 +27,11 @@ type Router struct {
 	classroomCtrl    *classroomv1.Controller
 	knowledgeCtrl    *knowledgev1.Controller
 	conversationCtrl *conversationv1.Controller
+	sceneCtrl        *scenev1.Controller
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, classroomSvc service.ClassroomService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, uploadDir string, parser documentparser.Parser) *Router {
+func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, classroomSvc service.ClassroomService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, uploadDir string, parser documentparser.Parser) *Router {
 	return &Router{
 		roleCtrl:         role.NewController(roleSvc),
 		embeddingCtrl:    embedding.NewController(embeddingSvc),
@@ -39,6 +41,7 @@ func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettin
 		classroomCtrl:    classroomv1.NewController(classroomSvc),
 		knowledgeCtrl:    knowledgev1.NewController(knowledgeSvc, uploadDir, parser),
 		conversationCtrl: conversationv1.NewController(conversationSvc),
+		sceneCtrl:        scenev1.NewController(sceneSvc),
 	}
 }
 
@@ -69,6 +72,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		classroomv1.RegisterRoutes(v1, r.classroomCtrl)
 		knowledgev1.RegisterRoutes(v1, r.knowledgeCtrl)
 		conversationv1.RegisterRoutes(v1, r.conversationCtrl)
+		scenev1.RegisterRoutes(v1, r.sceneCtrl)
 	}
 }
 

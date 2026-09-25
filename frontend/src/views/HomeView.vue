@@ -140,7 +140,7 @@ async function submit() {
       role_voices: pickedRoleVoices(),
       teacher_voice: teacherVoice.value,
     })
-    await router.push({ name: 'classroom', params: { id: String(created.id) } })
+    await router.push({ name: 'classroom-generating', params: { id: String(created.id) } })
   } catch (error) {
     toast.error(error instanceof ApiError ? error.message : t('home.generateFailed'))
   } finally {

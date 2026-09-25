@@ -39,6 +39,7 @@ type classroomService struct {
 	classrooms repository.ClassroomRepository
 	agents     repository.ClassroomAgentRepository
 	roles      repository.RoleRepository
+	scenes     repository.SceneRepository
 	models     modelLister
 	queue      JobQueue
 	tx         repository.TransactionManager
@@ -49,6 +50,7 @@ func NewClassroomService(
 	classrooms repository.ClassroomRepository,
 	agents repository.ClassroomAgentRepository,
 	roles repository.RoleRepository,
+	scenes repository.SceneRepository,
 	models modelLister,
 	queue JobQueue,
 	tx repository.TransactionManager,
@@ -57,10 +59,83 @@ func NewClassroomService(
 		classrooms: classrooms,
 		agents:     agents,
 		roles:      roles,
+		scenes:     scenes,
 		models:     models,
 		queue:      queue,
 		tx:         tx,
 	}
+}
+
+func (s *classroomService) GetOutline(ctx context.Context, id uint64) (*responsedto.ClassroomOutline, error) {
+	classroom, err := s.classrooms.FindByID(ctx, id)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
+	}
+	scenes, err := s.scenes.ListByClassroom(ctx, id)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂大纲失败", err)
+	}
+	items := make([]responsedto.OutlineScene, 0, len(scenes))
+	for _, scene := range scenes {
+		if scene.Type == entity.SceneTypeComplete {
+			continue
+		}
+		items = append(items, responsedto.OutlineScene{ID: scene.ID, SortOrder: scene.SortOrder, Type: scene.Type, Title: scene.Title, Brief: scene.Brief, Status: scene.Status})
+	}
+	return &responsedto.ClassroomOutline{ClassroomID: id, Title: classroom.Title, Scenes: items}, nil
+}
+
+func (s *classroomService) GetAgents(ctx context.Context, id uint64) ([]responsedto.RoleItem, error) {
+	if _, err := s.classrooms.FindByID(ctx, id); err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
+	}
+	snapshots, err := s.agents.ListByClassroom(ctx, id)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂角色失败", err)
+	}
+	if len(snapshots) == 0 {
+		return []responsedto.RoleItem{}, nil
+	}
+	ids := make([]uint64, 0, len(snapshots))
+	voiceByID := make(map[uint64]string, len(snapshots))
+	for _, snapshot := range snapshots {
+		ids = append(ids, snapshot.AgentID)
+		voiceByID[snapshot.AgentID] = snapshot.VoiceID
+	}
+	roles, err := s.roles.ListByIDs(ctx, ids)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂角色失败", err)
+	}
+	items := make([]responsedto.RoleItem, 0, len(roles))
+	for _, role := range roles {
+		items = append(items, responsedto.RoleItem{
+			AgentKey: role.AgentKey, Name: role.Name, Role: role.Role,
+			RoleType: role.RoleType, Persona: role.Persona, Avatar: role.Avatar,
+			Color: role.Color, VoiceID: voiceByID[role.ID], SortOrder: role.SortOrder,
+		})
+	}
+	return items, nil
+}
+
+func (s *classroomService) ListScenes(ctx context.Context, id uint64) ([]responsedto.ClassroomSceneSummary, error) {
+	if _, err := s.classrooms.FindByID(ctx, id); err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
+	}
+	scenes, err := s.scenes.ListByClassroom(ctx, id)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂场景失败", err)
+	}
+	items := make([]responsedto.ClassroomSceneSummary, 0, len(scenes))
+	for _, scene := range scenes {
+		if scene.Type == entity.SceneTypeComplete {
+			continue
+		}
+		items = append(items, responsedto.ClassroomSceneSummary{
+			ID: scene.ID, SortOrder: scene.SortOrder, Type: scene.Type,
+			Title: scene.Title, Status: scene.Status, ErrorMessage: scene.ErrorMessage,
+		})
+	}
+	return items, nil
 }
 
 // Create 校验入参、落一行 generating、投递队列，立刻返回。

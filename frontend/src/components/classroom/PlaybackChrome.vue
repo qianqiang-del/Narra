@@ -9,7 +9,7 @@
  *   ChatArea     默认 340 / min 240 / max 560
  *   舞台高度 = calc(100% - 80px - 192px)
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { AlertTriangle } from 'lucide-vue-next'
@@ -23,12 +23,13 @@ import SceneSidebar from '@/components/classroom/SceneSidebar.vue'
 import SettingsDialog from '@/components/home/SettingsDialog.vue'
 import UiTooltip from '@/components/ui/UiTooltip.vue'
 import { useResizable } from '@/composables/useResizable'
-import type { Classroom, Scene } from '@/data/scenes'
-import { PRESET_ROLES } from '@/data/agents'
+import type { Classroom, Scene } from '@/types/scene'
 import type { Bubble, ChatNote, ChatSession, Participant } from '@/types/classroom'
+import type { RoleCardDTO, SceneDetailDTO } from '@/api/classroom'
 import { cn } from '@/lib/utils'
+import { getActiveAudio, registerAudio, setActiveRate, setActiveVolume, stopActiveAudio, unregisterAudio } from '@/lib/audioPlayback'
 
-const props = defineProps<{ classroom: Classroom }>()
+const props = defineProps<{ classroom: Classroom; agents?: RoleCardDTO[]; sceneDetails?: Record<string, SceneDetailDTO> }>()
 
 const { t } = useI18n()
 const router = useRouter()
@@ -56,6 +57,8 @@ const activeIndex = ref(0)
 const activeScene = computed<Scene>(() => scenes.value[activeIndex.value] ?? FALLBACK_SCENE)
 
 const playing = ref(false)
+const audio = ref<HTMLAudioElement | null>(null)
+const narrationIndex = ref(0)
 const volume = ref(1)
 const speed = ref(1)
 const autoPlay = ref(false)
@@ -78,13 +81,15 @@ const courseComplete = computed(() => activeScene.value.type === 'complete')
 
 const stats = computed(() => ({
   scenes: scenes.value.length,
-  minutes: 18,
-  agents: 3,
-  messages: 24,
+  minutes: 0,
+  agents: props.agents?.length ?? 0,
+  messages: 0,
 }))
 
 /* ---------- 圆桌 / 聊天 ---------- */
-const bubbles = ref<Bubble[]>([
+const bubbles = ref<Bubble[]>([])
+/*
+const legacyBubbles = ref<Bubble[]>([
   {
     id: 'b1',
     from: 'teacher',
@@ -98,6 +103,7 @@ const bubbles = ref<Bubble[]>([
     text: '因为它写起来像英语句子，读代码就能猜到意思。',
   },
 ])
+*/
 const speaking = ref<'teacher' | 'agent' | null>('teacher')
 const thinking = ref(false)
 const yourTurn = ref(false)
@@ -105,7 +111,9 @@ const recording = ref(false)
 
 const chatTab = ref<'lecture' | 'chat'>('chat')
 
-const sessions = ref<ChatSession[]>([
+const sessions = ref<ChatSession[]>([])
+/*
+const legacySessions = ref<ChatSession[]>([
   {
     id: 'c1',
     title: '为什么 Python 适合入门？',
@@ -126,7 +134,10 @@ const sessions = ref<ChatSession[]>([
     preview: '变量是内存中的一块空间…',
   },
 ])
-const notes = ref<ChatNote[]>([
+*/
+const notes = ref<ChatNote[]>([])
+/*
+const legacyNotes = ref<ChatNote[]>([
   {
     id: 'n1',
     title: '变量与类型',
@@ -138,16 +149,134 @@ const notes = ref<ChatNote[]>([
     body: '变量名只能由字母、数字、下划线组成，且不能以数字开头。',
   },
 ])
+*/
+
+const activeNarration = computed(() => props.sceneDetails?.[activeScene.value.id]?.narration ?? [])
+const activeContentKey = computed(() => activeNarration.value[narrationIndex.value]?.content_key ?? null)
+
+function updateNotes() {
+  notes.value = activeNarration.value.map((item) => ({
+    id: String(item.id), title: item.content_key, body: item.text, audioPath: item.audio_path,
+  }))
+}
+
+function stopAudio() {
+  if (audio.value) {
+    unregisterAudio(audio.value)
+    audio.value.pause()
+    audio.value.removeAttribute('src')
+    audio.value.load()
+  }
+  stopActiveAudio()
+  playing.value = false
+  narrationIndex.value = 0
+}
+
+function playNarrationSegment() {
+  const segment = activeNarration.value[narrationIndex.value]
+  const path = segment?.audio_path?.trim().replaceAll('\\', '/')
+  if (!path) {
+    playing.value = false
+    toast('当前讲解暂无音频')
+    return
+  }
+
+  if (!audio.value) audio.value = new Audio()
+  registerAudio(audio.value)
+  if (segment.text) {
+    bubbles.value = [...bubbles.value, {
+      id: `lecture-${segment.id}-${Date.now()}`,
+      from: 'teacher',
+      name: '老师',
+      text: segment.text,
+    }]
+  }
+  audio.value.src = `/audio/${path.replace(/^\/+/, '')}`
+  audio.value.load()
+  audio.value.volume = volume.value
+  audio.value.playbackRate = speed.value
+  audio.value.onended = () => {
+    if (narrationIndex.value < activeNarration.value.length - 1) {
+      narrationIndex.value += 1
+      void playNarrationSegment()
+    } else {
+      if (autoPlay.value && activeIndex.value < scenes.value.length - 1) {
+        activeIndex.value += 1
+        narrationIndex.value = 0
+      } else {
+        playing.value = false
+        narrationIndex.value = 0
+      }
+    }
+  }
+  audio.value.onerror = () => {
+    playing.value = false
+    toast('讲解音频加载失败')
+  }
+  void audio.value.play().then(() => {
+    playing.value = true
+  }).catch(() => {
+    playing.value = false
+    toast('讲解音频播放失败')
+  })
+}
+
+function togglePlay() {
+  const currentAudio = getActiveAudio()
+  if (currentAudio && currentAudio !== audio.value) {
+    if (playing.value) {
+      currentAudio.pause()
+      playing.value = false
+    } else {
+      void currentAudio.play().then(() => { playing.value = true }).catch(() => { playing.value = false })
+    }
+    return
+  }
+  if (playing.value && audio.value) {
+    audio.value.pause()
+    playing.value = false
+    return
+  }
+  if (audio.value?.src && audio.value.currentTime > 0) {
+    void audio.value.play().then(() => { playing.value = true }).catch(() => { playing.value = false })
+    return
+  }
+  playNarrationSegment()
+  playing.value = Boolean(audio.value?.src)
+}
+
+function toggleAutoPlay() {
+  autoPlay.value = !autoPlay.value
+  if (autoPlay.value && !playing.value) {
+    playNarrationSegment()
+  }
+}
+
+watch(activeIndex, () => {
+  const shouldContinue = autoPlay.value && playing.value
+  stopAudio()
+  updateNotes()
+  if (shouldContinue) window.setTimeout(() => playNarrationSegment(), 0)
+})
+watch(() => props.sceneDetails, updateNotes, { deep: true })
+watch(volume, (value) => {
+  setActiveVolume(value)
+})
+watch(speed, (value) => {
+  setActiveRate(value)
+})
+updateNotes()
+
 
 const hasActiveSession = computed(() => sessions.value.some((s) => s.active))
 const showPlayHint = computed(() => !playing.value && !courseComplete.value)
 
 /* ---------- 圆桌参与者（原遗漏：学员头像 + 信息卡 + 麦克风/聊天） ---------- */
 const participants = computed<Participant[]>(() =>
-  PRESET_ROLES.map((r) => ({
-    id: r.id,
+  (props.agents ?? []).map((r) => ({
+    id: r.agent_key,
     name: r.name,
-    roleType: r.roleType,
+    roleType: r.role_type as Participant['roleType'],
     role: r.role,
     avatar: r.avatar,
     color: r.color,
@@ -157,6 +286,18 @@ const participants = computed<Participant[]>(() =>
 const asrEnabled = ref(true)
 function toggleRecording() {
   recording.value = !recording.value
+}
+
+function updateAudioCaption(payload: { id: string; text: string }) {
+  const index = activeNarration.value.findIndex((item) => String(item.id) === payload.id)
+  if (index >= 0) narrationIndex.value = index
+  autoPlay.value = false
+  bubbles.value = [...bubbles.value, {
+    id: `lecture-${Date.now()}`,
+    from: 'teacher',
+    name: '老师',
+    text: payload.text,
+  }]
 }
 
 /* ---------- 交互 ---------- */
@@ -201,10 +342,6 @@ function prev() {
 }
 function next() {
   if (activeIndex.value < scenes.value.length - 1) activeIndex.value += 1
-}
-
-function togglePlay() {
-  playing.value = !playing.value
 }
 
 function togglePro() {
@@ -303,6 +440,7 @@ onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreenChange)
 })
 onBeforeUnmount(() => {
+  stopAudio()
   window.removeEventListener('keydown', onKeydown)
   document.removeEventListener('fullscreenchange', onFullscreenChange)
 })
@@ -364,13 +502,14 @@ onBeforeUnmount(() => {
           :show-play-hint="showPlayHint"
           :course-complete="courseComplete"
           :stats="stats"
+          :active-content-key="activeContentKey"
           @toggle-sidebar="toggleSidebar"
           @prev="prev"
           @next="next"
           @toggle-play="togglePlay"
           @update:volume="volume = $event"
           @update:speed="speed = $event"
-          @toggle-auto-play="autoPlay = !autoPlay"
+          @toggle-auto-play="toggleAutoPlay"
           @toggle-whiteboard="whiteboardOpen = !whiteboardOpen"
           @toggle-fullscreen="toggleFullscreen"
           @toggle-chat="toggleChat"
@@ -399,10 +538,13 @@ onBeforeUnmount(() => {
       :sessions="sessions"
       :has-active-session="hasActiveSession"
       :notes="notes"
+      :active-note-id="activeNarration[narrationIndex]?.id ? String(activeNarration[narrationIndex].id) : null"
       @update:tab="chatTab = $event"
       @toggle-collapse="toggleChat"
       @resize-start="startChatResize"
       @open-session="openSession"
+      @audio-state="playing = $event"
+      @audio-caption="updateAudioCaption"
     />
 
     <!-- 白板占位入口（完整白板后续补） -->
