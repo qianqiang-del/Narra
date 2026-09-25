@@ -3,6 +3,7 @@ package api
 import (
 	classroomv1 "narra/internal/api/v1/classroom"
 	conversationv1 "narra/internal/api/v1/conversation"
+	discussionv1 "narra/internal/api/v1/discussion"
 	"narra/internal/api/v1/embedding"
 	knowledgev1 "narra/internal/api/v1/knowledge"
 	"narra/internal/api/v1/llm"
@@ -28,10 +29,11 @@ type Router struct {
 	knowledgeCtrl    *knowledgev1.Controller
 	conversationCtrl *conversationv1.Controller
 	sceneCtrl        *scenev1.Controller
+	discussionCtrl   *discussionv1.Controller
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, classroomSvc service.ClassroomService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, uploadDir string, parser documentparser.Parser) *Router {
+func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, classroomSvc service.ClassroomService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, uploadDir string, parser documentparser.Parser) *Router {
 	return &Router{
 		roleCtrl:         role.NewController(roleSvc),
 		embeddingCtrl:    embedding.NewController(embeddingSvc),
@@ -42,6 +44,7 @@ func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettin
 		knowledgeCtrl:    knowledgev1.NewController(knowledgeSvc, uploadDir, parser),
 		conversationCtrl: conversationv1.NewController(conversationSvc),
 		sceneCtrl:        scenev1.NewController(sceneSvc),
+		discussionCtrl:   discussionv1.NewController(discussionSvc),
 	}
 }
 
@@ -73,6 +76,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		knowledgev1.RegisterRoutes(v1, r.knowledgeCtrl)
 		conversationv1.RegisterRoutes(v1, r.conversationCtrl)
 		scenev1.RegisterRoutes(v1, r.sceneCtrl)
+		discussionv1.RegisterRoutes(v1, r.discussionCtrl)
 	}
 }
 

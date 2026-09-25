@@ -17,6 +17,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"narra/internal/agent/classroom"
+	"narra/internal/agent/discussion"
 	"narra/internal/api"
 	"narra/internal/bootstrap"
 	internalmcp "narra/internal/mcp"
@@ -209,6 +210,13 @@ func (a *App) initDependencies() error {
 	// SSE 侧只读。
 	conversationRepo := repository.NewConversationRepository(a.postgresDB)
 	conversationEventRepo := repository.NewConversationEventRepository(a.postgresDB)
+	// 多 Agent 讨论（成员 C）用到的仓储：消息、运行、回合、上下文摘要、共享记忆。
+	// 这几个表此前没有任何生产代码使用过 —— 讨论链路是它们的第一个使用者。
+	messageRepo := repository.NewMessageRepository(a.postgresDB)
+	runRepo := repository.NewRunRepository(a.postgresDB)
+	turnRepo := repository.NewTurnRepository(a.postgresDB)
+	compactionRepo := repository.NewContextCompactionRepository(a.postgresDB)
+	sharedMemoryRepo := repository.NewSharedMemoryRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
 	roleSvc := service.NewRoleService(roleRepo)
@@ -320,6 +328,43 @@ func (a *App) initDependencies() error {
 	// 事件的写入不经过服务层 —— 它属于产生内容的那条链路（编排 / 工作台）的事务。
 	conversationSvc := service.NewConversationService(conversationRepo, conversationEventRepo)
 
+	// 多 Agent 讨论（成员 C）：用户发一句话 → 跑一趟讨论，过程写进事件表，
+	// 由上面那条 SSE 流带给前端。
+	//
+	// ⚠️ 模型现在用的是**不花钱的替身**（FakeModel）：这一步接的是"触发入口"这条链路 ——
+	// 用户消息落库、角色与模型从库里凑齐、讨论真的跑起来并落库。接真实大模型是下一步，
+	// 届时只改下面这几个 Model / Summarizer / Extractor 的赋值（换成读课程快照、
+	// 解密 API Key、建 llm 客户端的那一版），入口与编排都不用动。
+	discussionOrchestrator, err := discussion.New(discussion.Deps{
+		Tx:            txManager,
+		Conversations: conversationRepo,
+		Messages:      messageRepo,
+		Runs:          runRepo,
+		Turns:         turnRepo,
+		Compactions:   compactionRepo,
+		Memories:      sharedMemoryRepo,
+		Events:        conversationEventRepo,
+		Model:         discussion.FakeModel{},
+		Summarizer:    discussion.FakeModel{},
+		Extractor:     discussion.FakeModel{},
+		// 按上一轮给出的动作换人：会"停下来问用户"，也会在认不出动作时兜底换人。
+		Director: discussion.TurnTakingDirector{},
+		Logger:   logger.GetLogger(),
+	})
+	if err != nil {
+		return fmt.Errorf("装配讨论编排器失败: %w", err)
+	}
+	discussionSvc := service.NewDiscussionService(service.DiscussionDeps{
+		Conversations: conversationRepo,
+		Classrooms:    classroomRepo,
+		Agents:        classroomAgentRepo,
+		Roles:         roleRepo,
+		Messages:      messageRepo,
+		Tx:            txManager,
+		Orchestrator:  discussionOrchestrator,
+		Logger:        logger.GetLogger(),
+	})
+
 	// 过程数据的过期清理：expires_at 在写入时就按各自保留期算好了（事件 7 天），
 	// 清理侧只认这一列。没有它事件表会一直涨，而它记录的事实另有更长的生命周期。
 	a.retention = retention.New(
@@ -332,7 +377,7 @@ func (a *App) initDependencies() error {
 	}
 
 	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo)
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, sceneSvc, knowledgeSvc, conversationSvc, uploadDir, parser)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, uploadDir, parser)
 	return nil
 }
 
