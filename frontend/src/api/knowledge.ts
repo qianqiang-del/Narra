@@ -63,7 +63,7 @@ export type KnowledgeDocumentStage = 'parse' | 'chunk' | 'embed'
 export type KnowledgeBadgeStatus = 'ready' | 'removed' | 'processing' | 'failed'
 
 /** 文档来源，对应数据库上 source_type 的 CHECK 约束 */
-export type KnowledgeSourceType = 'manual' | 'import' | 'api'
+export type KnowledgeSourceType = 'manual' | 'import'
 
 export interface KnowledgeDocument {
   id: number

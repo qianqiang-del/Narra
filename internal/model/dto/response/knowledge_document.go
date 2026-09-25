@@ -15,7 +15,7 @@ import "time"
 type KnowledgeDocument struct {
 	ID          uint64    `json:"id"`                     // 文档主键
 	Title       string    `json:"title"`                  // 展示标题
-	SourceType  string    `json:"source_type"`            // 来源类型：manual、import 或 api
+	SourceType  string    `json:"source_type"`            // 来源类型：manual 或 import
 	SourceURI   string    `json:"source_uri,omitempty"`   // 来源标识，如上传时的原始文件名
 	Enabled     bool      `json:"enabled"`                // 是否参与知识检索
 	Status      string    `json:"status"`                 // pending、processing、ready 或 failed

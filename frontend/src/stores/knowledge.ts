@@ -11,6 +11,7 @@ import {
   fetchUploadRecords,
   retryKnowledgeDocument,
   uploadKnowledgeFile,
+  ingestKnowledgeText,
   watchKnowledgeDocument,
   type KnowledgeDocument,
   type KnowledgeParserStatus,
@@ -93,6 +94,15 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    * 少一次注定失败的往返。
    */
   const uploading = ref(false)
+
+  /**
+   * 有正文正在收录。
+   *
+   * 与 uploading 分开：正文收录是同步链路，后端**不过文件收录的闸门**，
+   * 所以两者本可以并行；这里只是给弹层一个"提交中"的禁用依据，
+   * 不参与"一次只能传一份"的约束。
+   */
+  const submitting = ref(false)
 
   /** 本次上传的文档，供新增弹层的"最近一次上传"卡片显示进度 */
   const activeUpload = ref<KnowledgeDocument | null>(null)
@@ -426,6 +436,30 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     }
   }
 
+  /**
+   * 收录一段正文（Markdown），不经过文件与解析。
+   *
+   * 这条链路是**同步**的：返回时文档已经是 ready 或 failed，没有进度流要盯。
+   * 与 upload 的另一处差别在失败路径：后端把文档标成 failed 之后返 400，
+   * 这里原样抛出错误给调用方提示 —— 不做"失败也算结果"的处理，因为失败的文档
+   * 既不在主页（只查 ready）、也没有上传记录，重拉列表看不到任何东西。
+   */
+  async function ingestText(content: string, title?: string): Promise<KnowledgeDocument> {
+    submitting.value = true
+    try {
+      const document = await ingestKnowledgeText(content, title)
+      // 刷新失败不该把已经成功的收录报成失败：列表晚一点到而已。
+      try {
+        await load()
+      } catch {
+        /* 收录本身已经成功 */
+      }
+      return document
+    } finally {
+      submitting.value = false
+    }
+  }
+
   async function preview(id: number) {
     return fetchKnowledgeDocumentPreview(id)
   }
@@ -463,6 +497,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     // 界面状态
     loading,
     uploading,
+    submitting,
     keyword,
     hasMore,
     isEmpty,
@@ -473,6 +508,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     loadParserStatus,
     upload,
     retry,
+    ingestText,
     preview,
     removeDocument,
     removeRecord,

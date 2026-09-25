@@ -79,7 +79,7 @@ type ModelRegistry interface {
 type FileInput struct {
 	Path       string // 磁盘上的文件路径，解析器按它的后缀选实现
 	Title      string // 调用方指定的标题；为空时依次回落到正文一级标题、文件名
-	SourceType string // manual / import / api；为空时按 import 处理
+	SourceType string // manual / import；为空时按 import 处理
 	SourceURI  string // 用户看到的来源标识；为空时取 Path 的文件名部分
 	SizeBytes  int64  // 原始文件的字节数，只写进上传记录供界面显示；0 表示调用方没提供
 }
@@ -88,7 +88,7 @@ type FileInput struct {
 type TextInput struct {
 	Title      string // 调用方指定的标题；为空时依次回落到正文一级标题、首行
 	Content    string // 待收录的正文，已经是 Markdown，不需要解析
-	SourceType string // manual / import / api；为空时按 manual 处理
+	SourceType string // manual / import；为空时按 manual 处理
 	SourceURI  string
 }
 
@@ -976,7 +976,7 @@ func buildStoredEmbeddings(stored []entity.KnowledgeChunk, vectors [][]float64, 
 
 // normalizeSourceType 校验来源类型。
 //
-// 必须在这里挡一次：数据库上 source_type 的 CHECK 只接受 manual / import / api 三个值，
+// 必须在这里挡一次：数据库上 source_type 的 CHECK 只接受 manual / import 两个值，
 // 直接透传会让用户收到一条 "violates check constraint" 的原始报错。
 func normalizeSourceType(value, fallback string) (string, error) {
 	sourceType := strings.TrimSpace(value)
@@ -984,10 +984,10 @@ func normalizeSourceType(value, fallback string) (string, error) {
 		return fallback, nil
 	}
 	switch sourceType {
-	case entity.KnowledgeDocumentSourceManual, entity.KnowledgeDocumentSourceImport, entity.KnowledgeDocumentSourceAPI:
+	case entity.KnowledgeDocumentSourceManual, entity.KnowledgeDocumentSourceImport:
 		return sourceType, nil
 	default:
-		return "", fmt.Errorf("来源类型 %q 无效，只能是 manual、import 或 api", sourceType)
+		return "", fmt.Errorf("来源类型 %q 无效，只能是 manual 或 import", sourceType)
 	}
 }
 

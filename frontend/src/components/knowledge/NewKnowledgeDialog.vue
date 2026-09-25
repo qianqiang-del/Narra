@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
- * 「新增知识库」弹层：选文件 → 填标题 → 提交，下面挂一张"最近一次上传"卡片。
+ * 「新增知识库」弹层：文件导入 / 直接录入两个形态。
  *
+ * 文件导入：选文件 → 填标题 → 提交，下面挂一张"最近一次上传"卡片。
  * 一次只能传一份：`store.upload` 会一直盯到终态，`store.uploading` 也就一直为真，
  * 期间整个上传区禁用。服务端的强制拒绝属于批 ①，前端这层到时候仍然保留
  * （少一次注定失败的往返）。
@@ -9,6 +10,9 @@
  * 卡片是"被拒绝时用户能看懂发生了什么"的配套 UI：它显示当前在处理哪一份、
  * 上一份是因为什么失败的；失败的那一份可以直接重试 —— 后端拿归档在服务器上的
  * 原件重跑，用户不用重新选文件。
+ *
+ * 直接录入：粘贴或输入 Markdown 正文，走同步链路（见 store.ingestText），
+ * 没有解析与进度流，也没有上传记录 —— 所以这个形态下不显示上面那张卡片。
  */
 import {
   DialogContent,
@@ -18,7 +22,7 @@ import {
   DialogRoot,
   DialogTitle,
 } from 'reka-ui'
-import { AlertCircle, FileText, Info, Loader2, RotateCw, Upload, X } from 'lucide-vue-next'
+import { AlertCircle, FileText, Info, Loader2, PenLine, RotateCw, Upload, X } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
@@ -31,14 +35,18 @@ const open = defineModel<boolean>('open', { default: false })
 const { t } = useI18n()
 const store = useKnowledgeStore()
 
+/** 当前形态：文件导入 / 直接录入。两个页签共用下面的标题输入框 */
+const mode = ref<'file' | 'text'>('file')
+
 const selectedFile = ref<File | null>(null)
 const titleInput = ref('')
 const dragging = ref(false)
+const textContent = ref('')
 
 const acceptAttr = SUPPORTED_EXTENSIONS.join(',')
 const supportedHint = SUPPORTED_EXTENSIONS.join(' / ')
 
-const busy = computed(() => store.uploading)
+const busy = computed(() => store.uploading || store.submitting)
 
 /** 处理中的那一份：只有 uploading 期间才有值（store 在 finally 里清掉） */
 const processing = computed(() => (store.uploading ? store.activeUpload : null))
@@ -148,6 +156,44 @@ async function submit() {
   }
 }
 
+/** 当前页签能不能提交：文件要有选中文件；正文要有非空内容与标题（正文录入标题必填） */
+const canSubmit = computed(() => {
+  if (mode.value === 'file') return Boolean(selectedFile.value)
+  return textContent.value.trim().length > 0 && titleInput.value.trim().length > 0
+})
+
+/** 提交按钮的唯一入口：按当前页签分派 */
+function submitCurrent() {
+  return mode.value === 'file' ? submit() : submitText()
+}
+
+/**
+ * 直接收录一段正文。
+ *
+ * 同步链路：成功返回时文档已经是 ready（所以 toast 里能直接报切片数），失败由后端
+ * 返 400，这里把原因原样提示出来 —— 失败的那篇文档留在库里，但主页只查 ready、
+ * 它又没有上传记录，界面上不会出现它；用户要重来就再提交一次（会新建一篇）。
+ *
+ * 标题必填（与文件导入不同）：文件有原始文件名可以回落，正文没有，标题就是它
+ * 在列表里的唯一标识。
+ */
+async function submitText() {
+  const content = textContent.value.trim()
+  const title = titleInput.value.trim()
+  if (!content || !title || busy.value) return
+
+  try {
+    const document = await store.ingestText(content, title)
+    toast.success(
+      t('knowledge.upload.success', { title: document.title, chunks: document.chunks }),
+    )
+    textContent.value = ''
+    titleInput.value = ''
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : t('knowledge.error.ingestText'))
+  }
+}
+
 /**
  * 重试上一份失败的文件。
  *
@@ -187,7 +233,7 @@ async function retryFailed() {
           <div class="min-w-0 flex-1">
             <DialogTitle class="text-[15px] font-medium">{{ t('knowledge.new.title') }}</DialogTitle>
             <DialogDescription class="mt-1 text-[13px] text-zinc-600 dark:text-zinc-400">
-              {{ t('knowledge.new.desc') }}
+              {{ t(mode === 'file' ? 'knowledge.new.desc' : 'knowledge.new.descText') }}
             </DialogDescription>
           </div>
           <button
@@ -200,7 +246,36 @@ async function retryFailed() {
           </button>
         </div>
 
+        <!-- 形态切换。切换不打断进行中的任务：busy 时两个页签的输入都禁用 -->
+        <div class="mt-4 grid grid-cols-2 gap-1 rounded-xl border border-border bg-muted/40 p-1">
+          <button
+            type="button"
+            class="cursor-pointer rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors"
+            :class="
+              mode === 'file'
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-zinc-600 hover:text-foreground dark:text-zinc-400'
+            "
+            @click="mode = 'file'"
+          >
+            {{ t('knowledge.new.tabFile') }}
+          </button>
+          <button
+            type="button"
+            class="cursor-pointer rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors"
+            :class="
+              mode === 'text'
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-zinc-600 hover:text-foreground dark:text-zinc-400'
+            "
+            @click="mode = 'text'"
+          >
+            {{ t('knowledge.new.tabText') }}
+          </button>
+        </div>
+
         <label
+          v-if="mode === 'file'"
           class="mt-4 flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed px-4 py-7 text-center transition-colors"
           :class="
             busy
@@ -226,7 +301,7 @@ async function retryFailed() {
 
         <!-- 已选文件 -->
         <div
-          v-if="selectedFile"
+          v-if="mode === 'file' && selectedFile"
           class="mt-3 flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2"
         >
           <FileText class="size-4 shrink-0 text-zinc-500" />
@@ -248,7 +323,7 @@ async function retryFailed() {
           分钟级）。不提醒的话，用户只会看到"处理中"长时间不动，以为卡死了。
         -->
         <div
-          v-if="parserHint"
+          v-if="mode === 'file' && parserHint"
           class="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
         >
           <Info class="mt-0.5 size-3.5 shrink-0" />
@@ -260,29 +335,50 @@ async function retryFailed() {
           </span>
         </div>
 
-        <!-- 标题（可选）与提交 -->
+        <!-- 直接录入：正文按 Markdown 处理，没有解析这一步，提交后同步返回结果 -->
+        <textarea
+          v-if="mode === 'text'"
+          v-model="textContent"
+          rows="8"
+          :disabled="busy"
+          :placeholder="t('knowledge.text.placeholder')"
+          class="mt-4 w-full resize-y rounded-xl border border-input bg-background px-3 py-2 text-[13px] leading-6 outline-none transition-colors placeholder:text-zinc-500 focus:border-violet-400 disabled:opacity-60"
+        />
+
+        <!-- 标题与提交：正文录入必填，文件导入可选（留空回落到正文首个标题） -->
         <div class="mt-3 flex items-center gap-2">
           <input
             v-model="titleInput"
             type="text"
             :disabled="busy"
-            :placeholder="t('knowledge.upload.titlePlaceholder')"
+            :placeholder="
+              t(mode === 'text' ? 'knowledge.text.titlePlaceholder' : 'knowledge.upload.titlePlaceholder')
+            "
             class="min-w-0 flex-1 rounded-lg border border-input bg-background px-3 py-2 text-[13px] outline-none transition-colors placeholder:text-zinc-500 focus:border-violet-400 disabled:opacity-60"
           />
           <button
             type="button"
-            :disabled="!selectedFile || busy"
+            :disabled="!canSubmit || busy"
             class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            @click="submit"
+            @click="submitCurrent"
           >
             <Loader2 v-if="busy" class="size-3.5 animate-spin" />
+            <PenLine v-else-if="mode === 'text'" class="size-3.5" />
             <Upload v-else class="size-3.5" />
             {{ busy ? t('knowledge.upload.submitting') : t('knowledge.upload.submit') }}
           </button>
         </div>
 
-        <!-- 最近一次上传 -->
-        <div class="mt-4 overflow-hidden rounded-xl border border-border">
+        <!-- 正文录入了内容却还没填标题时的就地提醒：光靠按钮置灰说不出为什么 -->
+        <p
+          v-if="mode === 'text' && textContent.trim() && !titleInput.trim()"
+          class="mt-1.5 text-xs text-red-600 dark:text-red-400"
+        >
+          {{ t('knowledge.text.titleRequired') }}
+        </p>
+
+        <!-- 最近一次上传（只对文件投递有意义，正文收录没有记录） -->
+        <div v-if="mode === 'file'" class="mt-4 overflow-hidden rounded-xl border border-border">
           <div class="border-b border-border bg-muted/60 px-3 py-2 text-[13px] font-medium">
             {{ t('knowledge.last.title') }}
           </div>
@@ -349,7 +445,7 @@ async function retryFailed() {
         </div>
 
         <p class="mt-3 text-xs leading-5 text-muted-foreground">
-          {{ t('knowledge.new.note') }}
+          {{ t(mode === 'file' ? 'knowledge.new.note' : 'knowledge.text.note') }}
         </p>
       </DialogContent>
     </DialogPortal>

@@ -329,6 +329,9 @@ export default {
     new: {
       title: '新增知识库',
       desc: '选一份文件开始收录；解析与向量化在后台进行，收录成功后出现在主页。',
+      descText: '粘贴或输入一段正文，跳过文件解析直接切分与向量化，通常几秒完成。',
+      tabFile: '文件导入',
+      tabText: '直接录入',
       dropBusy: '正在处理「{title}」，完成后才能上传下一个',
       note: '一次只能上传一份：上一份处理完成后才能上传下一份。窗口可以直接关掉，处理在后台继续。',
     },
@@ -375,6 +378,12 @@ export default {
         '首次解析这类文件需要先准备解析环境（下载解释器与依赖），可能需要几分钟到十几分钟。上传后可以关掉这个窗口，处理会在后台继续。',
       parserPreparing: '正在准备解析环境：{progress}',
     },
+    text: {
+      placeholder: '在这里粘贴或输入正文（支持 Markdown）…',
+      titlePlaceholder: '文档标题（必填）',
+      titleRequired: '请先填写标题',
+      note: '正文按 Markdown 处理，直接切分与向量化，通常几秒完成；失败时请重新提交。',
+    },
     list: {
       empty: '还没有已收录的知识库，先上传一份试试。',
       filteredEmpty: '没有匹配「{keyword}」的知识库',
@@ -405,7 +414,6 @@ export default {
     source: {
       manual: '手动录入',
       import: '文件导入',
-      api: '接口写入',
     },
     action: {
       view: '查看',
@@ -426,6 +434,7 @@ export default {
     error: {
       load: '加载知识库列表失败。',
       upload: '上传失败。',
+      ingestText: '收录正文失败。',
       retry: '重试失败。',
       preview: '加载文档正文失败。',
       remove: '删除文档失败。',
