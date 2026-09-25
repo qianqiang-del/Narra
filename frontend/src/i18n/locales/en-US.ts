@@ -404,6 +404,7 @@ export default {
       pending: 'Pending',
       processing: 'Processing',
       ready: 'Searchable',
+      disabled: 'Disabled',
       failed: 'Failed',
     },
     // Coarse failure stage, prefixed to the specific error ("Embedding failed: upstream 429").
@@ -422,8 +423,16 @@ export default {
     },
     action: {
       view: 'View',
+      disable: 'Disable',
+      enable: 'Enable',
       retry: 'Retry',
       delete: 'Delete',
+    },
+    toggle: {
+      disabled: 'Disabled “{title}” — it is no longer searchable.',
+      enabled: 'Enabled “{title}” — it is searchable again.',
+      stateOn: 'On',
+      stateOff: 'Off',
     },
     preview: {
       loading: 'Loading…',
@@ -440,6 +449,7 @@ export default {
       load: 'Failed to load the knowledge base.',
       upload: 'Upload failed.',
       ingestText: 'Failed to ingest the text.',
+      toggle: 'Failed to change the searchable state.',
       retry: 'Retry failed.',
       preview: 'Failed to load the document text.',
       remove: 'Failed to delete the document.',

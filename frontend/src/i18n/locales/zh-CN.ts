@@ -399,6 +399,7 @@ export default {
       pending: '等待中',
       processing: '处理中',
       ready: '可检索',
+      disabled: '已停用',
       failed: '失败',
     },
     // 失败行的粗粒度阶段，拼在具体错误前面（"向量化阶段失败：上游返回 429"）。
@@ -417,8 +418,16 @@ export default {
     },
     action: {
       view: '查看',
+      disable: '停用',
+      enable: '启用',
       retry: '重试',
       delete: '删除',
+    },
+    toggle: {
+      disabled: '已停用《{title}》，检索不再召回它。',
+      enabled: '已启用《{title}》，检索可以召回它了。',
+      stateOn: '启用',
+      stateOff: '停用',
     },
     preview: {
       loading: '加载中…',
@@ -435,6 +444,7 @@ export default {
       load: '加载知识库列表失败。',
       upload: '上传失败。',
       ingestText: '收录正文失败。',
+      toggle: '切换启用状态失败。',
       retry: '重试失败。',
       preview: '加载文档正文失败。',
       remove: '删除文档失败。',

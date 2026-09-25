@@ -363,6 +363,54 @@ func TestKnowledgeStatusUpdatesBumpUpdatedAt(t *testing.T) {
 	}
 }
 
+// SetEnabled 只改 enabled 一列：状态不动、updated_at 前进、改回 true 立即恢复。
+func TestKnowledgeSetEnabledTogglesFlag(t *testing.T) {
+	tx := testTx(t)
+	repo := NewKnowledgeDocumentRepository(tx)
+	ctx := context.Background()
+
+	document := knowledgeTestDocument()
+	if err := repo.Create(ctx, document); err != nil {
+		t.Fatalf("创建文档失败: %v", err)
+	}
+	created := document.UpdatedAt
+
+	applied, err := repo.SetEnabled(ctx, document.ID, false)
+	if err != nil {
+		t.Fatalf("停用文档失败: %v", err)
+	}
+	if !applied {
+		t.Fatal("已存在的文档应当能切换")
+	}
+	after, err := repo.GetByID(ctx, document.ID)
+	if err != nil {
+		t.Fatalf("回读文档失败: %v", err)
+	}
+	if after.Enabled {
+		t.Error("停用后 enabled 仍为 true")
+	}
+	if after.Status != document.Status {
+		t.Errorf("状态被改动了: %q → %q", document.Status, after.Status)
+	}
+	if !after.UpdatedAt.After(created) {
+		t.Errorf("updated_at 没有前进: %v → %v", created, after.UpdatedAt)
+	}
+
+	if applied, err := repo.SetEnabled(ctx, document.ID, true); err != nil || !applied {
+		t.Fatalf("重新启用失败: applied=%v err=%v", applied, err)
+	}
+	if reenabled, err := repo.GetByID(ctx, document.ID); err != nil {
+		t.Fatalf("回读文档失败: %v", err)
+	} else if !reenabled.Enabled {
+		t.Error("重新启用后 enabled 仍为 false")
+	}
+
+	// 不存在的文档：影响 0 行，不报错（由服务层翻成"文档不存在"）。
+	if applied, err := repo.SetEnabled(ctx, document.ID+999999, false); err != nil || applied {
+		t.Errorf("不存在的文档应当返回 applied=false 且不报错，实际 applied=%v err=%v", applied, err)
+	}
+}
+
 func TestKnowledgeListAndCountChunks(t *testing.T) {
 	tx := testTx(t)
 	repo := NewKnowledgeDocumentRepository(tx)

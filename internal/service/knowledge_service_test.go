@@ -27,7 +27,7 @@ const (
 
 // fakeDocumentQuerier 是 documentQuerier 的内存替身。
 //
-// 只有四个方法 —— 服务层已经看不见状态推进和切片替换了，替身也就不必实现它们。
+// 只实现这几个方法 —— 服务层已经看不见状态推进和切片替换了，替身也就不必实现它们。
 type fakeDocumentQuerier struct {
 	document *entity.KnowledgeDocument
 	total    int64
@@ -70,6 +70,15 @@ func (q *fakeDocumentQuerier) CountChunksByDocument(ctx context.Context, ids []u
 		out[id] = 0
 	}
 	return out, nil
+}
+
+// SetEnabled 直接改内存里那篇文档，模拟仓储"只改一列"的行为。
+func (q *fakeDocumentQuerier) SetEnabled(ctx context.Context, id uint64, enabled bool) (bool, error) {
+	if q.document == nil || q.document.ID != id {
+		return false, nil
+	}
+	q.document.Enabled = enabled
+	return true, nil
 }
 
 // fakeIngester 是 ingester 的替身：只记录收到的输入，不真的切分与向量化。
@@ -439,6 +448,41 @@ func TestGetReportsMissingDocument(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "不存在") {
 		t.Errorf("错误信息应当说明文档不存在，实际: %v", err)
+	}
+}
+
+// SetEnabled 只改检索开关：响应回读自存储，形状与详情接口一致（带切片数）。
+func TestSetEnabledTogglesRetrievalFlag(t *testing.T) {
+	querier := &fakeDocumentQuerier{
+		document: &entity.KnowledgeDocument{
+			BaseModel:  entity.BaseModel{ID: testDocumentID},
+			Title:      "示例",
+			SourceType: testDocumentSource,
+			Status:     entity.KnowledgeDocumentStatusReady,
+			Enabled:    true,
+			Content:    "正文",
+			Metadata:   json.RawMessage(`{}`),
+		},
+		counts: map[uint64]int64{testDocumentID: 3},
+	}
+	svc := newTestService(querier, &fakeIngester{})
+
+	document, err := svc.SetEnabled(context.Background(), testDocumentID, false)
+	if err != nil {
+		t.Fatalf("停用文档失败: %v", err)
+	}
+	if document.Enabled {
+		t.Error("停用后响应里 enabled 仍为 true")
+	}
+	if querier.document.Enabled {
+		t.Error("停用后存储里的 enabled 没有被改掉")
+	}
+	if document.Chunks != 3 {
+		t.Errorf("切片数 = %d，期望 3（响应形状应当与详情接口一致）", document.Chunks)
+	}
+
+	if _, err := svc.SetEnabled(context.Background(), testDocumentID+1, false); err == nil {
+		t.Error("文档不存在时应当报错")
 	}
 }
 

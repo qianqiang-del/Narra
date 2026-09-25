@@ -130,9 +130,12 @@ const model = computed<RowModel>(() => {
     subtitle: document.sourceUri,
     error: document.error,
     stageLabel: failureStageLabel(document.status, document.stage, document.failedStage),
-    icon: marks.ready.icon,
-    iconClass: marks.ready.class,
-    badge: null,
+    // 停用的文档用归档图标 + 灰徽章：绿色的"可检索"勾配「已停用」是自相矛盾的
+    icon: document.enabled ? marks.ready.icon : marks.removed.icon,
+    iconClass: document.enabled ? marks.ready.class : marks.removed.class,
+    badge: document.enabled
+      ? null
+      : { label: t('knowledge.status.disabled'), class: badgeStyles.removed },
     tag: t(`knowledge.source.${document.sourceType === 'manual' ? 'manual' : 'import'}`),
     meta: [
       document.parser,

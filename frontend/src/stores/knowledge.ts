@@ -12,6 +12,7 @@ import {
   retryKnowledgeDocument,
   uploadKnowledgeFile,
   ingestKnowledgeText,
+  setKnowledgeDocumentEnabled,
   watchKnowledgeDocument,
   type KnowledgeDocument,
   type KnowledgeParserStatus,
@@ -103,6 +104,15 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    * 不参与"一次只能传一份"的约束。
    */
   const submitting = ref(false)
+
+  /**
+   * 正在切换启停的文档 ID。
+   *
+   * 行内开关据此置灰防连点，直到服务端返回（成功或失败）才解除 —— 不设客户端超时：
+   * 置灰时长短于请求本身就是"提前解禁"，会让连点钻进竞态里。
+   * 用 Set 而不是数组：这里只有判重与增删，没有顺序需求。
+   */
+  const togglingIds = ref<Set<number>>(new Set())
 
   /** 本次上传的文档，供新增弹层的"最近一次上传"卡片显示进度 */
   const activeUpload = ref<KnowledgeDocument | null>(null)
@@ -436,6 +446,55 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     }
   }
 
+  /** 只改列表里那一行的 enabled，其余字段保持不动（乐观更新与回滚共用） */
+  function patchDocumentEnabled(id: number, enabled: boolean) {
+    readyDocuments.value = readyDocuments.value.map((item) =>
+      item.id === id ? { ...item, enabled } : item,
+    )
+  }
+
+  /** 用服务端回读的整份文档替换列表里那一行 */
+  function replaceDocument(updated: KnowledgeDocument) {
+    readyDocuments.value = readyDocuments.value.map((item) =>
+      item.id === updated.id ? updated : item,
+    )
+  }
+
+  /** 标记 / 解除某一行的"切换中"状态（置灰用） */
+  function markToggling(id: number, pending: boolean) {
+    const next = new Set(togglingIds.value)
+    if (pending) next.add(id)
+    else next.delete(id)
+    togglingIds.value = next
+  }
+
+  /**
+   * 切换一篇文档是否参与检索。
+   *
+   * **乐观更新**：先把那一行翻过来，请求在后台跑 —— 开关不等往返，点击即时生效；
+   * 服务端返回后再用回读值对齐（updated_at 等字段是新的）。失败则翻回原状态，
+   * 并把错误抛给调用方 toast。
+   *
+   * 请求期间该行进入 togglingIds，界面据此置灰，直到服务端返回才解除。
+   */
+  async function setEnabled(
+    document: KnowledgeDocument,
+    enabled: boolean,
+  ): Promise<KnowledgeDocument> {
+    patchDocumentEnabled(document.id, enabled)
+    markToggling(document.id, true)
+    try {
+      const updated = await setKnowledgeDocumentEnabled(document.id, enabled)
+      replaceDocument(updated)
+      return updated
+    } catch (error) {
+      patchDocumentEnabled(document.id, !enabled)
+      throw error
+    } finally {
+      markToggling(document.id, false)
+    }
+  }
+
   /**
    * 收录一段正文（Markdown），不经过文件与解析。
    *
@@ -498,6 +557,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     loading,
     uploading,
     submitting,
+    togglingIds,
     keyword,
     hasMore,
     isEmpty,
@@ -509,6 +569,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     upload,
     retry,
     ingestText,
+    setEnabled,
     preview,
     removeDocument,
     removeRecord,

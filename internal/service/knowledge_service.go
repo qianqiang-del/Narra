@@ -27,7 +27,7 @@ const (
 
 // documentQuerier 是本服务对文档存储的最小依赖面。
 //
-// 比 repository.KnowledgeDocumentRepository 窄：这份服务负责列表、详情、预览与删除，
+// 比 repository.KnowledgeDocumentRepository 窄：这份服务负责列表、详情、预览、启停与删除，
 // 状态推进和切片替换是收录链路（rag.DocumentStore）的事，这里看不见它们。
 //
 // ⚠️ 删除是其中一处例外：Delete 还没有写进这个接口，实现里靠类型断言去取（见 Delete 的注释）。
@@ -43,6 +43,10 @@ type documentQuerier interface {
 
 	// GetByID 按主键取文档。查不到返回 gorm.ErrRecordNotFound。
 	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error)
+
+	// SetEnabled 切换一篇文档是否参与检索，返回是否命中一行（false = 文档不存在）。
+	// 它是 HTTP 面的写，与收录状态机无关 —— 服务层看不到 MarkProcessing 那一类推进。
+	SetEnabled(ctx context.Context, id uint64, enabled bool) (applied bool, err error)
 
 	// CountChunksByDocument 统计每篇文档的切片数，只返回入参里出现过的 ID。
 	CountChunksByDocument(ctx context.Context, documentIDs []uint64) (map[uint64]int64, error)
@@ -464,6 +468,24 @@ func (s *knowledgeService) Get(ctx context.Context, id uint64) (responsedto.Know
 		return responsedto.KnowledgeDocument{}, fmt.Errorf("统计切片数量失败: %w", err)
 	}
 	return toDocumentResponse(document, int(counts[id])), nil
+}
+
+// SetEnabled 切换一篇文档是否参与检索。
+//
+// 只影响召回：两条检索 SQL 都带 d.enabled（见 knowledge_search_repository），
+// 切片与向量原样保留，改回 true 立即恢复。
+//
+// 更新后用 Get 回读一次再出响应 —— 与 Retry 同一个理由：updated_at 是数据库写的，
+// 拿内存对象出响应会给一个旧值；顺带把切片数一起带上，响应形状与详情接口一致。
+func (s *knowledgeService) SetEnabled(ctx context.Context, id uint64, enabled bool) (responsedto.KnowledgeDocument, error) {
+	applied, err := s.documents.SetEnabled(ctx, id, enabled)
+	if err != nil {
+		return responsedto.KnowledgeDocument{}, fmt.Errorf("切换文档检索开关失败: %w", err)
+	}
+	if !applied {
+		return responsedto.KnowledgeDocument{}, fmt.Errorf("知识文档 %d 不存在", id)
+	}
+	return s.Get(ctx, id)
 }
 
 // Preview 返回单篇文档的解析正文，供前端打开预览。
