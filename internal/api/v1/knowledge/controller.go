@@ -34,9 +34,6 @@ const (
 	// 那种失败要等几分钟才在列表里变成 failed，不如在这里当场拒掉。
 	maxUploadBytes = 16 << 20
 
-	// uploadTempPrefix 上传文件的临时目录前缀。
-	uploadTempPrefix = "narra-upload-"
-
 	// 收录进度流（GET /knowledge/documents/:id/events）上的事件名，
 	// 与前端 api/knowledge.ts 的 watchKnowledgeDocument 一一对应。
 	eventDocument = "document" // 文档快照，形状同 GET /knowledge/documents/:id

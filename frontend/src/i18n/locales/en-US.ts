@@ -333,6 +333,9 @@ export default {
     new: {
       title: 'New knowledge base',
       desc: 'Pick a file to ingest. Parsing and embedding run in the background; ready documents show up on the main page.',
+      descText: 'Paste or type content to skip file parsing and go straight to chunking and embedding — usually done in seconds.',
+      tabFile: 'File import',
+      tabText: 'Write text',
       dropBusy: 'Still processing “{title}” — you can upload the next one once it finishes',
       note: 'One file at a time: the next upload unlocks when the current one finishes. You can close this window — processing continues in the background.',
     },
@@ -380,6 +383,12 @@ export default {
         'Parsing this file type needs a one-time parser environment setup (downloading the interpreter and dependencies), which can take several minutes. You can close this window — it keeps running in the background.',
       parserPreparing: 'Preparing the parser environment: {progress}',
     },
+    text: {
+      placeholder: 'Paste or type content here (Markdown supported)…',
+      titlePlaceholder: 'Title (required)',
+      titleRequired: 'Please enter a title first',
+      note: 'Content is treated as Markdown and goes straight to chunking and embedding — usually done in seconds. If it fails, submit it again.',
+    },
     list: {
       empty: 'No knowledge base yet — upload one to get started.',
       filteredEmpty: 'Nothing matches “{keyword}”',
@@ -410,7 +419,6 @@ export default {
     source: {
       manual: 'Manual',
       import: 'File import',
-      api: 'API',
     },
     action: {
       view: 'View',
@@ -431,6 +439,7 @@ export default {
     error: {
       load: 'Failed to load the knowledge base.',
       upload: 'Upload failed.',
+      ingestText: 'Failed to ingest the text.',
       retry: 'Retry failed.',
       preview: 'Failed to load the document text.',
       remove: 'Failed to delete the document.',

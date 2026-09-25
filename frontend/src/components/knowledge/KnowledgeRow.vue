@@ -133,7 +133,7 @@ const model = computed<RowModel>(() => {
     icon: marks.ready.icon,
     iconClass: marks.ready.class,
     badge: null,
-    tag: t(`knowledge.source.${document.sourceType === 'api' ? 'api' : document.sourceType === 'manual' ? 'manual' : 'import'}`),
+    tag: t(`knowledge.source.${document.sourceType === 'manual' ? 'manual' : 'import'}`),
     meta: [
       document.parser,
       `${t('knowledge.col.chunks')} ${formatNumber(document.chunks)}`,
