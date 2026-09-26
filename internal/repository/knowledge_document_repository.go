@@ -27,9 +27,14 @@ type knowledgeDocumentRepository struct {
 	db *gorm.DB
 }
 
+// 本仓储的每个方法都通过 conn(ctx, r.db) 取句柄，而不是直接用 conn(ctx, r.db)：
+// 收录链路把"建文档 + 写 metadata + 建上传记录"包在一个事务里（见 rag.Ingester.SubmitFile），
+// 事务句柄由 repository.TransactionManager 放进 ctx。漏掉 conn 的方法会静默跑到事务外，
+// 只在回滚场景才暴露 —— 这正是 tx.go 开头提醒的那种错误。
+
 // SetMetadata 整份覆盖 metadata，不做合并（合并规则是调用方的事）。
 func (r *knowledgeDocumentRepository) SetMetadata(ctx context.Context, id uint64, metadata json.RawMessage) error {
-	return r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).Where("id = ?", id).Update("metadata", metadata).Error
+	return conn(ctx, r.db).Model(&entity.KnowledgeDocument{}).Where("id = ?", id).Update("metadata", metadata).Error
 }
 
 // SetUploadPath 把 metadata 里的 upload_path 换成失败原件归档后的新位置。
@@ -46,7 +51,7 @@ func (r *knowledgeDocumentRepository) SetMetadata(ctx context.Context, id uint64
 // 与 MarkFailed 的"先读后写"不同，这里用一条 SQL 做 jsonb 顶层合并就够了：
 // 只改一个键，不需要知道其余键是什么，也就不存在读到旧值再写回去的窗口。
 func (r *knowledgeDocumentRepository) SetUploadPath(ctx context.Context, id uint64, attempt int32, path string) (bool, error) {
-	result := r.db.WithContext(ctx).
+	result := conn(ctx, r.db).
 		Model(&entity.KnowledgeDocument{}).
 		Where("id = ? AND status = ? AND ingest_attempt = ?", id, entity.KnowledgeDocumentStatusFailed, attempt).
 		Update("metadata", gorm.Expr("metadata || jsonb_build_object('upload_path', ?::text)", path))
@@ -66,7 +71,7 @@ func (r *knowledgeDocumentRepository) FailedLeaseOwned(ctx context.Context, id u
 		Status        string
 		IngestAttempt int32
 	}
-	if err := r.db.WithContext(ctx).
+	if err := conn(ctx, r.db).
 		Model(&entity.KnowledgeDocument{}).
 		Select("status", "ingest_attempt").
 		Where("id = ?", id).Take(&row).Error; err != nil {
@@ -84,7 +89,7 @@ func (r *knowledgeDocumentRepository) FailedLeaseOwned(ctx context.Context, id u
 // 前后两次取到的顺序不一致，任务可能被反复取到或被跳过。
 func (r *knowledgeDocumentRepository) ListPending(ctx context.Context, limit int) ([]entity.KnowledgeDocument, error) {
 	var documents []entity.KnowledgeDocument
-	err := r.db.WithContext(ctx).Where("status = ?", entity.KnowledgeDocumentStatusPending).
+	err := conn(ctx, r.db).Where("status = ?", entity.KnowledgeDocumentStatusPending).
 		Order("created_at ASC, id ASC").Limit(limit).Find(&documents).Error
 	return documents, err
 }
@@ -104,7 +109,7 @@ func (r *knowledgeDocumentRepository) ClaimAndReturnAttempt(ctx context.Context,
 	var attempt int32
 	claimed := false
 
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := conn(ctx, r.db).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&entity.KnowledgeDocument{}).
 			Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusPending).
 			Updates(map[string]any{
@@ -140,7 +145,7 @@ func (r *knowledgeDocumentRepository) ClaimAndReturnAttempt(ctx context.Context,
 // 判据的阈值必须与心跳间隔配套：Worker 处理期间每 30s 调一次 Touch，
 // 所以 3 分钟的阈值既能很快收敛真僵尸，又不会误杀跑得慢的正常任务。
 func (r *knowledgeDocumentRepository) ResetStale(ctx context.Context, olderThan time.Time) error {
-	return r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).
+	return conn(ctx, r.db).Model(&entity.KnowledgeDocument{}).
 		Where("status = ? AND updated_at < ?", entity.KnowledgeDocumentStatusProcessing, olderThan).
 		Updates(map[string]any{"status": entity.KnowledgeDocumentStatusPending}).Error
 }
@@ -156,7 +161,7 @@ func (r *knowledgeDocumentRepository) ResetStale(ctx context.Context, olderThan 
 // 心跳不该把任何状态改回去，也不该给旧租约续命（否则一个已经死掉的新任务会被
 // 旧执行者一直"续命"，周期回收永远等不到它）。
 func (r *knowledgeDocumentRepository) Touch(ctx context.Context, id uint64, attempt int32) error {
-	return r.db.WithContext(ctx).
+	return conn(ctx, r.db).
 		Model(&entity.KnowledgeDocument{}).
 		Where("id = ? AND status = ? AND ingest_attempt = ?", id, entity.KnowledgeDocumentStatusProcessing, attempt).
 		UpdateColumn("updated_at", time.Now().UTC()).Error
@@ -167,7 +172,7 @@ func (r *knowledgeDocumentRepository) Touch(ctx context.Context, id uint64, atte
 // 走硬删除（实体没有 DeletedAt）而不是软删除，原因和 ReplaceChunks 里删旧切片一样：
 // 留着旧行会让 UNIQUE (document_id, chunk_index) 挡住同一篇文章的重新导入。
 func (r *knowledgeDocumentRepository) Delete(ctx context.Context, id uint64) error {
-	return r.db.WithContext(ctx).Where("id = ?", id).Delete(&entity.KnowledgeDocument{}).Error
+	return conn(ctx, r.db).Where("id = ?", id).Delete(&entity.KnowledgeDocument{}).Error
 }
 
 // NewKnowledgeDocumentRepository 创建知识库仓储。
@@ -177,7 +182,7 @@ func NewKnowledgeDocumentRepository(db *gorm.DB) KnowledgeDocumentRepository {
 
 // Create 插入一篇文档。实体里没有关联字段，所以不存在级联写入的副作用。
 func (r *knowledgeDocumentRepository) Create(ctx context.Context, document *entity.KnowledgeDocument) error {
-	return r.db.WithContext(ctx).Create(document).Error
+	return conn(ctx, r.db).Create(document).Error
 }
 
 // GetByID 按主键取一篇文档，查不到时把 gorm.ErrRecordNotFound 原样交给调用方，
@@ -185,7 +190,7 @@ func (r *knowledgeDocumentRepository) Create(ctx context.Context, document *enti
 // 收录链路（判断默认向量模型是否已登记）和 HTTP 面（404 语义）里的含义并不相同。
 func (r *knowledgeDocumentRepository) GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error) {
 	var document entity.KnowledgeDocument
-	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&document).Error; err != nil {
+	if err := conn(ctx, r.db).Where("id = ?", id).First(&document).Error; err != nil {
 		return nil, err
 	}
 	return &document, nil
@@ -199,7 +204,7 @@ func (r *knowledgeDocumentRepository) GetByID(ctx context.Context, id uint64) (*
 // 用 GORM 的 Update 而不是 UpdateColumn：updated_at 由 autoUpdateTime 维护
 // （见 migrations/README.md 的对照表），这里必须跟着刷新。
 func (r *knowledgeDocumentRepository) SetEnabled(ctx context.Context, id uint64, enabled bool) (bool, error) {
-	result := r.db.WithContext(ctx).
+	result := conn(ctx, r.db).
 		Model(&entity.KnowledgeDocument{}).
 		Where("id = ?", id).
 		Update("enabled", enabled)
@@ -214,7 +219,7 @@ func (r *knowledgeDocumentRepository) SetEnabled(ctx context.Context, id uint64,
 // 计数与取页共用同一组 WHERE：两者不同源的话，前端会收到"总数 3、本页 5 条"这种
 // 自相矛盾的响应，而它正是靠 total 算"已显示 X / Y"和判断还有没有下一页的。
 func (r *knowledgeDocumentRepository) List(ctx context.Context, query entity.KnowledgeDocumentQuery) ([]entity.KnowledgeDocument, int64, error) {
-	scope := r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).Scopes(documentConditions(query))
+	scope := conn(ctx, r.db).Model(&entity.KnowledgeDocument{}).Scopes(documentConditions(query))
 
 	var total int64
 	if err := scope.Count(&total).Error; err != nil {
@@ -240,13 +245,32 @@ func (r *knowledgeDocumentRepository) List(ctx context.Context, query entity.Kno
 // 它的谓词正是 status IN ('pending', 'processing')。
 func (r *knowledgeDocumentRepository) CountActive(ctx context.Context) (int64, error) {
 	var total int64
-	err := r.db.WithContext(ctx).Model(&entity.KnowledgeDocument{}).
+	err := conn(ctx, r.db).Model(&entity.KnowledgeDocument{}).
 		Where("status IN ?", []string{
 			entity.KnowledgeDocumentStatusPending,
 			entity.KnowledgeDocumentStatusProcessing,
 		}).
 		Count(&total).Error
 	return total, err
+}
+
+// ingestQueueLockKey 是收录队列容量检查的 PostgreSQL 咨询锁键。
+//
+// 取值本身没有含义，只要在整个数据库内稳定且不与别的咨询锁冲突即可（本项目目前
+// 没有别处使用咨询锁）。十六进制拼的是 "narra" 的 ASCII，便于人工识别来源。
+const ingestQueueLockKey = int64(0x6e61727261)
+
+// AcquireIngestQueueLock 在**当前事务**里取得收录队列的排他锁。
+//
+// 它是"队列容量是硬上限"在多实例部署下的保证：CountActive 之后、插入新行之前的窗口
+// 如果没有串行化，两个实例会同时看到还剩一个空位，各插一行，上限就被绕过。
+// pg_advisory_xact_lock 在事务提交或回滚时自动释放，不需要（也不能）手工解锁；
+// 调用方必须先通过 TransactionManager.Run 开事务，否则每条语句自成事务，
+// 锁在执行完这一句后立刻释放，等于没锁（接口注释里也写了这条契约）。
+//
+// 用 Exec 而不是 Raw + Scan：这个函数只关心"锁有没有拿到"，返回值是 void。
+func (r *knowledgeDocumentRepository) AcquireIngestQueueLock(ctx context.Context) error {
+	return conn(ctx, r.db).Exec("SELECT pg_advisory_xact_lock(?)", ingestQueueLockKey).Error
 }
 
 // documentConditions 把查询条件翻成 WHERE 子句；条件为空时不加任何约束。
@@ -287,7 +311,7 @@ func (r *knowledgeDocumentRepository) CountChunksByDocument(ctx context.Context,
 		DocumentID uint64
 		Total      int64
 	}
-	err := r.db.WithContext(ctx).
+	err := conn(ctx, r.db).
 		Model(&entity.KnowledgeChunk{}).
 		Select("document_id, count(*) AS total").
 		Where("document_id IN ?", documentIDs).
@@ -309,7 +333,7 @@ func (r *knowledgeDocumentRepository) CountChunksByDocument(ctx context.Context,
 // autoUpdateTime 逻辑，updated_at 会被自动带上；UpdateColumn 会跳过它，
 // 让这个字段永远停在创建时间（本项目的 updated_at 没有数据库触发器兜底）。
 func (r *knowledgeDocumentRepository) MarkProcessing(ctx context.Context, id uint64) error {
-	return r.db.WithContext(ctx).
+	return conn(ctx, r.db).
 		Model(&entity.KnowledgeDocument{}).
 		Where("id = ?", id).
 		Updates(map[string]any{"status": entity.KnowledgeDocumentStatusProcessing}).Error
@@ -348,7 +372,7 @@ func (r *knowledgeDocumentRepository) MarkProcessing(ctx context.Context, id uin
 func (r *knowledgeDocumentRepository) MarkFailed(ctx context.Context, id uint64, attempt int32, metadata json.RawMessage, reason string) (bool, error) {
 	applied := false
 
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := conn(ctx, r.db).Transaction(func(tx *gorm.DB) error {
 		updates := map[string]any{"status": entity.KnowledgeDocumentStatusFailed}
 		if len(metadata) > 0 {
 			base, err := readMetadata(tx, id)
@@ -424,7 +448,7 @@ func readMetadata(tx *gorm.DB, id uint64) (json.RawMessage, error) {
 // 只改文档不改记录，用户会看到"文档在转圈、记录那一行还说失败"。
 func (r *knowledgeDocumentRepository) Requeue(ctx context.Context, id uint64, stage string) (bool, error) {
 	requeued := false
-	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := conn(ctx, r.db).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&entity.KnowledgeDocument{}).
 			Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusFailed).
 			Updates(map[string]any{
@@ -463,7 +487,7 @@ func (r *knowledgeDocumentRepository) SaveParsedContent(ctx context.Context, id 
 		return fmt.Errorf("文档 %d 的解析正文为空，不能落库", id)
 	}
 
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return conn(ctx, r.db).Transaction(func(tx *gorm.DB) error {
 		base, err := readMetadata(tx, id)
 		if err != nil {
 			return err
@@ -494,7 +518,7 @@ func (r *knowledgeDocumentRepository) ReplaceStagedChunks(ctx context.Context, i
 		return fmt.Errorf("文档 %d 没有可写入的切片", id)
 	}
 
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return conn(ctx, r.db).Transaction(func(tx *gorm.DB) error {
 		// 1. 先删旧切片。硬删除，同序号的上一条必须先消失，否则重复导入会撞唯一约束。
 		if err := tx.Where("document_id = ?", id).Delete(&entity.KnowledgeChunk{}).Error; err != nil {
 			return err
@@ -524,7 +548,7 @@ func (r *knowledgeDocumentRepository) ReplaceStagedChunks(ctx context.Context, i
 // ChunkID，错位会让"第 3 段的向量"指向第 5 段，而检索看起来一切正常。
 func (r *knowledgeDocumentRepository) ListChunksByDocument(ctx context.Context, id uint64) ([]entity.KnowledgeChunk, error) {
 	var chunks []entity.KnowledgeChunk
-	err := r.db.WithContext(ctx).
+	err := conn(ctx, r.db).
 		Where("document_id = ?", id).
 		Order("chunk_index ASC").
 		Find(&chunks).Error
@@ -544,7 +568,7 @@ func (r *knowledgeDocumentRepository) SaveEmbeddingsAndMarkReady(ctx context.Con
 		return fmt.Errorf("文档 %d 没有可写入的向量", id)
 	}
 
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return conn(ctx, r.db).Transaction(func(tx *gorm.DB) error {
 		chunkIDs := make([]uint64, len(embeddings))
 		for index := range embeddings {
 			chunkIDs[index] = embeddings[index].ChunkID
@@ -658,7 +682,7 @@ func (r *knowledgeDocumentRepository) ReplaceChunks(ctx context.Context, id uint
 		return fmt.Errorf("文档 %d 没有可写入的切片", id)
 	}
 
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return conn(ctx, r.db).Transaction(func(tx *gorm.DB) error {
 		// 1. 先删旧切片。删除走的是硬删除（实体没有 DeletedAt），
 		//    这正是需要的效果：UNIQUE (document_id, chunk_index) 要求同序号的上一条
 		//    必须先消失，软删除会让重复导入同一篇文章直接撞唯一约束。

@@ -24,6 +24,20 @@ func Success(c *gin.Context, data interface{}) {
 	})
 }
 
+// Accepted 已受理响应：请求本身已经处理完（每个文件都有逐项结果），
+// 但真正的收录在后台排队推进。用它而不是 Success，是为了让"排队中"在协议层可见 ——
+// 批量上传与异步收录是这个接口的常态，200 会让人误以为内容已经可用。
+//
+// 注意它只用在批量上传上：项目里其余接口（含业务错误）一律回 HTTP 200 + 信封 code，
+// 前端也按信封判断成败。这里是一个有意的例外，见 controller 的 Upload。
+func Accepted(c *gin.Context, message string, data interface{}) {
+	c.JSON(202, Response{
+		Code:    errors.CodeSuccess,
+		Message: message,
+		Data:    data,
+	})
+}
+
 // SuccessWithMessage 成功响应（自定义消息）
 func SuccessWithMessage(c *gin.Context, message string, data interface{}) {
 	c.JSON(200, Response{

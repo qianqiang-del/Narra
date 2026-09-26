@@ -250,8 +250,14 @@ func (a *App) initDependencies() error {
 	// 运行时模块（rag.Ingester / mcp.Manager）在这里建好，再作为依赖注入服务层。
 	// 文档与上传记录是两个仓储：前者是资产，后者是投递历史，表也不同。
 	parser := newDocumentParser(a.cfg)
+	knowledgeIngest := a.cfg.KnowledgeIngest.WithDefaults()
 	knowledgeIngester := rag.NewIngester(
-		knowledgeDocumentRepo, knowledgeUploadRecordRepo, embeddingModelRepo, embeddingManager, parser)
+		knowledgeDocumentRepo, knowledgeUploadRecordRepo, embeddingModelRepo, embeddingManager, parser,
+		rag.IngestOptions{
+			Tx:                   txManager,
+			QueueCapacity:        knowledgeIngest.QueueCapacity,
+			EmbeddingConcurrency: knowledgeIngest.EmbeddingConcurrency,
+		})
 	uploadDir := a.cfg.Storage.UploadDir
 	if uploadDir == "" {
 		uploadDir = "data/uploads"
@@ -267,10 +273,11 @@ func (a *App) initDependencies() error {
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 		return fmt.Errorf("创建上传目录失败: %w", err)
 	}
-	// 文件收录跑在后台 worker 里：上传接口只建 pending 行，解析与向量化由它按秒轮询推进。
-	// 并发固定为 1 —— 收录同时吃 CPU 和上游额度，MVP 阶段串行跑更容易定位问题；
+	// 文件收录跑在后台 worker 里：上传接口只建 pending 行，解析与向量化由它轮询推进。
+	// 并发数来自 knowledge_ingest.parse_concurrency（默认 2）：解析同时吃 CPU 与 OCR，
+	// 上限是"别把机器挤满"；向量化另有独立的 embedding_concurrency，见 rag.IngestOptions。
 	// uploadDir 必须和上面给 controller、service 的是同一个值，否则删除时的暂存清理会静默失效。
-	a.knowledgeWorker = rag.NewWorker(knowledgeDocumentRepo, knowledgeIngester, uploadDir, 1)
+	a.knowledgeWorker = rag.NewWorker(knowledgeDocumentRepo, knowledgeIngester, uploadDir, knowledgeIngest.ParseConcurrency)
 	a.knowledgeWorker.Start()
 	// 检索是收录的另一半门面：两路召回（余弦相似度 + 词项命中）经 RRF 融合，
 	// 编排在 rag.Retriever，服务层只做 DTO 映射。向量模型的登记与索引维护走
@@ -377,7 +384,7 @@ func (a *App) initDependencies() error {
 	}
 
 	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo)
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, uploadDir, parser)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, uploadDir, parser, knowledgeIngest)
 	return nil
 }
 
@@ -441,10 +448,16 @@ func (a *App) initServer() {
 	a.router.Setup(engine)
 
 	// 创建 HTTP 服务器
+	// 读超时要覆盖"最大批量上传在较慢链路上传完"的时间，否则 100MB 的限制会被网络
+	// 提前掐断（见 config.AppConfig.ReadTimeout）。没配置时退回 60s 的历史值。
+	readTimeout := a.cfg.App.ReadTimeout
+	if readTimeout <= 0 {
+		readTimeout = 60 * time.Second
+	}
 	a.server = &http.Server{
 		Addr:           fmt.Sprintf(":%d", a.cfg.App.Port),
 		Handler:        engine,
-		ReadTimeout:    60 * time.Second,
+		ReadTimeout:    readTimeout,
 		WriteTimeout:   60 * time.Second,
 		MaxHeaderBytes: 1 << 20, // 1 MB
 	}

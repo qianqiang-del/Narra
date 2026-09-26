@@ -21,7 +21,8 @@ import (
 //   - 收录链路（rag.DocumentStore）：Create / GetByID / MarkProcessing / MarkFailed / ReplaceChunks
 //   - 后台任务队列（rag.FileTaskStore）：SetMetadata / SetUploadPath / FailedLeaseOwned /
 //     ListPending / ClaimAndReturnAttempt / Touch / ResetStale / Requeue / MarkFailed /
-//     SaveParsedContent / ReplaceStagedChunks / ListChunksByDocument / SaveEmbeddingsAndMarkReady
+//     SaveParsedContent / ReplaceStagedChunks / ListChunksByDocument / SaveEmbeddingsAndMarkReady /
+//     CountActive / AcquireIngestQueueLock
 //   - 查询与删除（service）：List / GetByID / CountChunksByDocument / Delete
 //
 // MarkFailed 被前两组共用，所以它在两处都出现。分阶段写入的四个方法只服务异步文件链路
@@ -49,9 +50,15 @@ type KnowledgeDocumentRepository interface {
 
 	// CountActive 统计还在收录中的文档数（pending + processing）。
 	//
-	// 上传入口用它做"一次只收一份"的并发约束：大于 0 就说明后台还在忙。
+	// 它是队列容量检查的一半：收录链路的提交与重试在事务里先取
+	// AcquireIngestQueueLock 再调它，达到 knowledge_ingest.queue_capacity 时拒绝新任务。
 	// failed 与 ready 都不算 —— 一份失败的上传不该把知识库永久锁住。
 	CountActive(ctx context.Context) (int64, error)
+
+	// AcquireIngestQueueLock 在**当前事务**里取得收录队列容量检查的排他锁
+	// （pg_advisory_xact_lock）。必须在事务内调用：锁随事务提交/回滚自动释放。
+	// 它让"计数 + 建行"在多实例部署下串行，队列容量因此是硬上限。
+	AcquireIngestQueueLock(ctx context.Context) error
 
 	// CountChunksByDocument 统计每篇文档的切片数，只返回入参里出现过的 ID。
 	// 列表页要靠它显示"这篇文档被切成了多少片"，而逐篇去 count 会变成 N+1 次查询。

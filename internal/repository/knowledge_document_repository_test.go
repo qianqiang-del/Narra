@@ -569,8 +569,8 @@ func TestKnowledgeListFiltersByStatusAndKeyword(t *testing.T) {
 	}
 }
 
-// CountActive 是上传闸门的判据：pending 与 processing 都算忙，failed 与 ready 都不算。
-// 任何一个方向数错，结果都是"一份失败的上传把知识库永久锁住"或"闸门形同虚设"。
+// CountActive 是收录队列容量的判据：pending 与 processing 都算占位，failed 与 ready 都不算。
+// 任何一个方向数错，结果都是"一份失败的上传占着名额不放"或"队列上限形同虚设"。
 //
 // 用增量而不是绝对值断言：开发库里可能有别的用例或历史数据留下的活跃行。
 func TestKnowledgeCountActiveExcludesFinished(t *testing.T) {

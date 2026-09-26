@@ -9,18 +9,111 @@ import (
 
 // Config 应用配置结构体
 type Config struct {
-	App            AppConfig            `mapstructure:"app"`
-	Database       DatabaseConfig       `mapstructure:"database"`
-	Embedding      EmbeddingConfig      `mapstructure:"embedding"`
-	TTS            TTSConfig            `mapstructure:"tts"`
-	DocumentParser DocumentParserConfig `mapstructure:"document_parser"`
-	Storage        StorageConfig        `mapstructure:"storage"`
-	JWT            JWTConfig            `mapstructure:"jwt"`
-	Log            LogConfig            `mapstructure:"log"`
-	Langfuse       LangfuseConfig       `mapstructure:"langfuse"`
-	CORS           CORSConfig           `mapstructure:"cors"`
-	Worker         WorkerConfig         `mapstructure:"worker"`
-	ConfigPath     string               `mapstructure:"-"`
+	App             AppConfig             `mapstructure:"app"`
+	Database        DatabaseConfig        `mapstructure:"database"`
+	Embedding       EmbeddingConfig       `mapstructure:"embedding"`
+	TTS             TTSConfig             `mapstructure:"tts"`
+	DocumentParser  DocumentParserConfig  `mapstructure:"document_parser"`
+	Storage         StorageConfig         `mapstructure:"storage"`
+	JWT             JWTConfig             `mapstructure:"jwt"`
+	Log             LogConfig             `mapstructure:"log"`
+	Langfuse        LangfuseConfig        `mapstructure:"langfuse"`
+	CORS            CORSConfig            `mapstructure:"cors"`
+	Worker          WorkerConfig          `mapstructure:"worker"`
+	KnowledgeIngest KnowledgeIngestConfig `mapstructure:"knowledge_ingest"`
+	ConfigPath      string                `mapstructure:"-"`
+}
+
+// KnowledgeIngestConfig 是知识库文件收录的批量限制、队列容量与并发约束。
+//
+// 它们全部来自配置而不是散落在 Controller / Worker 里：同一组数字同时被上传接口
+// （逐项预检与请求体上限）、服务层（队列容量）与 rag.Worker（解析与向量化并发）使用，
+// 写死在任何一处都会让"前端提示的上限"与"服务端真正执行的上限"漂移。
+type KnowledgeIngestConfig struct {
+	MaxFiles             int   `mapstructure:"max_files"`             // 单次批量上传的文件数上限
+	MaxFileBytes         int64 `mapstructure:"max_file_bytes"`        // 单个文件的字节数上限
+	MaxBatchBytes        int64 `mapstructure:"max_batch_bytes"`       // 单次请求所有文件的总字节数上限
+	QueueCapacity        int   `mapstructure:"queue_capacity"`        // pending + processing 任务数的硬上限
+	ParseConcurrency     int   `mapstructure:"parse_concurrency"`     // 后台同时处理的收录任务数
+	EmbeddingConcurrency int   `mapstructure:"embedding_concurrency"` // 全局同时向量化的文档数
+}
+
+// knowledgeIngestMultipartOverheadBytes 是 multipart 边界、分段头部等非文件内容预留的余量。
+//
+// 请求体上限不能简单等于"文件总大小"：每个分段都带 Content-Disposition（含文件名）、
+// Content-Type 等头部，边界本身也要占字节。留 1MB 足够容纳几十个正常文件名；
+// 恶意构造的超长头部会在 MaxBytesReader 处整批失败，不会绕过限制。
+const knowledgeIngestMultipartOverheadBytes = 1 << 20
+
+// 知识库收录的默认值。loader 的 SetDefault 与 WithDefaults 共用它们，
+// 保证"配置没写"与"直接构造控制器"两条路得到同一套口径。
+const (
+	DefaultKnowledgeMaxFiles             = 10
+	DefaultKnowledgeMaxFileBytes         = 16 << 20
+	DefaultKnowledgeMaxBatchBytes        = 100 << 20
+	DefaultKnowledgeQueueCapacity        = 100
+	DefaultKnowledgeParseConcurrency     = 2
+	DefaultKnowledgeEmbeddingConcurrency = 1
+)
+
+// BodyLimitBytes 是请求体（含 multipart 边界与头部）的字节上限。
+func (c KnowledgeIngestConfig) BodyLimitBytes() int64 {
+	return c.MaxBatchBytes + knowledgeIngestMultipartOverheadBytes
+}
+
+// WithDefaults 把零值补成默认值。
+//
+// 正常启动走 config.Load（viper 会填默认值）；直接构造 Controller / Ingester 的
+// 调用方与测试用这个兜底，避免一组零值把所有上传都拒掉。
+func (c KnowledgeIngestConfig) WithDefaults() KnowledgeIngestConfig {
+	if c.MaxFiles <= 0 {
+		c.MaxFiles = DefaultKnowledgeMaxFiles
+	}
+	if c.MaxFileBytes <= 0 {
+		c.MaxFileBytes = DefaultKnowledgeMaxFileBytes
+	}
+	if c.MaxBatchBytes <= 0 {
+		c.MaxBatchBytes = DefaultKnowledgeMaxBatchBytes
+	}
+	if c.QueueCapacity <= 0 {
+		c.QueueCapacity = DefaultKnowledgeQueueCapacity
+	}
+	if c.ParseConcurrency <= 0 {
+		c.ParseConcurrency = DefaultKnowledgeParseConcurrency
+	}
+	if c.EmbeddingConcurrency <= 0 {
+		c.EmbeddingConcurrency = DefaultKnowledgeEmbeddingConcurrency
+	}
+	return c
+}
+
+// Validate 校验收录约束之间的相互关系。
+//
+// 交叉约束比逐项校验更重要：单文件上限大于批总量会让"单文件超限"永远先撞批次上限，
+// 队列容量小于解析并发会让并发 worker 有一半时间抢不到任务。
+func (c KnowledgeIngestConfig) Validate() error {
+	if c.MaxFiles < 1 {
+		return fmt.Errorf("knowledge_ingest.max_files 必须大于 0")
+	}
+	if c.MaxFileBytes <= 0 {
+		return fmt.Errorf("knowledge_ingest.max_file_bytes 必须大于 0")
+	}
+	if c.MaxBatchBytes < c.MaxFileBytes {
+		return fmt.Errorf("knowledge_ingest.max_batch_bytes 不能小于 max_file_bytes")
+	}
+	if c.QueueCapacity < 1 {
+		return fmt.Errorf("knowledge_ingest.queue_capacity 必须大于 0")
+	}
+	if c.ParseConcurrency < 1 {
+		return fmt.Errorf("knowledge_ingest.parse_concurrency 必须大于 0")
+	}
+	if c.EmbeddingConcurrency < 1 {
+		return fmt.Errorf("knowledge_ingest.embedding_concurrency 必须大于 0")
+	}
+	if c.QueueCapacity < c.ParseConcurrency {
+		return fmt.Errorf("knowledge_ingest.queue_capacity 不能小于 parse_concurrency")
+	}
+	return nil
 }
 
 type StorageConfig struct {
@@ -80,6 +173,13 @@ type AppConfig struct {
 	Version string `mapstructure:"version"`
 	Mode    string `mapstructure:"mode"` // debug, release, test
 	Port    int    `mapstructure:"port"`
+
+	// ReadTimeout 是服务器读完整请求（含 body）的时限。
+	//
+	// 它必须覆盖"最大批量上传在较慢链路上传完"的时间，否则限制语义会被网络掐断：
+	// 100MB 批在 1.7MB/s 的链路上要 60 秒，正好撞上早期写死的 60s。调大的代价是
+	// 慢速攻击（slowloris）能占住连接更久，所以不宜无限大；单机部署 5 分钟是够的。
+	ReadTimeout time.Duration `mapstructure:"read_timeout"`
 }
 
 // DatabaseConfig 数据库配置

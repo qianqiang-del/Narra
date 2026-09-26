@@ -80,6 +80,17 @@ type fakeDocumentStore struct {
 	// uploadPathRejected 模拟"核对时还持有租约、写指针时已经被抢走"的微秒级窗口，
 	// 用来验归档后的挪回逻辑。
 	uploadPathRejected bool
+
+	// active 是 CountActive 的返回值，用来构造"队列已满"的场景。
+	active int64
+	// locked 记录队列容量检查的咨询锁有没有被取过 —— 它是"检查在事务内"的可观测痕迹。
+	locked bool
+	// requeueCalls 记录 Requeue 被调用次数：队列满时不该走到重试入队那一步。
+	requeueCalls int
+
+	// queue 是 ListPending 的数据源：runner 并发用例用它喂任务。
+	// 文档指针直接改在队列里，状态变化对后续的 ListPending / Claim 可见。
+	queue []*entity.KnowledgeDocument
 }
 
 var _ DocumentStore = (*fakeDocumentStore)(nil)
@@ -112,8 +123,24 @@ func (s *fakeDocumentStore) MarkProcessing(ctx context.Context, id uint64) error
 }
 
 // MarkFailed 按真仓储的语义做条件写：只有仍在 processing 且租约编号相符的行
-// 才会被写成 failed。同步链路没有认领这一步，编号是 0。
+// 才会被写成 failed。同步链路没有认领这一步，编号是 0；队列里的行由 runner 认领。
 func (s *fakeDocumentStore) MarkFailed(ctx context.Context, id uint64, attempt int32, metadata json.RawMessage, reason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, document := range s.queue {
+		if document.ID != id {
+			continue
+		}
+		if document.Status != entity.KnowledgeDocumentStatusProcessing || document.IngestAttempt != attempt {
+			return false, nil
+		}
+		document.Status = entity.KnowledgeDocumentStatusFailed
+		s.failMeta = metadata
+		s.failReason = reason
+		return true, nil
+	}
+
 	if s.created == nil || s.created.ID != id {
 		return false, nil
 	}
@@ -166,17 +193,70 @@ func (s *fakeDocumentStore) FailedLeaseOwned(ctx context.Context, id uint64, att
 }
 
 func (s *fakeDocumentStore) ListPending(ctx context.Context, limit int) ([]entity.KnowledgeDocument, error) {
-	return nil, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var pending []entity.KnowledgeDocument
+	for _, document := range s.queue {
+		if len(pending) >= limit {
+			break
+		}
+		if document.Status == entity.KnowledgeDocumentStatusPending {
+			pending = append(pending, *document)
+		}
+	}
+	return pending, nil
+}
+
+// CountActive 是队列容量检查的一半；队列相关的用例用 active 字段构造"已满"。
+func (s *fakeDocumentStore) CountActive(ctx context.Context) (int64, error) {
+	return s.active, nil
+}
+
+// AcquireIngestQueueLock 只记录被调用过：真正的互斥语义在 PostgreSQL 的
+// pg_advisory_xact_lock 里，替身证明的是"检查走到了这一步"。
+func (s *fakeDocumentStore) AcquireIngestQueueLock(ctx context.Context) error {
+	s.locked = true
+	return nil
 }
 
 // ClaimAndReturnAttempt 像真仓储那样递增租约编号：每次认领 +1，并置 processing。
+// 队列里有这一行时只认仍为 pending 的行 —— 两个 runner 同时抢同一条，后到者拿到 false；
+// 队列为空时保持旧的直调语义（ProcessOne 的用例直接从内存文档调起）。
 func (s *fakeDocumentStore) ClaimAndReturnAttempt(ctx context.Context, id uint64) (int32, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, document := range s.queue {
+		if document.ID != id {
+			continue
+		}
+		if document.Status != entity.KnowledgeDocumentStatusPending {
+			return 0, false, nil
+		}
+		s.attempt++
+		document.Status = entity.KnowledgeDocumentStatusProcessing
+		document.IngestAttempt = s.attempt
+		return s.attempt, true, nil
+	}
+
 	s.attempt++
 	s.processing = true
 	if s.created != nil {
 		s.created.IngestAttempt = s.attempt
 	}
 	return s.attempt, true, nil
+}
+
+// queuedStatuses 在锁内取队列状态快照，供并发用例轮询断言。
+func (s *fakeDocumentStore) queuedStatuses() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.queue))
+	for index, document := range s.queue {
+		out[index] = document.Status
+	}
+	return out
 }
 
 func (s *fakeDocumentStore) ResetStale(ctx context.Context, olderThan time.Time) error {
@@ -210,6 +290,7 @@ func (s *fakeDocumentStore) staleResets() int {
 // 替身没有真的状态机，把失败现场清掉、文档状态改回去即可 ——
 // 用例断言的是"重试被接受、阶段被改写、且失败现场没有残留"。
 func (s *fakeDocumentStore) Requeue(ctx context.Context, id uint64, stage string) (bool, error) {
+	s.requeueCalls++
 	s.failMeta = nil
 	s.failReason = ""
 	s.stage = stage
@@ -443,13 +524,26 @@ func newFakeModels() *fakeModelRegistry {
 	}}
 }
 
-// newIngesterWith 是测试用的完整构造：parser 固定传 nil（只走纯文本，完全离线），
-// 向量化换成桩 —— 走真实的 newEmbedder 会去连 example.test。
+// testTx 是 TxRunner 的直通替身：直接执行闭包，不做真实回滚。
 //
-// 上传记录先挂一个空的替身。需要断言记录内容的用例，在拿到 ingester 之后
-// 直接换掉 ingester.records（同包可见）即可。
-func newIngesterWith(store DocumentStore, models ModelRegistry, embedder Embedder, cfg config.EmbeddingConfig) *Ingester {
-	ingester := NewIngester(store, &fakeUploadRecordStore{}, models, embedding.NewManager(cfg), nil)
+// 收录链路用例关心的是"闭包里的步骤按什么顺序发生、失败时哪些步骤不再继续"；
+// 真正的原子性由仓储层的集成测试覆盖（需要 PostgreSQL）。
+type testTx struct{}
+
+func (testTx) Run(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
+
+// newIngesterWithOptions 是测试用的完整构造，options 里 Tx 固定为直通替身。
+func newIngesterWithOptions(
+	store DocumentStore,
+	models ModelRegistry,
+	embedder Embedder,
+	cfg config.EmbeddingConfig,
+	options IngestOptions,
+) *Ingester {
+	if options.Tx == nil {
+		options.Tx = testTx{}
+	}
+	ingester := NewIngester(store, &fakeUploadRecordStore{}, models, embedding.NewManager(cfg), nil, options)
 	ingester.newEmbedder = func(model *entity.EmbeddingModel) (Embedder, error) {
 		if embedder == nil {
 			return nil, fmt.Errorf("用例没有提供向量桩")
@@ -457,6 +551,15 @@ func newIngesterWith(store DocumentStore, models ModelRegistry, embedder Embedde
 		return embedder, nil
 	}
 	return ingester
+}
+
+// newIngesterWith 是测试用的完整构造：parser 固定传 nil（只走纯文本，完全离线），
+// 向量化换成桩 —— 走真实的 newEmbedder 会去连 example.test。
+//
+// 上传记录先挂一个空的替身。需要断言记录内容的用例，在拿到 ingester 之后
+// 直接换掉 ingester.records（同包可见）即可。
+func newIngesterWith(store DocumentStore, models ModelRegistry, embedder Embedder, cfg config.EmbeddingConfig) *Ingester {
+	return newIngesterWithOptions(store, models, embedder, cfg, IngestOptions{})
 }
 
 // newTestIngester 是正常路径的收录器：向量服务已启用，库里有一个默认模型。
@@ -624,22 +727,89 @@ func TestSubmitFileCreatesUploadRecord(t *testing.T) {
 	}
 }
 
-// TestSubmitFileSurvivesRecordFailure 建记录失败不该让提交跟着失败。
+// TestSubmitFileFailsWhenRecordFails 建记录失败必须让整个提交失败。
 //
-// 记录只是历史：在这里把错误交回去，用户会看到"上传失败"，而文档行其实已经建好、
-// worker 也照样会把它收录成功 —— 一个"报错但其实成功了"的假象更难解释。
-func TestSubmitFileSurvivesRecordFailure(t *testing.T) {
+// 与早期行为相反：那时"记录只是历史"，建失败被忽略；批量上线后改成硬失败 ——
+// 允许半截成功会在批量里造出"文档在转圈、抽屉里没有这条记录"的条目，
+// 用户既看不到进度也没有重试入口。落盘的原件由调用方在提交失败时删掉。
+func TestSubmitFileFailsWhenRecordFails(t *testing.T) {
 	store := &fakeDocumentStore{}
 	ingester := newIngesterWith(store, newFakeModels(), nil, testEmbeddingConfig())
 	ingester.records = &fakeUploadRecordStore{err: fmt.Errorf("写库失败")}
 
 	path := writeTempFile(t, "设计.md", "# 标题\n\n正文。")
 	result, err := ingester.SubmitFile(context.Background(), FileInput{Path: path})
-	if err != nil {
-		t.Fatalf("建记录失败不该阻断提交: %v", err)
+	if err == nil {
+		t.Fatal("建记录失败时提交必须报错")
 	}
-	if result.Document == nil || result.Document.ID == 0 {
-		t.Errorf("文档行已经建好，应当照常返回，实际 %+v", result.Document)
+	if result.Document != nil {
+		t.Errorf("提交失败时不该返回文档，实际 %+v", result.Document)
+	}
+}
+
+// TestSubmitFileRejectsWhenQueueFull 队列达到容量上限时拒绝新任务，
+// 而且**不能**继续往下建行 —— 否则上限就只是计数、不是闸门。
+//
+// 检查必须在事务内先取咨询锁：替身的 locked 字段钉住"锁被取过"这个顺序。
+func TestSubmitFileRejectsWhenQueueFull(t *testing.T) {
+	store := &fakeDocumentStore{active: 1}
+	ingester := newIngesterWithOptions(store, newFakeModels(), nil, testEmbeddingConfig(),
+		IngestOptions{Tx: testTx{}, QueueCapacity: 1})
+
+	path := writeTempFile(t, "设计.md", "# 标题\n\n正文。")
+	result, err := ingester.SubmitFile(context.Background(), FileInput{Path: path})
+	if !errors.Is(err, ErrIngestQueueFull) {
+		t.Fatalf("期望 ErrIngestQueueFull，实际 %v", err)
+	}
+	if result.Document != nil {
+		t.Errorf("被拒时不该返回文档，实际 %+v", result.Document)
+	}
+	if !store.locked {
+		t.Error("容量检查应当先取得队列锁")
+	}
+	if store.created != nil {
+		t.Error("队列已满时不该创建文档行")
+	}
+}
+
+// TestRetryRejectsWhenQueueFull 重试同样占用一个队列位：队列满时拒绝入队，
+// 且不能走到 Requeue（状态保持 failed，等待容量释放后用户再点一次）。
+func TestRetryRejectsWhenQueueFull(t *testing.T) {
+	store := &fakeDocumentStore{active: 2}
+	ingester := newIngesterWithOptions(store, newFakeModels(), nil, testEmbeddingConfig(),
+		IngestOptions{Tx: testTx{}, QueueCapacity: 2})
+
+	requeued, err := ingester.Retry(context.Background(), testDocumentID, entity.KnowledgeDocumentStageParse)
+	if !errors.Is(err, ErrIngestQueueFull) {
+		t.Fatalf("期望 ErrIngestQueueFull，实际 %v", err)
+	}
+	if requeued {
+		t.Error("队列已满时不该报告入队成功")
+	}
+	if store.requeueCalls != 0 {
+		t.Errorf("队列已满时不该调用 Requeue，实际 %d 次", store.requeueCalls)
+	}
+}
+
+// TestRetryRequeuesWhenQueueHasRoom 队列还有空位时重试照常入队 ——
+// 不再因为"后台正在跑别的文件"被禁止。
+func TestRetryRequeuesWhenQueueHasRoom(t *testing.T) {
+	store := &fakeDocumentStore{active: 1}
+	ingester := newIngesterWithOptions(store, newFakeModels(), nil, testEmbeddingConfig(),
+		IngestOptions{Tx: testTx{}, QueueCapacity: 2})
+
+	requeued, err := ingester.Retry(context.Background(), testDocumentID, entity.KnowledgeDocumentStageChunk)
+	if err != nil {
+		t.Fatalf("队列有空位时重试不该失败: %v", err)
+	}
+	if !requeued {
+		t.Fatal("重试应当入队成功")
+	}
+	if store.requeueCalls != 1 {
+		t.Errorf("Requeue 调用次数 = %d，期望 1", store.requeueCalls)
+	}
+	if store.stage != entity.KnowledgeDocumentStageChunk {
+		t.Errorf("恢复点 = %q，期望 chunk", store.stage)
 	}
 }
 
@@ -743,7 +913,7 @@ func (p *stubParser) Status(context.Context) documentparser.Status {
 // newIngesterWithParser 造的收录器只在解析这一步与 newIngesterWith 不同：
 // 解析器换成给定的桩，向量化仍走确定的桩，整条链路不碰外部世界。
 func newIngesterWithParser(store DocumentStore, parser documentparser.Parser) *Ingester {
-	ingester := NewIngester(store, &fakeUploadRecordStore{}, newFakeModels(), embedding.NewManager(testEmbeddingConfig()), parser)
+	ingester := NewIngester(store, &fakeUploadRecordStore{}, newFakeModels(), embedding.NewManager(testEmbeddingConfig()), parser, IngestOptions{Tx: testTx{}})
 	ingester.newEmbedder = func(*entity.EmbeddingModel) (Embedder, error) {
 		return &stubEmbedder{dimension: testVectorDims}, nil
 	}

@@ -384,3 +384,94 @@ func TestProcessOneDiscardsStagedFileWhenDocumentGone(t *testing.T) {
 		t.Errorf("不该产生无人认领的归档目录，实际 stat: %v", err)
 	}
 }
+
+// barrierParser 让解析停在一个可放行的闸门后面；每次进入 Parse 发一个信号。
+// 用它证明两个 runner 确实在并行处理两条任务 —— 旧的"取一批、等全部跑完再取下一批"
+// 模型只有第一条会进入 Parse，第二个信号永远等不到。
+type barrierParser struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *barrierParser) Parse(ctx context.Context, _ documentparser.Request) (*documentparser.Result, error) {
+	p.started <- struct{}{}
+	select {
+	case <-p.release:
+		return nil, fmt.Errorf("并发用例在此处收尾")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (p *barrierParser) Status(context.Context) documentparser.Status {
+	return documentparser.Status{Enabled: true, Ready: true, Source: "barrier-stub"}
+}
+
+var _ documentparser.Parser = (*barrierParser)(nil)
+
+// TestWorkerRunsTasksConcurrently 两个常驻 runner 会同时处理两条任务：
+// 两次解析都进入 Parse 之后才放行。并发位空出来就立刻接新活，而不是等整批结束。
+func TestWorkerRunsTasksConcurrently(t *testing.T) {
+	root := t.TempDir()
+	store := &fakeDocumentStore{}
+	parser := &barrierParser{started: make(chan struct{}, 2), release: make(chan struct{})}
+	ingester := newIngesterWithParser(store, parser)
+	worker := NewWorker(store, ingester, root, 2)
+	worker.pollInterval = 5 * time.Millisecond
+
+	stageDocument := func(id uint64) {
+		t.Helper()
+		directory := filepath.Join(root, "pending", fmt.Sprintf("dir-%d", id))
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatalf("创建暂存目录失败: %v", err)
+		}
+		staged := filepath.Join(directory, "upload.docx")
+		if err := os.WriteFile(staged, []byte("内容由桩决定"), 0o644); err != nil {
+			t.Fatalf("写入暂存文件失败: %v", err)
+		}
+		// 后缀必须是"需要 Python 解析器"的：md / txt 会走纯文本解析器，绕过这个桩。
+		metadata, err := json.Marshal(map[string]any{"upload_path": staged, "explicit_title": true})
+		if err != nil {
+			t.Fatalf("构造 metadata 失败: %v", err)
+		}
+		stage := entity.KnowledgeDocumentStageParse
+		store.queue = append(store.queue, &entity.KnowledgeDocument{
+			BaseModel:   entity.BaseModel{ID: id},
+			Title:       fmt.Sprintf("文档 %d", id),
+			Status:      entity.KnowledgeDocumentStatusPending,
+			IngestStage: &stage,
+			Metadata:    metadata,
+		})
+	}
+	stageDocument(1)
+	stageDocument(2)
+
+	worker.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = worker.Stop(ctx)
+	})
+
+	// 旧模型在这里死掉：只有一条任务在跑，第二个信号永远不来。
+	for entered := 0; entered < 2; entered++ {
+		select {
+		case <-parser.started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("第二位解析没有开始：两个 runner 没有并行处理任务")
+		}
+	}
+	close(parser.release)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		statuses := store.queuedStatuses()
+		if len(statuses) == 2 &&
+			statuses[0] == entity.KnowledgeDocumentStatusFailed &&
+			statuses[1] == entity.KnowledgeDocumentStatusFailed {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("两条任务没有都收尾，实际状态 %v", store.queuedStatuses())
+}

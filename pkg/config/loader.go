@@ -46,6 +46,16 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("document_parser.ocr_engine", "rapidocr")
 	v.SetDefault("storage.upload_dir", "data/uploads")
 	v.SetDefault("storage.audio_dir", "data/audio")
+	// 知识库批量导入：一批最多 10 份、单份 16MB、整批 100MB；后台最多同时解析 2 篇，
+	// 向量化全局串行（默认 1）。队列上限 100 同时是暂存盘的占用上限。
+	v.SetDefault("knowledge_ingest.max_files", DefaultKnowledgeMaxFiles)
+	v.SetDefault("knowledge_ingest.max_file_bytes", DefaultKnowledgeMaxFileBytes)
+	v.SetDefault("knowledge_ingest.max_batch_bytes", DefaultKnowledgeMaxBatchBytes)
+	v.SetDefault("knowledge_ingest.queue_capacity", DefaultKnowledgeQueueCapacity)
+	v.SetDefault("knowledge_ingest.parse_concurrency", DefaultKnowledgeParseConcurrency)
+	v.SetDefault("knowledge_ingest.embedding_concurrency", DefaultKnowledgeEmbeddingConcurrency)
+	// 上传是长请求：读超时必须留够把整批文件传完的时间，见 AppConfig.ReadTimeout。
+	v.SetDefault("app.read_timeout", "5m")
 	// 后台生成任务：默认串行、最多重试两次、单次不超过一刻钟、每十分钟对一次账。
 	v.SetDefault("worker.concurrency", 1)
 	v.SetDefault("worker.max_retry", 2)
@@ -101,6 +111,9 @@ func Load(configPath string) (*Config, error) {
 	}
 	if err := config.Worker.Validate(); err != nil {
 		return nil, fmt.Errorf("后台任务配置无效: %w", err)
+	}
+	if err := config.KnowledgeIngest.Validate(); err != nil {
+		return nil, fmt.Errorf("知识库收录配置无效: %w", err)
 	}
 	if err := config.Langfuse.Validate(); err != nil {
 		return nil, fmt.Errorf("langfuse 配置无效: %w", err)
