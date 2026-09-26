@@ -116,6 +116,37 @@ const ingestMaxChunks = 600
 // maxTitleRunes 标题长度上限，与 knowledge_documents.title 的 varchar(300) 对齐。
 const maxTitleRunes = 300
 
+// TxRunner 把若干仓储写入包进一个数据库事务，由 repository.TransactionManager 实现，
+// 在 internal/app 注入（与课堂生成链路的 Tx 同一装法）。
+//
+// 收录链路需要它，是因为一次文件提交要跨三张表写：建文档行、写 upload_path 元数据、
+// 建上传记录。任何一步失败都必须整体回滚 —— 否则会留下一条没有路径的 pending 孤儿行，
+// worker 捡起来只能落成 failed，而磁盘上还残留一份没人认领的原件。
+type TxRunner interface {
+	// Run 开启事务并回调 fn；fn 返回错误则整体回滚。fn 拿到的 ctx 携带事务句柄，
+	// 参与调用的仓储方法会自动落在同一个事务上（见 repository.conn）。
+	Run(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+// IngestOptions 是收录器的运行约束，由配置与装配点注入。
+type IngestOptions struct {
+	// Tx 跨表写入的事务管理器，SubmitFile 与 Retry 依赖它。必须非 nil：
+	// 缺了它宁可当场报错，也不能静默退化成没有事务的三条独立写入。
+	Tx TxRunner
+
+	// QueueCapacity 是 pending + processing 文档数的硬上限；<=0 表示不限制。
+	//
+	// 检查在事务内、与建行一起完成，并由 pg_advisory_xact_lock 串行化 ——
+	// 多实例部署时同一个上限不会被各自的计数绕过。
+	QueueCapacity int
+
+	// EmbeddingConcurrency 是全局同时进行向量化的文档数；<=0 按 1 处理。
+	//
+	// 它独立于 Worker 的解析并发：解析吃 CPU 与 OCR，向量化吃上游额度与内存，
+	// 两者分开限流，避免两个解析任务把 embedding 批次放大成并发请求。
+	EmbeddingConcurrency int
+}
+
 // Ingester 是收录链路的门面：把一份原文变成库里可检索的切片与向量。
 //
 // 它做四件事：解析（可选）→ 切分 → 向量化 → 落三张表。
@@ -140,6 +171,15 @@ type Ingester struct {
 	models    ModelRegistry
 	embedding *embedding.Manager
 	parser    documentparser.Parser
+
+	// tx 与 queueCapacity 由 SubmitFile / Retry 使用：每次提交在事务里先校验队列
+	// 还有没有空位，再落三张表的行。
+	tx            TxRunner
+	queueCapacity int
+
+	// embeddingSem 是全局向量化名额（见 IngestOptions.EmbeddingConcurrency）。
+	// nil 表示不限（只在不走 Ingester 的同步测试路径里可能出现）。
+	embeddingSem chan struct{}
 
 	// newEmbedder 是这个包唯一的注入点，默认按模型行 + 当前生效配置现建 Eino 适配器
 	// （见 embedderFactory）。测试把它换成返回桩的工厂，整条链路就能完全离线跑完。
@@ -179,6 +219,15 @@ type FileTaskStore interface {
 
 	// ListPending 按创建时间取最多 limit 条 pending 文档。
 	ListPending(context.Context, int) ([]entity.KnowledgeDocument, error)
+
+	// CountActive 统计 pending + processing 的文档数，供队列容量检查。
+	CountActive(context.Context) (int64, error)
+
+	// AcquireIngestQueueLock 在**当前事务**里取得队列容量检查的排他锁
+	// （pg_advisory_xact_lock）。必须在事务内调用：锁随事务提交/回滚自动释放，
+	// 在事务外调用等于没锁。多实例部署时它让"计数 + 建行"串行，队列容量因此
+	// 是硬上限，而不是各实例各算一次的软上限。
+	AcquireIngestQueueLock(context.Context) error
 
 	// ClaimAndReturnAttempt 把一条 pending 文档抢成 processing，并原子递增、返回
 	// 本次处理的租约编号（ingest_attempt）。claimed 为 false 表示这条已经被别的执行者抢走了。
@@ -224,22 +273,81 @@ type FileTaskStore interface {
 // 是因为"解析器没装好"不该拦住纯文本导入和整个服务的启动。
 //
 // records 是上传记录的写入口，只在文件收录（SubmitFile）里用到。
+// options 里的 Tx 必须非 nil（见 IngestOptions）。
 func NewIngester(
 	store DocumentStore,
 	records UploadRecordStore,
 	models ModelRegistry,
 	embeddingManager *embedding.Manager,
 	parser documentparser.Parser,
+	options IngestOptions,
 ) *Ingester {
-	ingester := &Ingester{
-		store:     store,
-		records:   records,
-		models:    models,
-		embedding: embeddingManager,
-		parser:    parser,
+	limit := options.EmbeddingConcurrency
+	if limit < 1 {
+		limit = 1
 	}
-	ingester.newEmbedder = newModelEmbedderFactory(embeddingManager)
-	return ingester
+	return &Ingester{
+		store:         store,
+		records:       records,
+		models:        models,
+		embedding:     embeddingManager,
+		parser:        parser,
+		tx:            options.Tx,
+		queueCapacity: options.QueueCapacity,
+		embeddingSem:  make(chan struct{}, limit),
+		newEmbedder:   newModelEmbedderFactory(embeddingManager),
+	}
+}
+
+// runInTx 在事务里执行跨表写入。
+//
+// 没注入事务管理器时直接报错而不是退化成"三条独立写入"：后者在失败时会留下没有
+// upload_path 的 pending 孤儿行，这种数据只能人工清，比当场喊出来危险得多。
+func (i *Ingester) runInTx(ctx context.Context, fn func(context.Context) error) error {
+	if i.tx == nil {
+		return fmt.Errorf("知识库收录事务不可用：未注入事务管理器")
+	}
+	return i.tx.Run(ctx, fn)
+}
+
+// reserveQueueSlot 在事务内为一次提交或重试检查队列空位。
+//
+// 顺序固定在事务里：先取得 pg_advisory_xact_lock，再计数。分两处写就给了多实例
+// "两边都看到还剩一个位"的窗口，队列容量也就从硬上限退化成各自计数的软上限。
+// 计数包含 pending 与 processing 两种行：前者还没被 worker 接手，后者正在跑，
+// 都占着磁盘上的暂存文件与后台的处理位。
+func (i *Ingester) reserveQueueSlot(ctx context.Context, store FileTaskStore) error {
+	if i.queueCapacity <= 0 {
+		return nil
+	}
+	if err := store.AcquireIngestQueueLock(ctx); err != nil {
+		return fmt.Errorf("检查收录队列失败: %w", err)
+	}
+	active, err := store.CountActive(ctx)
+	if err != nil {
+		return fmt.Errorf("检查收录队列失败: %w", err)
+	}
+	if active >= int64(i.queueCapacity) {
+		return ErrIngestQueueFull
+	}
+	return nil
+}
+
+// acquireEmbeddingSlot 取得一个全局向量化名额，返回释放函数。
+//
+// 等待期间任务心跳仍在跑（本函数在 processOne 的 ctx 下调用），所以排队不会被
+// 周期回收误判成僵尸。名额只约束异步文件收录的 embed 阶段：同步的正文收录
+// （IngestText）与检索都不共用它 —— 否则用户在编辑器里保存一段正文会被批量导入堵住。
+func (i *Ingester) acquireEmbeddingSlot(ctx context.Context) (func(), error) {
+	if i.embeddingSem == nil {
+		return func() {}, nil
+	}
+	select {
+	case i.embeddingSem <- struct{}{}:
+		return func() { <-i.embeddingSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // SubmitFile 创建待处理文档并持久化任务路径，实际处理由 Worker 完成。
@@ -248,6 +356,10 @@ func NewIngester(
 // metadata 里给 worker 留两个键：upload_path 是磁盘上的暂存文件，
 // explicit_title 记录调用方有没有指定过标题 —— 后者决定 worker 要不要
 // 用正文的一级标题替换掉这个暂时代替标题的文件名。
+//
+// 三件事在**一个事务**里完成：校验队列空位、建文档行、写 upload_path 与上传记录。
+// 批量上传时调用方逐文件调用它，每个文件独立成败：某个文件撞上队列满或写库失败只
+// 回滚它自己，此前已提交的文件不受影响。
 func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResult, error) {
 	path := strings.TrimSpace(input.Path)
 	if path == "" {
@@ -269,38 +381,46 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 	if title == "" {
 		title = sourceURI
 	}
-	document, err := i.createDocument(ctx, title, sourceType, sourceURI)
-	if err != nil {
-		return IngestResult{}, err
-	}
 	metadata := map[string]any{
 		"upload_path":    path,
 		"explicit_title": strings.TrimSpace(input.Title) != "",
 	}
 	payload, _ := json.Marshal(metadata)
-	if err := store.SetMetadata(ctx, document.ID, payload); err != nil {
-		return IngestResult{}, err
-	}
 
-	// 建这条投递的历史记录。它的状态往后由 Worker 链路的 MarkFailed /
-	// SaveEmbeddingsAndMarkReady 顺带推进（同步链路是 MarkFailed / ReplaceChunks），
-	// 这里只负责在起点写一条 pending。
-	//
-	// 建失败**不阻断这次收录**：记录只是历史，缺一条不影响文档本身能不能入库。
-	// 反过来若在这里返回错误，用户会看到"上传失败"，而文档行其实已经建好、
-	// worker 也照样会把它收录成功 —— 一个"报错但其实成功了"的假象更难解释。
-	record := &entity.KnowledgeUploadRecord{
-		DocumentID:   &document.ID,
-		OriginalName: truncateTitle(sourceURI),
-		SizeBytes:    input.SizeBytes,
-		Status:       entity.KnowledgeUploadRecordStatusPending,
-	}
-	if err := i.records.CreateUploadRecord(ctx, record); err != nil {
-		logger.Error("创建上传记录失败，这份文件将没有投递历史",
-			zap.Uint64("document_id", document.ID),
-			zap.String("original_name", sourceURI),
-			zap.Error(err),
-		)
+	var document *entity.KnowledgeDocument
+	err = i.runInTx(ctx, func(ctx context.Context) error {
+		if err := i.reserveQueueSlot(ctx, store); err != nil {
+			return err
+		}
+
+		created, err := i.createDocument(ctx, title, sourceType, sourceURI)
+		if err != nil {
+			return err
+		}
+		if err := store.SetMetadata(ctx, created.ID, payload); err != nil {
+			return fmt.Errorf("记录上传暂存路径失败: %w", err)
+		}
+
+		// 投递历史与文档行同事务：建失败就让整个提交回滚。
+		//
+		// 早期版本刻意忽略这里的失败（"记录只是历史，缺一条不影响收录"），批量上线后
+		// 改成硬失败：一次批量里几十条文件各自提交，若允许半截成功，会出现"文档在转圈、
+		// 抽屉里没有这条记录"的条目 —— 用户在界面上既看不到进度也没有重试入口。
+		record := &entity.KnowledgeUploadRecord{
+			DocumentID:   &created.ID,
+			OriginalName: truncateTitle(sourceURI),
+			SizeBytes:    input.SizeBytes,
+			Status:       entity.KnowledgeUploadRecordStatusPending,
+		}
+		if err := i.records.CreateUploadRecord(ctx, record); err != nil {
+			return fmt.Errorf("创建上传记录失败: %w", err)
+		}
+
+		document = created
+		return nil
+	})
+	if err != nil {
+		return IngestResult{}, err
 	}
 	return IngestResult{Document: document}, nil
 }
@@ -318,12 +438,25 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 //
 // 它是**原地重试**：复用同一行文档与同一条上传记录，不新建任何东西。
 // 一份文件一份资产，重试只是让它再跑一次，投递历史里不该凭空多出一条。
+//
+// 重试要占一个队列位：目标文档此刻是 failed（不计入活跃数），改回 pending 后会占住
+// 一个处理位，所以容量检查必须在事务内与 Requeue 一起做，见 reserveQueueSlot。
 func (i *Ingester) Retry(ctx context.Context, id uint64, stage string) (bool, error) {
 	store, ok := i.store.(FileTaskStore)
 	if !ok {
 		return false, fmt.Errorf("知识库存储不支持异步文件任务")
 	}
-	return store.Requeue(ctx, id, stage)
+
+	requeued := false
+	err := i.runInTx(ctx, func(ctx context.Context) error {
+		if err := i.reserveQueueSlot(ctx, store); err != nil {
+			return err
+		}
+		var err error
+		requeued, err = store.Requeue(ctx, id, stage)
+		return err
+	})
+	return requeued, err
 }
 
 // IngestFile 读一份文件并收录。
@@ -518,6 +651,15 @@ func (i *Ingester) processExistingFile(
 		if err != nil {
 			return i.failIngest(ctx, document, attempt, "model", err)
 		}
+
+		// 向量化名额：全局同时只允许配置数量的文档在跑，等待期间心跳照常。
+		// 名额在 embedInBatches 之前取得、整个文档的向量化结束后释放（defer），
+		// 目的就是不让两个解析任务的批次请求互相叠加。
+		release, err := i.acquireEmbeddingSlot(ctx)
+		if err != nil {
+			return i.failIngest(ctx, document, attempt, "embed", err)
+		}
+		defer release()
 
 		embedStarted := time.Now().UTC()
 		vectors, err := embedInBatches(ctx, embedder, chunksFromEntities(stored))

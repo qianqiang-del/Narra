@@ -9,14 +9,15 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
 	"narra/internal/rag"
+	"narra/pkg/logger"
 )
 
 const (
@@ -36,10 +37,6 @@ type documentQuerier interface {
 	// List 按创建时间倒序分页返回满足条件的文档，同时给出总数。
 	// 条件为空时等价于"全部文档"，见 entity.KnowledgeDocumentQuery。
 	List(ctx context.Context, query entity.KnowledgeDocumentQuery) ([]entity.KnowledgeDocument, int64, error)
-
-	// CountActive 统计还在收录中的文档数（pending + processing），
-	// 供上传入口判断后台忙不忙。仓储实现里这个查询走 status 的部分索引。
-	CountActive(ctx context.Context) (int64, error)
 
 	// GetByID 按主键取文档。查不到返回 gorm.ErrRecordNotFound。
 	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error)
@@ -115,15 +112,17 @@ type retriever interface {
 	Retrieve(ctx context.Context, input rag.RetrieveInput) (rag.RetrieveResult, error)
 }
 
-// ErrIngestBusy 表示知识库正在收录另一份文件，此刻不接受新的上传。
+// ErrIngestQueueFull 表示收录队列已满（pending + processing 达到配置上限），
+// 此刻不接受新的上传或重试。
 //
-// 它是**可判定的**：接口层据此把"忙"翻译成 409，而不是和参数错误一起塞进 400 ——
+// 它是**可判定的**：接口层据此把"队列满"翻译成 409，而不是和参数错误一起塞进 400 ——
 // 两者的处置方式不同（等一会儿重试 vs. 改参数再试），给用户的话也不该一样。
-var ErrIngestBusy = errors.New("已有文件正在收录，请等它处理完再上传")
+// 哨兵值直接复用 rag 侧的：容量判定与报错都在收录事务里做，两边认的必须是同一个值。
+var ErrIngestQueueFull = rag.ErrIngestQueueFull
 
 // ErrRetryNotFailed 表示这份文档不是失败状态，不需要（也不能）重试。
 //
-// 与 ErrIngestBusy 同属"现在不行"这一类的可判定错误，接口层一并翻成 409。
+// 与 ErrIngestQueueFull 同属"现在不行"这一类的可判定错误，接口层一并翻成 409。
 var ErrRetryNotFailed = errors.New("这份文档不是失败状态，不需要重试")
 
 // ErrRecoveryInputMissing 表示恢复所需的材料全都不在了：原件、正文、切片一个都没有。
@@ -145,27 +144,14 @@ var ErrEmptyQuery = errors.New("检索词不能为空")
 // 返回的文档是 pending、chunks 为 0：解析与向量化由 rag.Worker 接着做，
 // 调用方拿 id 轮询 Get 看进度。
 //
-// **一次只收一份**，两道闸门各挡一半：进程内的锁挡住"两个请求同时到达"（否则两边
-// 都会看到队列是空的，各建一条 pending 行）；库里的活跃行数挡住"已经在跑的任务"——
-// 锁只在提交期间持有，之后的请求只能靠文档状态判断忙不忙。正文收录（IngestText）
-// 不走这道闸门：它没有解析与排队，是秒级的同步链路。
+// 队列容量在收录链路（rag.Ingester.SubmitFile）的事务里检查，这里只做 DTO 映射：
+// 判定必须与"建行"原子，放在服务层就会散成两处口径。队列满时原样返回
+// ErrIngestQueueFull，接口层翻成 409。正文收录（IngestText）不走这条链路：
+// 它没有解析与排队，是秒级的同步写入。
 func (s *knowledgeService) SubmitFile(ctx context.Context, input requestdto.KnowledgeIngestFile) (responsedto.KnowledgeDocument, error) {
 	async, ok := s.ingester.(asyncIngester)
 	if !ok {
 		return responsedto.KnowledgeDocument{}, fmt.Errorf("知识库异步收录不可用")
-	}
-
-	if !s.ingestMu.TryLock() {
-		return responsedto.KnowledgeDocument{}, ErrIngestBusy
-	}
-	defer s.ingestMu.Unlock()
-
-	active, err := s.documents.CountActive(ctx)
-	if err != nil {
-		return responsedto.KnowledgeDocument{}, fmt.Errorf("检查收录队列失败: %w", err)
-	}
-	if active > 0 {
-		return responsedto.KnowledgeDocument{}, ErrIngestBusy
 	}
 
 	result, err := async.SubmitFile(ctx, rag.FileInput{
@@ -175,7 +161,49 @@ func (s *knowledgeService) SubmitFile(ctx context.Context, input requestdto.Know
 		SourceURI:  input.SourceURI,
 		SizeBytes:  input.SizeBytes,
 	})
-	return toDocumentResponse(result.Document, result.Chunks), err
+	if err != nil {
+		return responsedto.KnowledgeDocument{}, err
+	}
+	return toDocumentResponse(result.Document, result.Chunks), nil
+}
+
+// SubmitFiles 逐个提交一批文件，返回与入参同序的逐项结果。
+//
+// 批量上传是**逐文件结果**而不是整批一口价：某个文件被拒（队列满、写库失败）
+// 不影响同批其它文件，已入队的保留。所以这里只做遍历与归类，不需要整体错误 ——
+// 整体失败只发生在请求体层面（multipart 损坏、总大小超限），那在接口层就被拦掉了。
+//
+// 调用方拿到的 DocumentID 用于订阅进度或查列表；被拒项拿 Error 说明原因。
+func (s *knowledgeService) SubmitFiles(ctx context.Context, inputs []requestdto.KnowledgeIngestFile) []responsedto.KnowledgeIngestItem {
+	items := make([]responsedto.KnowledgeIngestItem, len(inputs))
+	for index, input := range inputs {
+		items[index] = s.submitOne(ctx, input)
+	}
+	return items
+}
+
+// submitOne 提交一个文件并把结果折成批处理里的那一项。
+func (s *knowledgeService) submitOne(ctx context.Context, input requestdto.KnowledgeIngestFile) responsedto.KnowledgeIngestItem {
+	// 原始文件名优先取 SourceURI（用户看到的名字）；调用方没给时回落到路径的文件名。
+	// 被拒项也要带上它 —— 界面靠这一列告诉用户"是哪一份没进去"。
+	name := strings.TrimSpace(input.SourceURI)
+	if name == "" {
+		name = filepath.Base(input.Path)
+	}
+	item := responsedto.KnowledgeIngestItem{
+		OriginalName: name,
+		Status:       responsedto.KnowledgeIngestItemStatusRejected,
+	}
+
+	document, err := s.SubmitFile(ctx, input)
+	if err != nil {
+		item.Error = err.Error()
+		return item
+	}
+	documentID := document.ID
+	item.DocumentID = &documentID
+	item.Status = responsedto.KnowledgeIngestItemStatusPending
+	return item
 }
 
 // Retry 把一条收录失败的文档重新排队，让它再跑一遍。
@@ -190,9 +218,9 @@ func (s *knowledgeService) SubmitFile(ctx context.Context, input requestdto.Know
 //   - 状态不是 failed → ErrRetryNotFailed（正在跑的不需要重试，ready 的更不需要）；
 //   - 原件、正文、切片三者全都不在 → ErrRecoveryInputMissing（只能重新上传）。
 //
-// 恢复点那一道放在进闸门之前：它最多是一次磁盘探测与两次查询，不该和正在跑的收录抢那把锁。
-//
-// 闸门与 SubmitFile 是同一套，而且是必要的 —— 重试同样会占住后台的收录位。
+// 材料检查放在队列容量检查之前：它最多是一次磁盘探测与两次查询，不该先占住队列的
+// 准入判定（那一步要在事务里做，见 rag.Ingester.Retry）。重试占用一个队列位，
+// 但不再因为"后台正在收别的文件"被禁止 —— 队列没满就能重试。
 // 两次检查之间那一行可能被别人重试或删掉，所以 Requeue 返回 false 时
 // 仍然按"不需要重试"处理，而不是当成内部错误。
 func (s *knowledgeService) Retry(ctx context.Context, id uint64) (responsedto.KnowledgeDocument, error) {
@@ -209,19 +237,6 @@ func (s *knowledgeService) Retry(ctx context.Context, id uint64) (responsedto.Kn
 	stage, err := s.resolveRecoveryStage(ctx, document)
 	if err != nil {
 		return responsedto.KnowledgeDocument{}, err
-	}
-
-	if !s.ingestMu.TryLock() {
-		return responsedto.KnowledgeDocument{}, ErrIngestBusy
-	}
-	defer s.ingestMu.Unlock()
-
-	active, err := s.documents.CountActive(ctx)
-	if err != nil {
-		return responsedto.KnowledgeDocument{}, fmt.Errorf("检查收录队列失败: %w", err)
-	}
-	if active > 0 {
-		return responsedto.KnowledgeDocument{}, ErrIngestBusy
 	}
 
 	retrier, ok := s.ingester.(fileRetrier)
@@ -274,17 +289,15 @@ func (s *knowledgeService) resolveRecoveryStage(ctx context.Context, document *e
 // 它只做三件事：把 HTTP DTO 翻成收录链路的输入、把 entity 翻成 HTTP DTO、
 // 分页查询文档。收录本身的编排（状态机、切分、向量化、一个事务落三张表）全在 internal/rag ——
 // 这里是"面"，那里是"里"。
+//
+// 队列容量不再是这里的事：判定与建行必须原子，已经下沉到 rag.Ingester.SubmitFile /
+// Retry 的事务里（见那里的说明）。服务层因此没有"上传中"这个状态，也不需要进程内的锁。
 type knowledgeService struct {
 	documents documentQuerier
 	records   uploadRecordStore
 	ingester  ingester
 	retriever retriever
 	uploadDir string
-
-	// ingestMu 让"查活跃任务 + 建 pending 行"在单个进程内是原子的。
-	// 它只在提交期间持有，不覆盖真正的收录（那跑在 rag.Worker 里、可能几分钟）——
-	// 任务是否还在跑靠库里的活跃行数判断，见 SubmitFile。
-	ingestMu sync.Mutex
 }
 
 var _ KnowledgeService = (*knowledgeService)(nil)
@@ -541,9 +554,25 @@ func (s *knowledgeService) Delete(ctx context.Context, id uint64) error {
 		return fmt.Errorf("删除知识文档失败: %w", err)
 	}
 	if path := metadataUploadPath(document.Metadata); path != "" && s.removableStagingDir(path) {
-		_ = os.RemoveAll(filepath.Dir(path))
+		s.discardStagingDir(path)
 	}
 	return nil
+}
+
+// discardStagingDir 尽力删掉一个暂存目录，失败时留下 warning。
+//
+// 删除失败并不罕见（Windows 上解析子进程还占着文件、杀毒软件短暂持有），而这条
+// 路径此后没有第二个人会来检查：静默忽略会让目录和"它为什么还在"的疑问一起攒起来。
+// worker 收尾时还会再试一次（见 discardStagedFile）；两次都失败就只能等后续的
+// 孤儿目录清理，那是一个已知缺口，不该用"看起来没报错"掩盖。
+func (s *knowledgeService) discardStagingDir(path string) {
+	directory := filepath.Dir(path)
+	if err := os.RemoveAll(directory); err != nil {
+		logger.Warn("清理上传暂存目录失败，目录可能残留",
+			zap.String("dir", directory),
+			zap.Error(err),
+		)
+	}
 }
 
 // Retrieve 检索知识库，返回最相关的切片。
@@ -613,8 +642,9 @@ func (s *knowledgeService) ListUploadRecords(ctx context.Context, page, size int
 //     这条历史正在被清理，ErrRecordNotFound 直接跳过即可。
 //
 // 连带删除只发生在文档未收录成功时（pending / processing / failed），判定在仓储里：
-// 未就绪的行正是上传闸门 CountActive 的输入，留着它会让"一次只收一份"永久返回 409，
-// 而记录删掉之后用户在界面上再也没有入口能清掉它。已 ready 的文档绝不触碰。
+// 未就绪的行正占着收录队列的名额（CountActive 数的是 pending + processing），
+// 留着它会让队列容量迟迟不释放，而记录删掉之后用户在界面上再也没有入口能清掉它。
+// 已 ready 的文档绝不触碰。
 func (s *knowledgeService) DeleteUploadRecord(ctx context.Context, id uint64) error {
 	record, err := s.records.GetByID(ctx, id)
 	if err != nil {
@@ -636,7 +666,7 @@ func (s *knowledgeService) DeleteUploadRecord(ctx context.Context, id uint64) er
 	}
 
 	if stagedPath != "" && s.removableStagingDir(stagedPath) {
-		_ = os.RemoveAll(filepath.Dir(stagedPath))
+		s.discardStagingDir(stagedPath)
 	}
 	return nil
 }

@@ -6,18 +6,43 @@ import {
   fetchKnowledgeDocument,
   fetchKnowledgeDocumentPreview,
   fetchKnowledgeParserStatus,
+  fetchKnowledgeUploadLimits,
   deleteKnowledgeDocument,
   deleteUploadRecord,
   fetchUploadRecords,
   retryKnowledgeDocument,
-  uploadKnowledgeFile,
+  uploadKnowledgeFiles,
   ingestKnowledgeText,
   setKnowledgeDocumentEnabled,
   watchKnowledgeDocument,
+  DEFAULT_UPLOAD_LIMITS,
   type KnowledgeDocument,
   type KnowledgeParserStatus,
+  type KnowledgeUploadLimits,
   type KnowledgeUploadRecord,
 } from '@/api/knowledge'
+
+/**
+ * 一次批量上传里单个文件在界面上的状态。
+ *
+ * 比数据库状态多一个 `rejected`（服务端未入队，error 里有原因）；`pending` /
+ * `processing` / `ready` / `failed` 与后端文档状态一一对应。批量上传不为每个文件
+ * 各开一条 SSE —— 浏览器对同源 HTTP/1.1 只有 6 条连接，一批文件会把连接池占满；
+ * 状态靠轮询上传记录列表收敛（见 trackUploadTasks）。
+ */
+export type KnowledgeUploadTaskStatus = 'pending' | 'processing' | 'ready' | 'failed' | 'rejected'
+
+export interface KnowledgeUploadTask {
+  /** 界面列表的稳定键；同批允许重名，不能用文件名 */
+  key: number
+  originalName: string
+  sizeBytes: number
+  status: KnowledgeUploadTaskStatus
+  /** 已入队时的文档 ID；被拒时为 null */
+  documentId: number | null
+  /** 未入队或处理失败的原因；其它状态为空串 */
+  error: string
+}
 
 /**
  * 知识库列表状态。
@@ -31,9 +56,10 @@ import {
  * 仍然留着（那时它的展示状态是「已收录后删除」），而主页看不到任何痕迹 ——
  * 记录条数与主页条数**不该相等**，也不该被拿来互推。
  *
- * 收录是异步的：`upload` 拿到的是 pending 文档，靠 SSE 进度流盯到终态
- * （`watchUntilSettled`，流不可用时回退 `fetchKnowledgeDocument` 轮询），
- * 前端据此驱动"处理中"的反馈。
+ * 收录是异步的：`uploadBatch` 拿到的是逐项 pending / rejected 结果，其中已入队的
+ * 文件由 `trackUploadTasks` 轮询上传记录列表收敛到终态（`uploadTasks` 逐项显示
+ * 排队中 / 处理中 / 已完成 / 失败）。重试是单篇任务，仍走 SSE 进度流
+ * （`watchUntilSettled`，流不可用时回退 `fetchKnowledgeDocument` 轮询）。
  *
  * 两个列表都走**服务端筛选与分页**（批 ①）：主页问 `status=ready`，
  * 上传记录走独立的 `GET /knowledge/upload-records`。在那之前记录是从文档列表里
@@ -87,12 +113,29 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const loadingMore = ref(false)
 
   /**
-   * 有文件正在收录。
+   * 本次会话最近一批上传的逐项状态。
    *
-   * 它同时就是"一次只能传一份"的前端约束：`upload` 会一直盯到终态，
-   * 所以这个标志从提交一直挂到处理结束，界面据此禁用整个上传区。
-   * 服务端的强制拒绝也在（批 ①，见后端 SubmitFile），前端这层仍然保留 ——
-   * 少一次注定失败的往返。
+   * 这是"每份文件独立显示排队中/处理中/已完成/失败"的数据源：提交返回后立刻按
+   * 逐项结果填好，再由 trackUploadTasks 轮询上传记录收敛到终态。弹层关掉后数据仍在，
+   * 再次打开能看到上一批的结果。
+   */
+  const uploadTasks = ref<KnowledgeUploadTask[]>([])
+
+  /** 上传任务在界面上的稳定键（不能用文件名：同批允许重名） */
+  let uploadTaskSeq = 0
+
+  /**
+   * 批量上传的限制值。先给一份与后端默认值一致的兜底，接口返回后覆盖；
+   * 它只用于界面预检，服务端始终是唯一裁判（见 api/knowledge.ts）。
+   */
+  const uploadLimits = ref<KnowledgeUploadLimits>({ ...DEFAULT_UPLOAD_LIMITS })
+
+  /**
+   * 提交请求在飞。
+   *
+   * 与升级前的语义不同：以前它从提交一直挂到文档处理结束（所以界面整体锁死）。
+   * 现在只覆盖"落盘 + 逐项入队"这一次往返 —— 批量提交后立刻解除，后台处理由
+   * uploadTasks 逐项显示，用户可以继续传下一批。
    */
   const uploading = ref(false)
 
@@ -114,9 +157,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    */
   const togglingIds = ref<Set<number>>(new Set())
 
-  /** 本次上传的文档，供新增弹层的"最近一次上传"卡片显示进度 */
-  const activeUpload = ref<KnowledgeDocument | null>(null)
-
   /**
    * 解析环境状态，供"首次上传需要先准备环境"的提示使用。
    *
@@ -130,6 +170,20 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       parserStatus.value = await fetchKnowledgeParserStatus()
     } catch {
       /* 提示用，探测失败不影响上传 */
+    }
+  }
+
+  /**
+   * 取一次批量上传限制（选择文件时的预检用）。
+   *
+   * 失败静默并保留 DEFAULT_UPLOAD_LIMITS：预检只影响"早一点还是晚一点看到超限"，
+   * 真正的拒绝始终来自服务端，不该因为一次状态探测失败把上传拦住。
+   */
+  async function loadUploadLimits() {
+    try {
+      uploadLimits.value = await fetchKnowledgeUploadLimits()
+    } catch {
+      /* 兜底默认值见 uploadLimits 的声明 */
     }
   }
 
@@ -308,16 +362,15 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
       await new Promise((resolve) => setTimeout(resolve, 1000))
       current = await fetchKnowledgeDocument(current.id)
-      activeUpload.value = current
     }
     return current
   }
 
   /**
-   * 盯着一份文档直到终态，返回最后那一帧。
+   * 盯着**单篇**文档直到终态，返回最后那一帧。
    *
-   * 上传与重试共用这一段：两者都是"后台在跑、前端盯着状态"，差别只在第一步
-   * 怎么把任务交出去。边收帧边把当前帧写进 activeUpload，弹层那张卡片就跟着它动。
+   * 只有重试走这条路（一篇文档、一条流），批量上传不共用它：批量用上传记录列表
+   * 轮询收敛，避免一批文件占满浏览器对同源的连接数（见 trackUploadTasks）。
    *
    * 主路是 SSE：服务端在有变化时推 document / parser 两帧，正常情况下一次连接
    * 跑到终态，前端不再每秒发一次请求。流不可用（代理不支持长连接、服务重启、
@@ -346,7 +399,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
         {
           onDocument: (frame) => {
             current = frame
-            activeUpload.value = frame
           },
           onParser: (status) => {
             parserStatus.value = status
@@ -389,52 +441,135 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   }
 
   /**
-   * 上传并收录一份文件，一路盯到终态。
+   * 批量上传并收录一批文件。
    *
-   * **不把"处理失败"当异常抛出**：失败同样是有效结果（库里留了一行 failed，
-   * 调用方要在上传记录里把原因交给用户），所以只有请求本身出错
-   * （网络、后端拒绝、等待超时）才抛。
+   * 提交只负责"落盘 + 逐项入队"：返回时每个文件已经有 pending / rejected 结果，
+   * uploading 随之解除（不再像单文件时代那样挂着盯到终态）。已入队的文件由
+   * trackUploadTasks 在后台轮询上传记录收敛状态，界面通过 uploadTasks 逐项显示。
    *
-   * 后端此刻若正在收另一份，上传接口会拒（409），错误照样从这里抛出去 ——
-   * 前端在上传期间本来就锁着入口，撞上它的是并发场景。
+   * **只有请求本身失败才抛**（网络、整批超限、multipart 损坏）；单文件的拒绝是
+   * 逐项结果而不是异常 —— 被拒项留在 uploadTasks 里，把原因交给用户。
    */
-  async function upload(file: File, title?: string): Promise<KnowledgeDocument> {
-    uploading.value = true
-    try {
-      const document = await uploadKnowledgeFile(file, title)
-      activeUpload.value = document
+  async function uploadBatch(files: File[], title?: string): Promise<void> {
+    if (files.length === 0) return
 
-      // 提交的同时后端已经写了一条 pending 记录（同一个请求里建的），拉回来让
-      // 抽屉立刻有这条。
+    uploading.value = true
+    // 先按选中顺序铺出占位行：提交返回后按下标与逐项结果对齐。
+    uploadTasks.value = files.map((file) => ({
+      key: ++uploadTaskSeq,
+      originalName: file.name,
+      sizeBytes: file.size,
+      status: 'pending' as const,
+      documentId: null,
+      error: '',
+    }))
+
+    try {
+      const batch = await uploadKnowledgeFiles(files, title)
+      batch.items.forEach((item, index) => {
+        const task = uploadTasks.value[index]
+        if (!task) return
+        if (item.status === 'rejected') {
+          task.status = 'rejected'
+          task.error = item.error
+          return
+        }
+        task.documentId = item.documentId
+        task.status = 'pending'
+      })
+
+      // 提交的同时后端已经写好了上传记录（同一个请求里建的），拉回来让抽屉立刻有它。
       await refreshRecordsQuietly()
 
-      const settled = await watchUntilSettled(document)
-
-      // 终态之后整表重拉：这一份的切片数、字符数、updated_at 都是后端在收尾时补的，
-      // 记录那一行的状态也是在同一个事务里跟着翻的 —— 别拿流里收到的最后一帧糊弄过去
-      await load()
-      return settled
+      const pendingIds = uploadTasks.value
+        .filter((task) => task.status === 'pending' && task.documentId !== null)
+        .map((task) => task.documentId as number)
+      if (pendingIds.length > 0) void trackUploadTasks(pendingIds)
+    } catch (error) {
+      // 整批没交出去（网络层失败或后端整批拒绝）：把还没入队的占位行标出来，
+      // 界面上不会留下永远"排队中"的幽灵条目。
+      const message = error instanceof Error ? error.message : String(error)
+      for (const task of uploadTasks.value) {
+        if (task.status === 'pending' && task.documentId === null) {
+          task.status = 'rejected'
+          task.error = message
+        }
+      }
+      throw error
     } finally {
       uploading.value = false
-      activeUpload.value = null
     }
+  }
+
+  /** 上传任务跟踪的轮询间隔。列表接口本身很轻，1.5s 足够让状态看起来是连贯的。 */
+  const BATCH_POLL_INTERVAL_MS = 1500
+
+  /**
+   * 轮询上传记录，把一批已入队的文档盯到终态。
+   *
+   * 用列表而不是逐篇 SSE：一批 10 份文件各开一条长连接会占满浏览器对同源的
+   * HTTP/1.1 连接（6 条），连列表刷新都会被排队。上传记录接口本来就是为"看投递
+   * 结果"准备的，一次请求覆盖整批，逐项状态再从记录映射回 uploadTasks。
+   *
+   * 网络抖动只跳过本轮；到达总时限后保留最后一帧状态，提示用户刷新 —— 与单篇
+   * 进度流的超时口径一致（POLL_TIMEOUT_MS）。
+   */
+  async function trackUploadTasks(documentIds: number[]): Promise<void> {
+    const remaining = new Set(documentIds)
+    const deadline = Date.now() + POLL_TIMEOUT_MS
+
+    while (remaining.size > 0) {
+      await new Promise((resolve) => setTimeout(resolve, BATCH_POLL_INTERVAL_MS))
+      try {
+        const records = await fetchUploadRecords({ page: 1, size: RECORD_PAGE_SIZE })
+        for (const record of records.list) {
+          if (record.documentId === null || !remaining.has(record.documentId)) continue
+          const task = uploadTasks.value.find((item) => item.documentId === record.documentId)
+          if (!task) {
+            // 这一批的任务列表已经被下一次提交替换，不再跟踪。
+            remaining.delete(record.documentId)
+            continue
+          }
+          if (record.status === 'ready' || record.status === 'failed') {
+            task.status = record.status
+            task.error = record.error
+            remaining.delete(record.documentId)
+          } else if (task.status === 'pending') {
+            task.status = 'processing'
+          }
+        }
+      } catch {
+        /* 网络抖动：下一轮再试，不打断整批跟踪 */
+      }
+      if (Date.now() >= deadline) break
+    }
+
+    // 终态之后整表重拉：切片数、字符数、记录状态都是后端在收尾事务里补的。
+    try {
+      await load()
+    } catch {
+      /* 收录本身已经结束，列表晚一点刷新不影响结果 */
+    }
+  }
+
+  /** 清空本次会话的上传任务列表（弹层的"清空"按钮用）。 */
+  function clearUploadTasks() {
+    uploadTasks.value = []
   }
 
   /**
    * 重试一次收录失败的投递。
    *
    * **不用重新选文件**：后端把那条 failed 文档改回 pending，输入是失败时归档在
-   * 服务器上的原件。所以它与 upload 的差别只有第一步 —— 一个交出新文件，
-   * 一个让旧任务重新排队；之后的等待与整表重拉完全一样。
+   * 服务器上的原件。它是单篇任务，继续走 SSE（一条连接，不是一批）。
    *
-   * 同样置 uploading：重试会占住后台的收录位，期间再传一份会被服务端的闸门拒掉
-   * （409），前端先一步把入口锁上，少一次注定失败的往返。
+   * 重试期间同样置 uploading 锁住弹层入口：这是一次会占队列位的写操作，
+   * 但不再有"后台在跑就不许上传"的全局禁止 —— 队列没满就能继续提交。
    */
   async function retry(documentId: number): Promise<KnowledgeDocument> {
     uploading.value = true
     try {
       const document = await retryKnowledgeDocument(documentId)
-      activeUpload.value = document
       await refreshRecordsQuietly()
 
       const settled = await watchUntilSettled(document)
@@ -442,7 +577,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       return settled
     } finally {
       uploading.value = false
-      activeUpload.value = null
     }
   }
 
@@ -533,7 +667,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    * 删除一条上传记录。
    *
    * 连带后果全在后端那一个事务里：记录对应的文档**若还没收录成功**，会一起被删掉
-   * （不收掉的话上传闸门会一直卡着 —— 它数的是 pending + processing 的文档行）；
+   * （不收掉的话未就绪的行会一直占着收录队列的名额，容量迟迟不释放）；
    * 已经 ready 的文档绝不触碰，只是记录失去关联，那行的状态变成「已收录后删除」。
    *
    * 所以这里要整表重拉而不是只改本地那一行：一次删除可能同时动了两个列表。
@@ -551,8 +685,9 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     recordTotal,
     recordAlerts,
     lastFailedRecord,
-    activeUpload,
     parserStatus,
+    uploadTasks,
+    uploadLimits,
     // 界面状态
     loading,
     uploading,
@@ -566,7 +701,9 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     loadRecords,
     loadMore,
     loadParserStatus,
-    upload,
+    loadUploadLimits,
+    uploadBatch,
+    clearUploadTasks,
     retry,
     ingestText,
     setEnabled,

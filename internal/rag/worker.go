@@ -66,9 +66,10 @@ const (
 // 各自落库。所以进程崩溃、向量服务抖动都不会让昂贵的解析白跑 —— 重新入队后从
 // 失败的那一步继续（见 processOne 与 Ingester.processExistingFile）。
 //
-// concurrency 控制同时处理几篇；调度在单个进程内是串行的（每轮 process 内部
-// 等所有任务跑完才开始下一轮）。多实例部署时靠 ClaimAndReturnAttempt 的乐观更新
-// 保证同一行只被一个实例拿到，租约编号保证旧执行者的迟到写入会被挡掉。
+// concurrency 个常驻 runner 各自循环"抢一条 → 处理 → 再抢下一条"，互相之间没有
+// 批次屏障：一个慢任务只占它自己那一份并发，不会让另一个空出来的并发位停工。
+// 多实例部署时靠 ClaimAndReturnAttempt 的乐观更新保证同一行只被一个执行者拿到，
+// 租约编号保证旧执行者的迟到写入会被挡掉。
 type Worker struct {
 	store       FileTaskStore
 	ingester    *Ingester
@@ -90,10 +91,12 @@ type Worker struct {
 	stop chan struct{}
 	done chan struct{}
 	once sync.Once
+
+	// group 等 runner 与回收协程全部退出。Stop 通过 done 等它，不再需要额外的协调。
+	group sync.WaitGroup
 }
 
-// NewWorker 创建 worker。concurrency 小于 1 时按 1 处理：
-// 收录同时吃 CPU 和上游额度，默认串行比默认并行安全。
+// NewWorker 创建 worker。concurrency 小于 1 时按 1 处理。
 func NewWorker(store FileTaskStore, ingester *Ingester, uploadRoot string, concurrency int) *Worker {
 	if concurrency < 1 {
 		concurrency = 1
@@ -142,82 +145,121 @@ func (w *Worker) Stop(ctx context.Context) error {
 	}
 }
 
-// run 是轮询循环。
+// run 启动常驻 runner 与周期回收协程，等它们全部退出后关闭 done。
 //
-// 回收分两处：启动时先清一次上一个进程留下的僵尸行（崩溃、被 kill 时它们永远
-// 停在 processing），之后在循环里周期再清 —— 只做启动那一次是不够的：
-// 如果进程很快重启，那些刚被更新过的行还"不够旧"，会被启动检查漏掉，
-// 而循环里再没有第二次机会，它们就只能等到下一次重启。
+// 回收独立成一个协程，而不是挂在"某一轮任务跑完之后"：一份 PDF 解析几十分钟很正常，
+// 如果回收只在 runner 空闲时执行，一个崩溃进程留下的僵尸行要等任务全部结束才会被打回
+// pending。回收只看 updated_at，与 runner 忙不忙无关。
 //
-// 循环节奏是"处理一轮、等一秒"（第一个 tick 前先跑一轮，所以启动后能立刻接手
-// 上一次遗留的任务）。空库时每秒一次的查询代价可以忽略，而上传之后最多一秒
-// 就会被接手，用户感知不到延迟。
+// 启动时先清一次上一个进程留下的僵尸行（崩溃、被 kill 时它们永远停在 processing），
+// 之后由 resetLoop 周期再清 —— 只做启动那一次是不够的：如果进程很快重启，那些刚被
+// 更新过的行还"不够旧"，会被启动检查漏掉。
 func (w *Worker) run() {
 	defer close(w.done)
 
 	_ = w.store.ResetStale(w.ctx, time.Now().Add(-w.staleAfter))
 
-	ticker := time.NewTicker(w.pollInterval)
+	w.group.Add(1)
+	go w.resetLoop()
+
+	for index := 0; index < w.concurrency; index++ {
+		w.group.Add(1)
+		go w.runner()
+	}
+
+	w.group.Wait()
+}
+
+// resetLoop 周期把心跳超时的 processing 行打回 pending。
+func (w *Worker) resetLoop() {
+	defer w.group.Done()
+
+	ticker := time.NewTicker(w.staleResetEvery)
 	defer ticker.Stop()
-	lastReset := time.Now()
 
 	for {
-		w.process(w.ctx)
 		select {
 		case <-w.stop:
 			return
+		case <-w.ctx.Done():
+			return
 		case <-ticker.C:
-		}
-
-		if time.Since(lastReset) >= w.staleResetEvery {
 			_ = w.store.ResetStale(w.ctx, time.Now().Add(-w.staleAfter))
-			lastReset = time.Now()
 		}
 	}
 }
 
-// process 取一批 pending 文档并发处理，全部跑完才返回。
+// runner 是一个常驻执行者：抢一条 pending 任务、处理完、再抢下一条。
 //
-// 每个候选都要先抢再处理：ListPending 只是一次查询，两个实例可能查到同一行。
+// 不用"取一批、全部跑完再取下一批"：那样一个慢任务会拖住整批的调度，让已经空出来的
+// 并发位干等。每条任务都是独立的 抢 → 处理 循环，慢任务只占它自己的那份并发。
+// 抢任务的原子性由 ClaimAndReturnAttempt 的条件更新保证，多实例部署下同一行只会有一个
+// 执行者。任务之间用一个 tick 的间隔轮询，空库时每秒一次的查询代价可以忽略。
+func (w *Worker) runner() {
+	defer w.group.Done()
+
+	ticker := time.NewTicker(w.pollInterval)
+	defer ticker.Stop()
+
+	for {
+		w.runOnce(w.ctx)
+		select {
+		case <-w.stop:
+			return
+		case <-w.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// runOnce 抢一条 pending 任务并处理完再返回；没有可抢的任务时立即返回。
+//
+// 每个任务都要先抢再处理：ListPending 只是一次查询，多个 runner 或实例可能查到同一行。
 // ClaimAndReturnAttempt 是一条带 status = 'pending' 条件的 UPDATE，谁把行改成
-// processing 谁才算真的拿到任务，同时领到本次处理的租约编号（返回 false 就是被别人抢先了）。
-func (w *Worker) process(ctx context.Context) {
-	documents, err := w.store.ListPending(ctx, w.concurrency)
-	if err != nil {
-		logger.Warn("取待处理文档失败，本轮跳过", zap.Error(err))
+// processing 谁才算真的拿到任务，同时领到本次处理的租约编号。
+func (w *Worker) runOnce(ctx context.Context) {
+	if ctx.Err() != nil {
 		return
 	}
-	var group sync.WaitGroup
-	for _, document := range documents {
-		attempt, claimed, err := w.store.ClaimAndReturnAttempt(ctx, document.ID)
-		if err != nil {
-			logger.Warn("抢占任务失败，跳过这一条",
-				zap.Uint64("document_id", document.ID), zap.Error(err))
-			continue
+
+	documents, err := w.store.ListPending(ctx, 1)
+	if err != nil {
+		if ctx.Err() == nil {
+			logger.Warn("取待处理文档失败，本轮跳过", zap.Error(err))
 		}
-		if !claimed {
-			continue
-		}
-		group.Add(1)
-		go func(document entity.KnowledgeDocument, attempt int32) {
-			defer group.Done()
-			// 一个任务的 panic 不能带走整个进程：Go 里任何 goroutine 的未捕获 panic
-			// 都会终止程序。这里兜住并放弃本次处理 —— 心跳会随之停止，
-			// 该行几分钟内会被周期 ResetStale 回收重新排队。
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					logger.Error("收录任务 panic，已放弃本次处理",
-						zap.Uint64("document_id", document.ID),
-						zap.Int32("ingest_attempt", attempt),
-						zap.Any("panic", recovered),
-						zap.Stack("stack"),
-					)
-				}
-			}()
-			w.processOne(ctx, document, attempt)
-		}(document, attempt)
+		return
 	}
-	group.Wait()
+	if len(documents) == 0 {
+		return
+	}
+	document := documents[0]
+
+	attempt, claimed, err := w.store.ClaimAndReturnAttempt(ctx, document.ID)
+	if err != nil {
+		logger.Warn("抢占任务失败，跳过这一条",
+			zap.Uint64("document_id", document.ID), zap.Error(err))
+		return
+	}
+	if !claimed {
+		// 被另一个 runner 或实例抢先了，本轮没有活干。
+		return
+	}
+
+	// 一个任务的 panic 不能带走整个进程：Go 里任何 goroutine 的未捕获 panic
+	// 都会终止程序。这里兜住并放弃本次处理 —— 心跳会随之停止，
+	// 该行几分钟内会被周期 ResetStale 回收重新排队。
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logger.Error("收录任务 panic，已放弃本次处理",
+				zap.Uint64("document_id", document.ID),
+				zap.Int32("ingest_attempt", attempt),
+				zap.Any("panic", recovered),
+				zap.Stack("stack"),
+			)
+		}
+	}()
+	w.processOne(ctx, document, attempt)
 }
 
 // processOne 处理一条已经抢到手的任务，attempt 是这次处理的租约编号。

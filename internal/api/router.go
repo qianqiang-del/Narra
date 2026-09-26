@@ -13,6 +13,7 @@ import (
 	"narra/internal/api/v1/voice"
 	"narra/internal/middleware"
 	"narra/internal/service"
+	"narra/pkg/config"
 	"narra/pkg/documentparser"
 
 	"github.com/gin-gonic/gin"
@@ -33,7 +34,7 @@ type Router struct {
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, classroomSvc service.ClassroomService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, uploadDir string, parser documentparser.Parser) *Router {
+func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, classroomSvc service.ClassroomService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, uploadDir string, parser documentparser.Parser, knowledgeLimits config.KnowledgeIngestConfig) *Router {
 	return &Router{
 		roleCtrl:         role.NewController(roleSvc),
 		embeddingCtrl:    embedding.NewController(embeddingSvc),
@@ -41,7 +42,7 @@ func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettin
 		mcpCtrl:          mcpv1.NewController(mcpSvc),
 		llmCtrl:          llm.NewController(llmSvc),
 		classroomCtrl:    classroomv1.NewController(classroomSvc),
-		knowledgeCtrl:    knowledgev1.NewController(knowledgeSvc, uploadDir, parser),
+		knowledgeCtrl:    knowledgev1.NewController(knowledgeSvc, uploadDir, parser, knowledgeLimits),
 		conversationCtrl: conversationv1.NewController(conversationSvc),
 		sceneCtrl:        scenev1.NewController(sceneSvc),
 		discussionCtrl:   discussionv1.NewController(discussionSvc),

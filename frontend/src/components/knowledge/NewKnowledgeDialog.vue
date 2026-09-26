@@ -2,17 +2,16 @@
 /**
  * 「新增知识库」弹层：文件导入 / 直接录入两个形态。
  *
- * 文件导入：选文件 → 填标题 → 提交，下面挂一张"最近一次上传"卡片。
- * 一次只能传一份：`store.upload` 会一直盯到终态，`store.uploading` 也就一直为真，
- * 期间整个上传区禁用。服务端的强制拒绝属于批 ①，前端这层到时候仍然保留
- * （少一次注定失败的往返）。
+ * 文件导入支持**批量**：一次最多选 limits.maxFiles 份，提交后每份文件独立显示
+ * 排队中 / 处理中 / 已完成 / 失败（数据源是 store.uploadTasks，由上传记录轮询收敛，
+ * 不为每个文件各开一条 SSE）。提交接口只做落盘与入队，返回逐项结果后立即解锁上传区，
+ * 不再像单文件时代那样把整个界面锁到处理结束。
  *
- * 卡片是"被拒绝时用户能看懂发生了什么"的配套 UI：它显示当前在处理哪一份、
- * 上一份是因为什么失败的；失败的那一份可以直接重试 —— 后端拿归档在服务器上的
- * 原件重跑，用户不用重新选文件。
+ * 首次上传 PDF / Office / 图片时后端要准备解析环境（分钟级），这时给出提示；
+ * 失败的行可以直接重试 —— 后端拿归档在服务器上的原件重跑，不用重新选文件。
  *
  * 直接录入：粘贴或输入 Markdown 正文，走同步链路（见 store.ingestText），
- * 没有解析与进度流，也没有上传记录 —— 所以这个形态下不显示上面那张卡片。
+ * 没有解析与进度流，也没有上传记录。
  */
 import {
   DialogContent,
@@ -22,13 +21,28 @@ import {
   DialogRoot,
   DialogTitle,
 } from 'reka-ui'
-import { AlertCircle, FileText, Info, Loader2, PenLine, RotateCw, Upload, X } from 'lucide-vue-next'
+import {
+  AlertCircle,
+  Ban,
+  CheckCircle2,
+  FileText,
+  Info,
+  Loader2,
+  PenLine,
+  RotateCw,
+  Upload,
+  X,
+} from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
 
-import { MAX_UPLOAD_BYTES, SUPPORTED_EXTENSIONS, failureStageKey, needsDocumentParser } from '@/api/knowledge'
-import { useKnowledgeStore } from '@/stores/knowledge'
+import { SUPPORTED_EXTENSIONS, failureStageKey, needsDocumentParser } from '@/api/knowledge'
+import {
+  useKnowledgeStore,
+  type KnowledgeUploadTask,
+  type KnowledgeUploadTaskStatus,
+} from '@/stores/knowledge'
 
 const open = defineModel<boolean>('open', { default: false })
 
@@ -38,7 +52,7 @@ const store = useKnowledgeStore()
 /** 当前形态：文件导入 / 直接录入。两个页签共用下面的标题输入框 */
 const mode = ref<'file' | 'text'>('file')
 
-const selectedFile = ref<File | null>(null)
+const selectedFiles = ref<File[]>([])
 const titleInput = ref('')
 const dragging = ref(false)
 const textContent = ref('')
@@ -48,10 +62,17 @@ const supportedHint = SUPPORTED_EXTENSIONS.join(' / ')
 
 const busy = computed(() => store.uploading || store.submitting)
 
-/** 处理中的那一份：只有 uploading 期间才有值（store 在 finally 里清掉） */
-const processing = computed(() => (store.uploading ? store.activeUpload : null))
+/** 本次上传的任务列表；弹层关掉再打开仍然保留上一批的结果 */
+const tasks = computed(() => store.uploadTasks)
 
-const failed = computed(() => (store.uploading ? null : store.lastFailedRecord))
+/** 还有没到终态的任务（排队中 / 处理中）。"清空列表"只在全部收尾后才露出 */
+const hasUnsettledTasks = computed(() =>
+  tasks.value.some((task) => task.status === 'pending' || task.status === 'processing'),
+)
+
+const limits = computed(() => store.uploadLimits)
+
+const selectedTotal = computed(() => selectedFiles.value.reduce((sum, file) => sum + file.size, 0))
 
 /**
  * 上一份失败的可不可以重试。
@@ -59,7 +80,12 @@ const failed = computed(() => (store.uploading ? null : store.lastFailedRecord))
  * 重试要落到一篇文档上，而记录未必还关联着文档 —— 那次投递的成果可能已经被删了
  * （记录仍在，状态显示为「已收录后删除」，但失败的那些没有这个说法：文档一删，
  * 记录就只剩 documentId 为空）。那种情况没有可重跑的对象，按钮置灰。
+ *
+ * 只在本次会话没有任务列表时显示这张旧卡片：有列表时下面的逐项状态已经把
+ * "失败与重试入口"说清楚了，再挂一张历史卡片只会重复。
  */
+const failed = computed(() => (tasks.value.length === 0 ? store.lastFailedRecord : null))
+
 const canRetry = computed(() => Boolean(failed.value?.documentId))
 
 /**
@@ -75,80 +101,137 @@ const failedStageLabel = computed(() => {
   return key ? t(`knowledge.stage.${key}`) : ''
 })
 
-const selectedSize = computed(() =>
-  selectedFile.value ? `${(selectedFile.value.size / 1024 / 1024).toFixed(1)} MB` : '',
-)
-
 /**
  * "首次上传需要先准备解析环境"的提醒是否出现。
  *
- * 三个条件缺一不可：选中的文件确实要用 Python 解析器；后端说解析能力开着；环境还没备好。
- * 环境备好之后 ready 为真，提示自然消失 —— 不需要前端自己记"这是不是第一次"。
+ * 三个条件缺一不可：选中的文件里确实有要用 Python 解析器的；后端说解析能力开着；
+ * 环境还没备好。环境备好之后 ready 为真，提示自然消失 —— 不需要前端自己记
+ * "这是不是第一次"。
  *
  * enabled=false（配置里就没开）时不提示：那不是"要等一会儿"，是这份文件根本解析不了，
  * 该给的是一句不同的说明，别混进"首次较慢"里。
  */
 const parserHint = computed(() => {
   const status = store.parserStatus
-  if (!selectedFile.value || !needsDocumentParser(selectedFile.value.name)) return false
+  if (!selectedFiles.value.some((file) => needsDocumentParser(file.name))) return false
   return status !== null && status.enabled && !status.ready
 })
 
-// 每次打开弹层都刷新一次环境状态：上次关掉之后环境可能已经装好了。
+// 每次打开弹层都刷新一次环境状态与上传限制：上次关掉之后环境可能已经装好了，
+// 配置限制也可能被改过。两者失败都静默（提示与预检，不该拦住上传）。
 watch(open, (visible) => {
-  if (visible) void store.loadParserStatus()
+  if (!visible) return
+  void store.loadParserStatus()
+  void store.loadUploadLimits()
 })
 
 /**
- * 先在前端挡两道：扩展名与大小。
+ * 把用户选中的一批文件并入待上传列表。
  *
- * 不是为了替代后端校验（后端两道都有），而是省掉一次注定失败的往返 ——
- * 不然用户要等整个解析失败才看到"格式不支持"。
+ * 先在前端挡几道（扩展名、单份大小、份数、合计大小），不是为了替代后端校验
+ * （后端全都校验），而是省掉一次注定失败的往返 —— 不然用户要等整批返回才看到
+ * "第 3 个文件不支持"。真正的拒绝始终来自服务端。
+ *
+ * 不支持或超单份上限的文件被跳过并给出 toast；份数 / 合计超限则整次选择不生效
+ * （部分收下会让用户以为剩下的还有机会，实际是这次请求发不出去）。
  */
-function pickFile(file: File | undefined) {
-  if (!file) return
-  const name = file.name.toLowerCase()
-  if (!SUPPORTED_EXTENSIONS.some((ext) => name.endsWith(ext))) {
-    toast.error(t('knowledge.upload.unsupported', { formats: supportedHint }))
+function pickFiles(input: FileList | null | undefined) {
+  const incoming = Array.from(input ?? [])
+  if (incoming.length === 0) return
+
+  const accepted: File[] = []
+  for (const file of incoming) {
+    const name = file.name.toLowerCase()
+    if (!SUPPORTED_EXTENSIONS.some((ext) => name.endsWith(ext))) {
+      toast.error(t('knowledge.upload.unsupported', { formats: supportedHint }))
+      continue
+    }
+    if (file.size > limits.value.maxFileBytes) {
+      toast.error(t('knowledge.upload.tooLarge', { limit: limits.value.maxFileBytes >> 20 }))
+      continue
+    }
+    accepted.push(file)
+  }
+  if (accepted.length === 0) return
+
+  const merged = [...selectedFiles.value, ...accepted]
+  if (merged.length > limits.value.maxFiles) {
+    toast.error(t('knowledge.upload.tooMany', { limit: limits.value.maxFiles }))
     return
   }
-  if (file.size > MAX_UPLOAD_BYTES) {
-    toast.error(t('knowledge.upload.tooLarge', { limit: MAX_UPLOAD_BYTES >> 20 }))
+  const total = merged.reduce((sum, file) => sum + file.size, 0)
+  if (total > limits.value.maxBatchBytes) {
+    toast.error(t('knowledge.upload.batchTooLarge', { limit: limits.value.maxBatchBytes >> 20 }))
     return
   }
-  selectedFile.value = file
+  selectedFiles.value = merged
 }
 
 function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement
-  pickFile(input.files?.[0])
-  // 清空 input：否则连续选同一个文件时 change 不触发，第二次点没反应
+  pickFiles(input.files)
+  // 清空 input：否则连续选同一批文件时 change 不触发，第二次点没反应
   input.value = ''
 }
 
 function onDrop(event: DragEvent) {
   dragging.value = false
-  pickFile(event.dataTransfer?.files?.[0])
+  pickFiles(event.dataTransfer?.files)
+}
+
+function removeSelected(index: number) {
+  selectedFiles.value = selectedFiles.value.filter((_, current) => current !== index)
 }
 
 function clearSelection() {
-  selectedFile.value = null
+  selectedFiles.value = []
   titleInput.value = ''
 }
 
+/** 文件大小显示：不足 1MB 的用 KB，避免小文件全显示成 "0.0 MB" */
+function fileSize(size: number): string {
+  if (size >= 1 << 20) return `${(size / 1024 / 1024).toFixed(1)} MB`
+  return `${Math.max(1, Math.round(size / 1024))} KB`
+}
+
+/** 任务状态徽章的配色：终态各自一种，排队与处理中共用琥珀色 */
+function taskStatusClass(status: KnowledgeUploadTaskStatus): string {
+  switch (status) {
+    case 'rejected':
+      return 'border-zinc-200 bg-zinc-50 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-300'
+    case 'failed':
+      return 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300'
+    case 'ready':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+    default:
+      return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+  }
+}
+
+/**
+ * 提交一批文件。
+ *
+ * 提交只负责"落盘 + 入队"：返回时逐项结果已经写进 uploadTasks，界面立刻能列出
+ * 每一份的排队 / 未入队状态，后续由 store 在后台轮询收敛。所以这里不等待处理完成，
+ * 也不因为"上一批还在跑"禁用入口。
+ *
+ * 标题只在单文件时有意义；批量时由每份文件自己的正文标题 / 文件名决定（后端忽略
+ * 批量请求里的 title）。
+ */
 async function submit() {
-  const file = selectedFile.value
-  if (!file || busy.value) return
+  const files = selectedFiles.value
+  if (files.length === 0 || busy.value) return
 
   try {
-    const document = await store.upload(file, titleInput.value)
-    if (document.status === 'failed') {
-      // 失败不抛异常：它同样是有效结果，库里留了一行，抽屉里能看到原因
-      toast.error(t('knowledge.upload.failed'))
+    await store.uploadBatch(files, files.length === 1 ? titleInput.value : '')
+    const accepted = store.uploadTasks.filter((task) => task.status === 'pending').length
+    const rejected = store.uploadTasks.filter((task) => task.status === 'rejected').length
+    if (accepted === 0) {
+      toast.error(t('knowledge.upload.allRejected'))
+    } else if (rejected > 0) {
+      toast.success(t('knowledge.upload.batchQueued', { accepted, rejected }))
     } else {
-      toast.success(
-        t('knowledge.upload.success', { title: document.title, chunks: document.chunks }),
-      )
+      toast.success(t('knowledge.upload.batchAccepted', { accepted }))
     }
     clearSelection()
   } catch (error) {
@@ -158,7 +241,7 @@ async function submit() {
 
 /** 当前页签能不能提交：文件要有选中文件；正文要有非空内容与标题（正文录入标题必填） */
 const canSubmit = computed(() => {
-  if (mode.value === 'file') return Boolean(selectedFile.value)
+  if (mode.value === 'file') return selectedFiles.value.length > 0
   return textContent.value.trim().length > 0 && titleInput.value.trim().length > 0
 })
 
@@ -195,10 +278,34 @@ async function submitText() {
 }
 
 /**
- * 重试上一份失败的文件。
+ * 重试本次任务列表里失败的一项。
  *
  * 重试的是那份**文档**，不是这条记录：后端把同一行改回 pending 重新跑一遍，
- * 成功后仍是同一条记录、同一篇文档，不会多出一条投递历史。
+ * 成功后仍是同一条记录、同一篇文档，不会多出一条投递历史。完成后把那行状态
+ * 对齐回读结果 —— 不重新拉整批，避免列表跳动。
+ */
+async function retryTask(task: KnowledgeUploadTask) {
+  if (!task.documentId || busy.value) return
+
+  try {
+    const document = await store.retry(task.documentId)
+    task.status =
+      document.status === 'ready' ? 'ready' : document.status === 'failed' ? 'failed' : 'processing'
+    task.error = document.error
+    if (document.status === 'failed') {
+      toast.error(t('knowledge.upload.failed'))
+    } else {
+      toast.success(
+        t('knowledge.upload.success', { title: document.title, chunks: document.chunks }),
+      )
+    }
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : t('knowledge.error.retry'))
+  }
+}
+
+/**
+ * 重试历史记录里失败的那一份（本次会话没有任务列表时显示旧卡片）。
  *
  * 失败同样不当异常：它还是有效结果（库里那行又变回 failed），照上传的口径给提示。
  */
@@ -246,7 +353,7 @@ async function retryFailed() {
           </button>
         </div>
 
-        <!-- 形态切换。切换不打断进行中的任务：busy 时两个页签的输入都禁用 -->
+        <!-- 形态切换。切换不打断进行中的提交：busy 时两个页签的输入都禁用 -->
         <div class="mt-4 grid grid-cols-2 gap-1 rounded-xl border border-border bg-muted/40 p-1">
           <button
             type="button"
@@ -288,34 +395,45 @@ async function retryFailed() {
           @dragleave.prevent="dragging = false"
           @drop.prevent="onDrop"
         >
-          <input type="file" class="hidden" :accept="acceptAttr" :disabled="busy" @change="onFileChange" />
+          <input
+            type="file"
+            class="hidden"
+            multiple
+            :accept="acceptAttr"
+            :disabled="busy"
+            @change="onFileChange"
+          />
           <Upload class="size-5 text-zinc-400" />
           <span class="text-[13px] text-zinc-600 dark:text-zinc-400">
-            {{
-              busy && processing
-                ? t('knowledge.new.dropBusy', { title: processing.title })
-                : t('knowledge.upload.drop', { formats: supportedHint })
-            }}
+            {{ t('knowledge.upload.drop', { formats: supportedHint }) }}
           </span>
         </label>
 
-        <!-- 已选文件 -->
-        <div
-          v-if="mode === 'file' && selectedFile"
-          class="mt-3 flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2"
-        >
-          <FileText class="size-4 shrink-0 text-zinc-500" />
-          <span class="min-w-0 flex-1 truncate text-[13px]">{{ selectedFile.name }}</span>
-          <span class="shrink-0 text-[13px] text-zinc-600 dark:text-zinc-400">{{ selectedSize }}</span>
-          <button
-            type="button"
-            class="shrink-0 cursor-pointer rounded p-0.5 text-zinc-500 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="busy"
-            :title="t('knowledge.upload.clear')"
-            @click="clearSelection"
+        <!-- 已选文件：逐份列出，提交前可单独移除 -->
+        <div v-if="mode === 'file' && selectedFiles.length" class="mt-3 space-y-1.5">
+          <div
+            v-for="(file, index) in selectedFiles"
+            :key="`${file.name}-${index}`"
+            class="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2"
           >
-            <X class="size-3.5" />
-          </button>
+            <FileText class="size-4 shrink-0 text-zinc-500" />
+            <span class="min-w-0 flex-1 truncate text-[13px]">{{ file.name }}</span>
+            <span class="shrink-0 text-[13px] text-zinc-600 dark:text-zinc-400">
+              {{ fileSize(file.size) }}
+            </span>
+            <button
+              type="button"
+              class="shrink-0 cursor-pointer rounded p-0.5 text-zinc-500 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="busy"
+              :title="t('knowledge.upload.remove')"
+              @click="removeSelected(index)"
+            >
+              <X class="size-3.5" />
+            </button>
+          </div>
+          <p v-if="selectedFiles.length > 1" class="px-1 text-xs text-muted-foreground">
+            {{ t('knowledge.upload.selectedSummary', { count: selectedFiles.length, size: fileSize(selectedTotal) }) }}
+          </p>
         </div>
 
         <!--
@@ -352,7 +470,13 @@ async function retryFailed() {
             type="text"
             :disabled="busy"
             :placeholder="
-              t(mode === 'text' ? 'knowledge.text.titlePlaceholder' : 'knowledge.upload.titlePlaceholder')
+              t(
+                mode === 'text'
+                  ? 'knowledge.text.titlePlaceholder'
+                  : selectedFiles.length > 1
+                    ? 'knowledge.upload.titlePlaceholderBatch'
+                    : 'knowledge.upload.titlePlaceholder',
+              )
             "
             class="min-w-0 flex-1 rounded-lg border border-input bg-background px-3 py-2 text-[13px] outline-none transition-colors placeholder:text-zinc-500 focus:border-violet-400 disabled:opacity-60"
           />
@@ -377,34 +501,76 @@ async function retryFailed() {
           {{ t('knowledge.text.titleRequired') }}
         </p>
 
-        <!-- 最近一次上传（只对文件投递有意义，正文收录没有记录） -->
-        <div v-if="mode === 'file'" class="mt-4 overflow-hidden rounded-xl border border-border">
+        <!-- 本次上传：逐份显示排队中 / 处理中 / 已完成 / 失败（含未入队） -->
+        <div v-if="mode === 'file' && tasks.length" class="mt-4 overflow-hidden rounded-xl border border-border">
+          <div class="flex items-center justify-between border-b border-border bg-muted/60 px-3 py-2">
+            <span class="text-[13px] font-medium">{{ t('knowledge.tasks.title') }}</span>
+            <button
+              v-if="!hasUnsettledTasks"
+              type="button"
+              class="cursor-pointer text-xs text-zinc-500 transition-colors hover:text-foreground"
+              @click="store.clearUploadTasks()"
+            >
+              {{ t('knowledge.tasks.clear') }}
+            </button>
+          </div>
+          <div class="max-h-64 divide-y divide-border overflow-y-auto">
+            <div v-for="task in tasks" :key="task.key" class="flex items-start gap-2.5 p-3 text-[13px]">
+              <Loader2
+                v-if="task.status === 'pending' || task.status === 'processing'"
+                class="mt-0.5 size-4 shrink-0 animate-spin text-amber-500"
+              />
+              <CheckCircle2
+                v-else-if="task.status === 'ready'"
+                class="mt-0.5 size-4 shrink-0 text-emerald-500"
+              />
+              <AlertCircle
+                v-else-if="task.status === 'failed'"
+                class="mt-0.5 size-4 shrink-0 text-red-500"
+              />
+              <Ban v-else class="mt-0.5 size-4 shrink-0 text-zinc-400" />
+
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <p class="min-w-0 flex-1 truncate font-medium">{{ task.originalName }}</p>
+                  <span
+                    class="shrink-0 rounded-full border px-2 py-0.5 text-xs leading-none"
+                    :class="taskStatusClass(task.status)"
+                  >
+                    {{ t(`knowledge.tasks.status.${task.status}`) }}
+                  </span>
+                </div>
+                <p
+                  v-if="task.error"
+                  class="mt-1.5 rounded-md bg-red-50 px-2 py-1.5 text-xs break-words text-red-700 dark:bg-red-950/30 dark:text-red-300"
+                >
+                  {{ task.error }}
+                </p>
+                <button
+                  v-if="task.status === 'failed' && task.documentId"
+                  type="button"
+                  class="mt-2 inline-flex cursor-pointer items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                  :disabled="busy"
+                  @click="retryTask(task)"
+                >
+                  <RotateCw class="size-3.5" />
+                  {{ t('knowledge.tasks.retry') }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 最近一次上传（本次会话没有任务列表时回落到历史失败记录） -->
+        <div
+          v-else-if="mode === 'file' && failed"
+          class="mt-4 overflow-hidden rounded-xl border border-border"
+        >
           <div class="border-b border-border bg-muted/60 px-3 py-2 text-[13px] font-medium">
             {{ t('knowledge.last.title') }}
           </div>
           <div class="p-3 text-[13px]">
-            <!-- 处理中 -->
-            <div v-if="processing" class="flex items-start gap-2.5">
-              <Loader2 class="mt-0.5 size-4 shrink-0 animate-spin text-amber-500" />
-              <div class="min-w-0 flex-1">
-                <p class="truncate font-medium">{{ processing.title }}</p>
-                <p class="mt-1 flex flex-wrap items-center gap-1.5 text-zinc-600 dark:text-zinc-400">
-                  <span
-                    class="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs leading-none text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
-                  >
-                    {{ t('knowledge.status.processing') }}
-                  </span>
-                  <!-- 首次上传：后端此时在准备解析环境，进度条要能对应上，否则这条一直停着像卡死 -->
-                  <span v-if="store.parserStatus?.preparing">
-                    {{ t('knowledge.last.preparing', { progress: store.parserStatus.progress }) }}
-                  </span>
-                  <span v-else>{{ t('knowledge.last.processing') }}</span>
-                </p>
-              </div>
-            </div>
-
-            <!-- 上次失败 -->
-            <div v-else-if="failed" class="flex items-start gap-2.5">
+            <div class="flex items-start gap-2.5">
               <AlertCircle class="mt-0.5 size-4 shrink-0 text-red-500" />
               <div class="min-w-0 flex-1">
                 <p class="truncate font-medium">{{ failed.title }}</p>
@@ -438,14 +604,20 @@ async function retryFailed() {
                 </button>
               </div>
             </div>
-
-            <!-- 空闲 -->
-            <p v-else class="text-zinc-600 dark:text-zinc-400">{{ t('knowledge.last.idle') }}</p>
           </div>
         </div>
 
         <p class="mt-3 text-xs leading-5 text-muted-foreground">
-          {{ t(mode === 'file' ? 'knowledge.new.note' : 'knowledge.text.note') }}
+          {{
+            t(
+              mode === 'file' ? 'knowledge.new.note' : 'knowledge.text.note',
+              {
+                max: limits.maxFiles,
+                size: limits.maxFileBytes >> 20,
+                total: limits.maxBatchBytes >> 20,
+              },
+            )
+          }}
         </p>
       </DialogContent>
     </DialogPortal>

@@ -4,10 +4,12 @@ import { ApiError, CODE_STREAM, request, streamEvents } from './client'
  * 知识库文档接口。
  *
  * 后端是异步收录：上传请求只做落盘与建行，返回时文档是 pending，解析与向量化由
- * 后台 worker 推进。进度靠 `watchKnowledgeDocument(id)` 订阅 SSE 拿
- * （流里同时带文档状态与解析环境准备进度，见 stores/knowledge.ts）；
- * 单篇详情 `fetchKnowledgeDocument` 仍然可用，是流的兜底与一次性查询入口。
- * 上传接口本身很快 —— 实测几百毫秒返回。
+ * 后台 worker 推进。批量上传返回**逐项结果**：某个文件被拒（格式、大小、队列满）
+ * 不影响同批其它文件。
+ *
+ * 进度有两条路：单篇文档可以订阅 SSE（`watchKnowledgeDocument`，重试时用）；
+ * 批量上传不再为每个文件各开一条 SSE —— 浏览器对同源 HTTP/1.1 只有 6 条连接，
+ * 一批 10 个文件会把连接池占满。批量改由 store 轮询上传记录列表收敛状态。
  */
 
 /** 后端 `response.KnowledgeDocument` 的原样形状 */
@@ -158,8 +160,17 @@ export interface UploadRecordPage {
   totalPage: number
 }
 
-/** 单次上传的文件大小上限，与后端 controller 的 maxUploadBytes 对齐 */
-export const MAX_UPLOAD_BYTES = 16 << 20
+/**
+ * 上传限制的兜底默认值。
+ *
+ * 真实值由 `fetchKnowledgeUploadLimits()` 从后端下发（见 knowledge_ingest 配置），
+ * 这里的常量只在接口还没返回时用于界面预检；服务端始终是唯一裁判。
+ */
+export const DEFAULT_UPLOAD_LIMITS: KnowledgeUploadLimits = {
+  maxFiles: 10,
+  maxFileBytes: 16 << 20,
+  maxBatchBytes: 100 << 20,
+}
 
 /**
  * 前端允许选择的扩展名。
@@ -190,6 +201,35 @@ export function needsDocumentParser(fileName: string): boolean {
   const name = fileName.toLowerCase()
   if (PLAIN_TEXT_EXTENSIONS.some((ext) => name.endsWith(ext))) return false
   return SUPPORTED_EXTENSIONS.some((ext) => name.endsWith(ext))
+}
+
+/**
+ * 批量上传的限制值，由后端下发（GET /knowledge/documents/upload-limits）。
+ * 服务端始终是唯一裁判：这些值用于选择文件时的预检，不是校验规则的复刻。
+ */
+export interface KnowledgeUploadLimits {
+  maxFiles: number
+  maxFileBytes: number
+  maxBatchBytes: number
+}
+
+interface KnowledgeUploadLimitsDTO {
+  max_files: number
+  max_file_bytes: number
+  max_batch_bytes: number
+}
+
+/**
+ * 取批量上传的限制值。失败时调用方用 DEFAULT_UPLOAD_LIMITS 兜底 ——
+ * 它只影响预检的宽严，真正的拒绝始终来自服务端。
+ */
+export async function fetchKnowledgeUploadLimits(): Promise<KnowledgeUploadLimits> {
+  const d = await request<KnowledgeUploadLimitsDTO>('/knowledge/documents/upload-limits')
+  return {
+    maxFiles: d.max_files,
+    maxFileBytes: d.max_file_bytes,
+    maxBatchBytes: d.max_batch_bytes,
+  }
 }
 
 /** 后端 `documentparser.Status` 的原样形状 */
@@ -453,30 +493,77 @@ export async function fetchUploadRecords(
  * 删除一条上传记录。
  *
  * 连带后果在后端那一个事务里：对应的文档若还**没收录成功**会被一起删掉（不收掉的话
- * 上传闸门会一直卡着，因为它数的是 pending + processing 的文档行）；已经 ready 的
- * 文档绝不触碰，只是记录失去关联、状态变成「已收录后删除」。
+ * 它占着收录队列的名额，容量迟迟不释放）；已经 ready 的文档绝不触碰，只是记录
+ * 失去关联、状态变成「已收录后删除」。
  */
 export async function deleteUploadRecord(id: number): Promise<void> {
   await request<null>(`/knowledge/upload-records/${id}`, { method: 'DELETE' })
 }
 
+/** 后端 `response.KnowledgeIngestItem` 的原样形状 */
+interface KnowledgeIngestItemDTO {
+  original_name: string
+  document_id: number | null
+  status: string
+  error?: string
+}
+
+/** 后端 `response.KnowledgeIngestBatch` 的原样形状 */
+interface KnowledgeIngestBatchDTO {
+  items: KnowledgeIngestItemDTO[]
+  accepted: number
+  rejected: number
+}
+
 /**
- * 上传一个文件并收录。
+ * 批量上传里的单项结果。
  *
- * 走 multipart，字段名必须是 `file`（后端按这个字段取名）。标题留空时后端会依次
- * 回落到正文的一级标题、文件名 —— 所以不传 title 比传空串好，这里只在非空时才带上。
+ * `pending` 表示已入队（documentId 有值），`rejected` 表示未入队（error 有原因）。
+ * 两者都是"这次请求的正常结果"，不是异常 —— 某个文件被拒不影响同批其它文件。
  */
-export async function uploadKnowledgeFile(file: File, title?: string): Promise<KnowledgeDocument> {
+export interface KnowledgeIngestItem {
+  originalName: string
+  documentId: number | null
+  status: 'pending' | 'rejected'
+  error: string
+}
+
+export interface KnowledgeIngestBatch {
+  items: KnowledgeIngestItem[]
+  accepted: number
+  rejected: number
+}
+
+/**
+ * 批量上传一批文件并收录，返回与入参同序的逐项结果。
+ *
+ * 字段名用 `files`（可重复）。后端同时接受旧的单 `file`，但新前端统一走批量形状。
+ * 只有请求体层面的问题（超总量、文件数超限、multipart 损坏）才整批失败并抛 ApiError；
+ * 单文件的问题以 `rejected` 出现在逐项结果里。
+ */
+export async function uploadKnowledgeFiles(
+  files: File[],
+  title?: string,
+): Promise<KnowledgeIngestBatch> {
   const form = new FormData()
-  form.append('file', file)
+  for (const file of files) form.append('files', file)
   const trimmed = title?.trim()
   if (trimmed) form.append('title', trimmed)
 
-  const d = await request<KnowledgeDocumentDTO>('/knowledge/documents', {
+  const d = await request<KnowledgeIngestBatchDTO>('/knowledge/documents', {
     method: 'POST',
     body: form,
   })
-  return toDocument(d)
+  return {
+    items: d.items.map((item) => ({
+      originalName: item.original_name,
+      documentId: item.document_id ?? null,
+      status: item.status === 'pending' ? 'pending' : 'rejected',
+      error: item.error ?? '',
+    })),
+    accepted: d.accepted,
+    rejected: d.rejected,
+  }
 }
 
 /**

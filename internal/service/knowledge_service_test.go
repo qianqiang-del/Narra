@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	requestdto "narra/internal/model/dto/request"
+	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
 	"narra/internal/rag"
 )
@@ -33,9 +34,6 @@ type fakeDocumentQuerier struct {
 	total    int64
 	counts   map[uint64]int64
 
-	// active 是 CountActive 的返回值，用它模拟"库里还有没有没跑完的收录任务"。
-	active int64
-
 	// query 记录最近一次收到的查询条件，供断言筛选与分页换算是否透传。
 	query entity.KnowledgeDocumentQuery
 }
@@ -48,10 +46,6 @@ func (q *fakeDocumentQuerier) List(ctx context.Context, query entity.KnowledgeDo
 		return nil, 0, nil
 	}
 	return []entity.KnowledgeDocument{*q.document}, q.total, nil
-}
-
-func (q *fakeDocumentQuerier) CountActive(ctx context.Context) (int64, error) {
-	return q.active, nil
 }
 
 func (q *fakeDocumentQuerier) GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error) {
@@ -82,15 +76,20 @@ func (q *fakeDocumentQuerier) SetEnabled(ctx context.Context, id uint64, enabled
 }
 
 // fakeIngester 是 ingester 的替身：只记录收到的输入，不真的切分与向量化。
-// 它也实现了 asyncIngester（SubmitFile）与 fileRetrier（Retry）—— 服务层的上传闸门
-// 与重试入口正是走那两条路。
+// 它也实现了 asyncIngester（SubmitFile）与 fileRetrier（Retry）—— 服务层的
+// 上传与重试入口正是走那两条路。
 type fakeIngester struct {
 	fileInput rag.FileInput
 	textInput rag.TextInput
 	result    rag.IngestResult
 	err       error
 
-	// submitted 累计 SubmitFile 被调用的次数，用来断言"被拒时根本没提交任务"。
+	// results / errs 非空时按调用次序返回，用来构造"同批里有的入队、有的被拒"。
+	// 空的调用按 result / err 兜底。
+	results []rag.IngestResult
+	errs    []error
+
+	// submitted 累计 SubmitFile 被调用的次数。
 	submitted int
 
 	// retried 累计 Retry 被调用的次数，retriedStage 记录最后一次收到的恢复点；
@@ -115,8 +114,20 @@ func (f *fakeIngester) Retry(ctx context.Context, id uint64, stage string) (bool
 }
 
 func (f *fakeIngester) SubmitFile(ctx context.Context, input rag.FileInput) (rag.IngestResult, error) {
+	index := f.submitted
 	f.submitted++
 	f.fileInput = input
+	if len(f.results) > 0 || len(f.errs) > 0 {
+		var result rag.IngestResult
+		if index < len(f.results) {
+			result = f.results[index]
+		}
+		var err error
+		if index < len(f.errs) {
+			err = f.errs[index]
+		}
+		return result, err
+	}
 	return f.result, f.err
 }
 
@@ -554,21 +565,61 @@ func TestListPassesQueryToRepository(t *testing.T) {
 	}
 }
 
-// 一次只收一份：库里还有没跑完的行时直接拒绝，而且**不能**再往下建行。
-func TestSubmitFileRejectsWhileQueueBusy(t *testing.T) {
-	querier := &fakeDocumentQuerier{active: 1}
-	ingestion := &fakeIngester{}
+// 队列满时服务层原样上抛可判定的错误：容量判定已经下沉到收录链路的事务里
+// （见 rag.Ingester.SubmitFile），服务层只把它交给接口层翻 409，不再自己预检。
+func TestSubmitFileSurfacesQueueFull(t *testing.T) {
+	querier := &fakeDocumentQuerier{}
+	ingestion := &fakeIngester{err: rag.ErrIngestQueueFull}
 	svc := newTestService(querier, ingestion)
 
 	document, err := svc.SubmitFile(context.Background(), requestdto.KnowledgeIngestFile{Path: "/tmp/a.md"})
-	if !errors.Is(err, ErrIngestBusy) {
-		t.Fatalf("期望 ErrIngestBusy，实际 %v", err)
+	if !errors.Is(err, ErrIngestQueueFull) {
+		t.Fatalf("期望 ErrIngestQueueFull，实际 %v", err)
 	}
 	if document.ID != 0 {
 		t.Errorf("被拒时不该有文档返回，实际 %+v", document)
 	}
-	if ingestion.submitted != 0 {
-		t.Errorf("被拒时不该提交收录任务，实际提交了 %d 次", ingestion.submitted)
+}
+
+// SubmitFiles 是批量入口：逐项结果、顺序与入参一致，某一项被拒不影响其它项。
+// 被拒项带上原因且没有 document_id；已入队项带上 document_id。
+func TestSubmitFilesReportsPerItemResults(t *testing.T) {
+	accepted := &entity.KnowledgeDocument{
+		BaseModel:  entity.BaseModel{ID: testDocumentID},
+		Title:      "设计文档",
+		SourceType: testDocumentSource,
+		Status:     entity.KnowledgeDocumentStatusPending,
+		Metadata:   json.RawMessage(`{}`),
+	}
+	ingestion := &fakeIngester{
+		results: []rag.IngestResult{{Document: accepted}, {}},
+		errs:    []error{nil, rag.ErrIngestQueueFull},
+	}
+	svc := newTestService(&fakeDocumentQuerier{}, ingestion)
+
+	items := svc.SubmitFiles(context.Background(), []requestdto.KnowledgeIngestFile{
+		{Path: "/tmp/a.md", SourceURI: "a.md"},
+		{Path: "/tmp/b.md", SourceURI: "b.md"},
+	})
+	if len(items) != 2 {
+		t.Fatalf("逐项结果数 = %d，期望 2", len(items))
+	}
+
+	if items[0].OriginalName != "a.md" || items[0].Status != responsedto.KnowledgeIngestItemStatusPending {
+		t.Errorf("第 1 项 = %+v，期望 a.md / pending", items[0])
+	}
+	if items[0].DocumentID == nil || *items[0].DocumentID != testDocumentID {
+		t.Errorf("第 1 项应当带上文档 ID，实际 %+v", items[0].DocumentID)
+	}
+
+	if items[1].Status != responsedto.KnowledgeIngestItemStatusRejected {
+		t.Errorf("第 2 项状态 = %q，期望 rejected", items[1].Status)
+	}
+	if items[1].DocumentID != nil {
+		t.Errorf("被拒项不该有文档 ID，实际 %v", *items[1].DocumentID)
+	}
+	if !strings.Contains(items[1].Error, "队列已满") {
+		t.Errorf("被拒原因 = %q，期望说明队列已满", items[1].Error)
 	}
 }
 
@@ -654,7 +705,7 @@ func TestRetryResolvesRecoveryStageFromMaterial(t *testing.T) {
 	}
 }
 
-// 队列空时正常提交，并把输入原样透传（上传闸门不能改坏提交本身）。
+// 空闲时正常提交，并把输入原样透传（服务层不再参与队列判定，只做映射）。
 func TestSubmitFilePassesThroughWhenIdle(t *testing.T) {
 	querier := &fakeDocumentQuerier{}
 	ingestion := &fakeIngester{result: rag.IngestResult{Document: &entity.KnowledgeDocument{
