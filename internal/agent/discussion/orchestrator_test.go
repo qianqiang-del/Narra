@@ -119,6 +119,7 @@ type fixture struct {
 	compactions   repository.ContextCompactionRepository
 	memories      repository.SharedMemoryRepository
 	events        repository.ConversationEventRepository
+	spans         repository.AgentTraceSpanRepository
 	tx            repository.TransactionManager
 
 	cleanup func()
@@ -126,7 +127,7 @@ type fixture struct {
 
 // roleTemplates 是造角色用的模板。
 //
-// agent_key 与 sort_order 都带 test 前缀/大偏移：这两列上有唯一约束，
+// agent_key 与 sort_order 都带测试专用标识：这两列上有唯一约束，
 // 用固定的小值会和种子数据（0002_seed_preset_agents.sql 里的六个角色）撞上。
 var roleTemplates = []struct {
 	key, name, role, roleType, persona string
@@ -172,6 +173,7 @@ func newFixture(t *testing.T) *fixture {
 		compactions:   repository.NewContextCompactionRepository(db),
 		memories:      repository.NewSharedMemoryRepository(db),
 		events:        repository.NewConversationEventRepository(db),
+		spans:         repository.NewAgentTraceSpanRepository(db),
 		tx:            repository.NewTransactionManager(db),
 	}
 
@@ -250,7 +252,7 @@ func newFixture(t *testing.T) *fixture {
 
 	for index, template := range roleTemplates {
 		preset := &entity.PresetAgent{
-			AgentKey:  template.key,
+			AgentKey:  fmt.Sprintf("%s-%d", template.key, classroom.ID),
 			Name:      template.name,
 			Role:      template.role,
 			RoleType:  template.roleType,
@@ -258,7 +260,7 @@ func newFixture(t *testing.T) *fixture {
 			Avatar:    "user.png",
 			Color:     "#722ed1",
 			VoiceID:   "test-voice",
-			SortOrder: int32(9000 + index),
+			SortOrder: int32(classroom.ID*10) + int32(index),
 			Enabled:   true,
 		}
 		if err := db.WithContext(ctx).Create(preset).Error; err != nil {

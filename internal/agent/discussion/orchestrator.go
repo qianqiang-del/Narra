@@ -58,6 +58,9 @@ type Deps struct {
 	// 走表而不是直接推，是因为断线续传只能靠落在库里的序号（见交接文档的"通路铁律"）。
 	Events repository.ConversationEventRepository
 
+	// Spans 记录讨论的本地链路追踪。它是附加能力：写入失败只记日志，不影响讨论本身。
+	Spans repository.AgentTraceSpanRepository
+
 	// ContextBudget 是组装上下文时的 token 上限，超过就触发摘要压缩；0 表示用默认值。
 	// 做成可配是为了让测试能用很小的值把压缩逼出来 —— 真要造出几千 token 的对话，
 	// 用例又慢又难读。
@@ -97,6 +100,8 @@ func New(deps Deps) (*Orchestrator, error) {
 		return nil, fmt.Errorf("编排器缺少共享记忆仓储")
 	case deps.Events == nil:
 		return nil, fmt.Errorf("编排器缺少事件仓储")
+	case deps.Spans == nil:
+		return nil, fmt.Errorf("编排器缺少追踪仓储")
 	case deps.Model == nil:
 		return nil, fmt.Errorf("编排器缺少模型")
 	case deps.Summarizer == nil:
@@ -183,6 +188,8 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 		zap.String("trace_id", run.TraceID),
 		zap.Uint64("conversation_id", request.ConversationID),
 	)
+	rootSpanStartedAt := time.Now().UTC()
+	rootSpanID := o.traceID(log)
 
 	// 让前端先知道"这一趟开工了、桌上有谁"。事务外发：它不同生共死于任何一条记录，
 	// 写不进去最多是这次的流少个头，不该让讨论跑不起来。
@@ -224,7 +231,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 			return o.abandon(run, fmt.Errorf(
 				"选人策略返回了非法的发言人下标 %d（参与者共 %d 人）",
 				decision.SpeakerIndex, len(request.Participants),
-			), outcomes, log)
+			), outcomes, log, rootSpanID, rootSpanStartedAt)
 		}
 
 		participant := request.Participants[decision.SpeakerIndex]
@@ -238,9 +245,9 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 				Reason:    decision.Reason,
 			})
 
-		outcome, err := o.speak(ctx, request, run, conversation.ClassroomID, participant, turnNo, trigger.Content)
+		outcome, err := o.speak(ctx, request, run, conversation.ClassroomID, participant, turnNo, trigger.Content, rootSpanID, log)
 		if err != nil {
-			return o.abandon(run, err, outcomes, log)
+			return o.abandon(run, err, outcomes, log, rootSpanID, rootSpanStartedAt)
 		}
 
 		spoken[decision.SpeakerIndex]++
@@ -268,6 +275,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 	}
 
 	if err := o.closeRun(ctx, run, status, stopReason, nil, log); err != nil {
+		o.recordRootSpan(log, run, rootSpanID, rootSpanStartedAt, entity.TraceSpanStatusError, entity.RunStopError, len(outcomes), err)
 		// 连终态都没写进去，前端最需要一个"结束信号"来停止转圈 —— 尽力补一条。
 		o.emitEvent(ctx, request.ConversationID, &run.ID, nil,
 			entity.ConversationEventRunFailed, runFailedPayload{
@@ -279,6 +287,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 			Turns: outcomes,
 		}, err
 	}
+	o.recordRootSpan(log, run, rootSpanID, rootSpanStartedAt, entity.TraceSpanStatusOK, stopReason, len(outcomes), nil)
 
 	// 整趟讨论的终态。挂起等用户与正常结束是两件事，前端对应两种界面 ——
 	// 把挂起写成"已结束"，用户就会以为这堂课聊完了。
@@ -363,6 +372,8 @@ func (o *Orchestrator) speak(
 	participant Participant,
 	turnNo int16,
 	topic string,
+	rootSpanID string,
+	log *zap.Logger,
 ) (TurnOutcome, error) {
 	turn := &entity.AgentTurn{
 		RunID:            run.ID,
@@ -386,14 +397,17 @@ func (o *Orchestrator) speak(
 	}); err != nil {
 		return TurnOutcome{}, fmt.Errorf("建立第 %d 个回合失败: %w", turnNo, err)
 	}
+	agentSpanStartedAt := time.Now().UTC()
+	agentSpanID := o.traceID(log)
 
 	history, err := o.history(ctx, classroomID, request.ConversationID)
 	if err != nil {
 		o.abandonTurn(turn, err)
+		o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusError, "", err)
 		return TurnOutcome{}, err
 	}
 
-	response, err := o.callModel(ctx, GenerationRequest{
+	response, err := o.callModel(ctx, run, turn, agentSpanID, GenerationRequest{
 		Participant: participant,
 		Topic:       topic,
 		TurnNo:      turnNo,
@@ -401,6 +415,7 @@ func (o *Orchestrator) speak(
 	})
 	if err != nil {
 		o.abandonTurn(turn, err)
+		o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusError, "", err)
 		return TurnOutcome{}, fmt.Errorf("第 %d 轮生成失败: %w", turnNo, err)
 	}
 
@@ -471,8 +486,10 @@ func (o *Orchestrator) speak(
 		return o.deps.Conversations.TouchLastMessage(ctx, request.ConversationID, finishedAt)
 	}); err != nil {
 		o.abandonTurn(turn, err)
+		o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusError, "", err)
 		return TurnOutcome{}, fmt.Errorf("落库第 %d 轮结果失败: %w", turnNo, err)
 	}
+	o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusOK, nextAction, nil)
 
 	return TurnOutcome{
 		TurnID:       turn.ID,
@@ -495,12 +512,15 @@ func (o *Orchestrator) speak(
 //
 // 重试的是"这一次模型调用"，不是"这一轮"：回合不重建、消息也还没写（消息是模型
 // 成功返回之后才写的），所以重试不会留下重复记录。
-func (o *Orchestrator) callModel(ctx context.Context, request GenerationRequest) (GenerationResponse, error) {
+func (o *Orchestrator) callModel(ctx context.Context, run *entity.OrchestrationRun, turn *entity.AgentTurn, agentSpanID string, request GenerationRequest) (GenerationResponse, error) {
 	const attempts = 2
 
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
+		startedAt := time.Now().UTC()
+		spanID := o.traceID(o.deps.Logger)
 		response, err := o.deps.Model.Generate(ctx, request)
+		o.recordModelSpan(o.deps.Logger, run, turn, spanID, agentSpanID, startedAt, request, attempt, response, err)
 		if err == nil {
 			return response, nil
 		}
@@ -555,7 +575,7 @@ func (o *Orchestrator) closeRun(ctx context.Context, run *entity.OrchestrationRu
 // 那个 ctx 已经作废，拿它去写库会立刻再失败一次，于是连"这次讨论失败了"都留不下来，
 // 前端只能一直转圈。所以这里从 context.Background() 另起一个带超时的。
 // 参数干脆不收，比"收下却不用"更不容易让人误会成"它会用调用方的 ctx 收尾"。
-func (o *Orchestrator) abandon(run *entity.OrchestrationRun, cause error, outcomes []TurnOutcome, log *zap.Logger) (Result, error) {
+func (o *Orchestrator) abandon(run *entity.OrchestrationRun, cause error, outcomes []TurnOutcome, log *zap.Logger, rootSpanID string, rootSpanStartedAt time.Time) (Result, error) {
 	finalizeCtx, cancel := context.WithTimeout(context.Background(), finalizeTimeout)
 	defer cancel()
 
@@ -570,6 +590,7 @@ func (o *Orchestrator) abandon(run *entity.OrchestrationRun, cause error, outcom
 		entity.ConversationEventRunFailed, runFailedPayload{
 			Error: truncate(cause.Error(), errorMessageLimit),
 		})
+	o.recordRootSpan(log, run, rootSpanID, rootSpanStartedAt, entity.TraceSpanStatusError, entity.RunStopError, len(outcomes), cause)
 
 	return Result{
 		RunID:      run.ID,

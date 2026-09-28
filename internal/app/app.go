@@ -210,6 +210,7 @@ func (a *App) initDependencies() error {
 	// SSE 侧只读。
 	conversationRepo := repository.NewConversationRepository(a.postgresDB)
 	conversationEventRepo := repository.NewConversationEventRepository(a.postgresDB)
+	traceSpanRepo := repository.NewAgentTraceSpanRepository(a.postgresDB)
 	// 多 Agent 讨论（成员 C）用到的仓储：消息、运行、回合、上下文摘要、共享记忆。
 	// 这几个表此前没有任何生产代码使用过 —— 讨论链路是它们的第一个使用者。
 	messageRepo := repository.NewMessageRepository(a.postgresDB)
@@ -357,6 +358,7 @@ func (a *App) initDependencies() error {
 		Compactions:   compactionRepo,
 		Memories:      sharedMemoryRepo,
 		Events:        conversationEventRepo,
+		Spans:         traceSpanRepo,
 		Model:         discussion.FakeModel{},
 		Summarizer:    discussion.FakeModel{},
 		Extractor:     discussion.FakeModel{},
@@ -385,6 +387,7 @@ func (a *App) initDependencies() error {
 	// 清理侧只认这一列。没有它事件表会一直涨，而它记录的事实另有更长的生命周期。
 	a.retention = retention.New(
 		retention.Table{Name: "conversation_events", Store: conversationEventRepo},
+		retention.Table{Name: "agent_trace_spans", Store: traceSpanRepo},
 	)
 
 	// 对账：队列里已不会继续处理的 generating 课程，归档的判失败、丢了的重投。

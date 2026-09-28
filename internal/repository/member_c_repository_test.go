@@ -100,6 +100,7 @@ type memberCTestFixture struct {
 	compactions   ContextCompactionRepository
 	memories      SharedMemoryRepository
 	events        ConversationEventRepository
+	spans         AgentTraceSpanRepository
 	tx            TransactionManager
 	cleanup       func()
 }
@@ -133,6 +134,7 @@ func newMemberCTestFixture(t *testing.T) *memberCTestFixture {
 		compactions:   NewContextCompactionRepository(db),
 		memories:      NewSharedMemoryRepository(db),
 		events:        NewConversationEventRepository(db),
+		spans:         NewAgentTraceSpanRepository(db),
 		tx:            NewTransactionManager(db),
 	}
 
@@ -165,6 +167,7 @@ func newMemberCTestFixture(t *testing.T) *memberCTestFixture {
 		db.Where("classroom_id = ?", classroom.ID).Delete(&entity.SharedContextMemory{})
 		// 事件先删：它引用 run 与 turn，虽然外键是 SET NULL，但显式删掉更干净。
 		db.Where("conversation_id = ?", conversation.ID).Delete(&entity.ConversationEvent{})
+		db.Where("run_id IN (?)", runIDs).Delete(&entity.AgentTraceSpan{})
 		db.Where("id = ?", conversation.ID).Delete(&entity.ClassroomConversation{})
 		db.Where("id = ?", classroom.ID).Delete(&entity.Classroom{})
 
@@ -188,6 +191,74 @@ func newMemberCTestFixture(t *testing.T) *memberCTestFixture {
 		}
 	}
 	return f
+}
+
+func TestMemberCTraceSpansRoundTripAndExpire(t *testing.T) {
+	f := newMemberCTestFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	triggerSequence := f.appendMessage(t, ctx, "触发追踪")
+	var trigger entity.ConversationMessage
+	if err := f.db.Where("conversation_id = ? AND sequence_no = ?", f.conversation.ID, triggerSequence).First(&trigger).Error; err != nil {
+		t.Fatalf("读取触发消息失败: %v", err)
+	}
+	run, err := f.newRun(t, ctx, trigger.ID)
+	if err != nil {
+		t.Fatalf("建运行记录失败: %v", err)
+	}
+
+	later := time.Now().UTC()
+	earlier := later.Add(-time.Second)
+	expiredAt := earlier.Add(-time.Hour)
+	futureAt := later.Add(time.Hour)
+	rootID := "0123456789abcdef"
+	childID := "fedcba9876543210"
+	parentID := rootID
+	spans := []*entity.AgentTraceSpan{
+		{
+			TraceID: run.TraceID, SpanID: childID, ParentSpanID: &parentID, RunID: run.ID,
+			Kind: entity.TraceSpanKindModel, Name: "test-model", Status: entity.TraceSpanStatusOK,
+			StartedAt: later, EndedAt: &later, Attributes: json.RawMessage(`{"attempt":1}`), ExpiresAt: futureAt,
+		},
+		{
+			TraceID: run.TraceID, SpanID: rootID, RunID: run.ID,
+			Kind: entity.TraceSpanKindOrchestration, Name: "run", Status: entity.TraceSpanStatusError,
+			StartedAt: earlier, EndedAt: &earlier, Attributes: json.RawMessage(`{"turns":0}`), ExpiresAt: expiredAt,
+		},
+	}
+	for _, span := range spans {
+		if err := f.spans.Create(ctx, span); err != nil {
+			t.Fatalf("写入 span 失败: %v", err)
+		}
+	}
+
+	got, err := f.spans.ListByRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("读取 span 失败: %v", err)
+	}
+	if len(got) != 2 || got[0].SpanID != rootID || got[1].SpanID != childID {
+		t.Fatalf("span 排序或字段往返错误: %+v", got)
+	}
+	var attributes map[string]int
+	if err := json.Unmarshal(got[1].Attributes, &attributes); err != nil {
+		t.Fatalf("解析 span attributes 失败: %v", err)
+	}
+	if got[1].ParentSpanID == nil || *got[1].ParentSpanID != rootID || attributes["attempt"] != 1 {
+		t.Errorf("子 span 字段没有原样读回: %+v", got[1])
+	}
+
+	deleted, err := f.spans.DeleteExpired(ctx, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("删除过期 span 失败: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("删除了 %d 条过期 span，期望 1 条", deleted)
+	}
+	got, err = f.spans.ListByRun(ctx, run.ID)
+	if err != nil || len(got) != 1 || got[0].SpanID != childID {
+		t.Errorf("过期清理后剩余 span = %+v，err=%v", got, err)
+	}
 }
 
 // appendMessage 在事务里追加一条消息，返回分配到的序号。
