@@ -81,6 +81,7 @@ func (f *fixture) newOrchestratorWith(t *testing.T, model Model, director Direct
 		Compactions:   f.compactions,
 		Memories:      f.memories,
 		Events:        f.events,
+		Spans:         f.spans,
 		Model:         model,
 		// 摘要器沿用假模型，理由同 orchestrator_test.go 的 newOrchestrator：
 		// 这些用例不触发压缩，只是装配校验要求非空。
