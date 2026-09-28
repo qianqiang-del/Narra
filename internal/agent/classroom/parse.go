@@ -5,10 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"go.uber.org/zap"
-
 	"narra/internal/model/entity"
-	"narra/pkg/logger"
 )
 
 // 与数据库列对应的长度上限，超长按字符截断。
@@ -51,28 +48,6 @@ var allowedSceneTypes = map[string]struct{}{
 	entity.SceneTypePBL:         {},
 }
 
-// outlinePlan 是大纲的解析产物。场景顺序即切片顺序。
-type outlinePlan struct {
-	Title  string      `json:"title"`
-	Scenes []scenePlan `json:"scenes"`
-}
-
-// scenePlan 是一个场景在大纲里的样子。
-//
-// Brief 不落库，只在内存里传给段二；SceneID 是段一建行之后回填的，段二靠它更新对应场景。
-type scenePlan struct {
-	Type    string `json:"type"`
-	Title   string `json:"title"`
-	Brief   string `json:"brief"`
-	SceneID uint64 `json:"-"`
-}
-
-// sceneContent 是单场景的解析产物。
-type sceneContent struct {
-	Blocks    []contentBlock     `json:"blocks"`
-	Narration []narrationSegment `json:"narration"`
-}
-
 type contentBlock struct {
 	Key         string             `json:"key"`
 	Type        string             `json:"type"`
@@ -104,107 +79,6 @@ type narrationSegment struct {
 	Text       string `json:"text"`
 }
 
-// parseOutline 解析并校验大纲；单页不合规就丢弃并记日志，不影响其余页面。
-func parseOutline(raw string) (*outlinePlan, error) {
-	var plan outlinePlan
-	if err := unmarshalLoose(raw, &plan); err != nil {
-		return nil, fmt.Errorf("解析大纲 JSON 失败: %w", err)
-	}
-
-	plan.Title = truncateRunes(strings.TrimSpace(plan.Title), maxClassroomTitleRunes)
-	if plan.Title == "" {
-		return nil, fmt.Errorf("大纲缺少课程标题")
-	}
-
-	scenes := make([]scenePlan, 0, len(plan.Scenes))
-	for page, scene := range plan.Scenes {
-		scene.Type = strings.TrimSpace(scene.Type)
-		if _, ok := allowedSceneTypes[scene.Type]; !ok {
-			logger.Warn("大纲有一页的类型不在允许范围内，已丢弃",
-				zap.Int("page", page+1), zap.String("type", scene.Type))
-			continue
-		}
-		scene.Title = truncateRunes(strings.TrimSpace(scene.Title), maxSceneTitleRunes)
-		if scene.Title == "" {
-			logger.Warn("大纲有一页缺标题，已丢弃", zap.Int("page", page+1))
-			continue
-		}
-		scene.Brief = strings.TrimSpace(scene.Brief)
-		if scene.Brief == "" {
-			logger.Warn("大纲有一页没写 brief，段二将拿不到这一页的内容依据", zap.Int("page", page+1))
-		}
-		scenes = append(scenes, scene)
-	}
-
-	if len(scenes) == 0 {
-		return nil, fmt.Errorf("大纲里没有一页可用")
-	}
-	plan.Scenes = scenes
-	return &plan, nil
-}
-
-// parseSceneContent 解析并校验一个场景的内容块与讲稿。
-func parseSceneContent(raw string) (*sceneContent, error) {
-	var content sceneContent
-	if err := unmarshalLoose(raw, &content); err != nil {
-		return nil, fmt.Errorf("场景内容不是合法 JSON: %w", err)
-	}
-	if len(content.Blocks) == 0 {
-		return nil, fmt.Errorf("这一页一个内容块都没有")
-	}
-	if len(content.Narration) == 0 {
-		return nil, fmt.Errorf("这一页没有讲解稿")
-	}
-
-	keys := make(map[string]struct{}, len(content.Blocks))
-	for index := range content.Blocks {
-		block := &content.Blocks[index]
-		block.Key = truncateRunes(strings.TrimSpace(block.Key), maxContentKeyRunes)
-		if block.Key == "" {
-			return nil, fmt.Errorf("第 %d 个内容块缺少 key", index+1)
-		}
-		if _, dup := keys[block.Key]; dup {
-			return nil, fmt.Errorf("内容块的 key %q 重复了", block.Key)
-		}
-		keys[block.Key] = struct{}{}
-
-		block.Type = strings.TrimSpace(block.Type)
-		if _, ok := allowedBlockTypes[block.Type]; !ok {
-			return nil, fmt.Errorf("第 %d 个内容块的类型 %q 不在允许范围内", index+1, block.Type)
-		}
-		block.Content = strings.TrimSpace(block.Content)
-		if block.Content == "" {
-			return nil, fmt.Errorf("第 %d 个内容块没有内容", index+1)
-		}
-	}
-
-	texts := make(map[string]string, len(content.Narration))
-	for index, segment := range content.Narration {
-		key := truncateRunes(strings.TrimSpace(segment.ContentKey), maxContentKeyRunes)
-		if _, ok := keys[key]; !ok {
-			return nil, fmt.Errorf("第 %d 段讲解的 content_key %q 在内容块里找不到", index+1, key)
-		}
-		if _, dup := texts[key]; dup {
-			return nil, fmt.Errorf("内容块 %q 有多段讲解", key)
-		}
-		text := strings.TrimSpace(segment.Text)
-		if text == "" {
-			return nil, fmt.Errorf("第 %d 段讲解是空的", index+1)
-		}
-		texts[key] = text
-	}
-
-	// 讲稿按 blocks 顺序重排：scene_segments.sort_order 要与页面高亮顺序一致。
-	narration := make([]narrationSegment, 0, len(texts))
-	for _, block := range content.Blocks {
-		if text, ok := texts[block.Key]; ok {
-			narration = append(narration, narrationSegment{ContentKey: block.Key, Text: text})
-		}
-	}
-	content.Narration = narration
-	return &content, nil
-}
-
 // unmarshalLoose 剥掉可能的代码围栏与前后废话，再反序列化。
 func unmarshalLoose(raw string, target any) error {
 	text := extractJSON(raw)
@@ -233,6 +107,24 @@ func extractJSON(raw string) string {
 		return ""
 	}
 	return text[start : end+1]
+}
+
+// unmarshalArrayLoose 剥掉可能的代码围栏与前后废话，再反序列化一个 JSON 数组。
+func unmarshalArrayLoose(raw string, target any) error {
+	text := strings.TrimSpace(raw)
+	if strings.HasPrefix(text, "```") {
+		if newline := strings.IndexByte(text, '\n'); newline >= 0 {
+			text = text[newline+1:]
+		}
+		if end := strings.LastIndex(text, "```"); end >= 0 {
+			text = text[:end]
+		}
+	}
+	start, end := strings.IndexByte(text, '['), strings.LastIndexByte(text, ']')
+	if start < 0 || end <= start {
+		return fmt.Errorf("没找到 JSON 数组")
+	}
+	return json.Unmarshal([]byte(text[start:end+1]), target)
 }
 
 // truncateRunes 按字符截断，避免切坏汉字。

@@ -21,16 +21,7 @@ const (
 )
 
 // Classroom 课程主记录，对应表 classrooms（设计文档 §4.2）。
-//
-// 课程是核心聚合根：场景、课程角色、讲解段落均从属于课程，删除课程时全部级联删除（§6）。
-//
-// 生成状态直接记在本表上：V1 一次生成只跑一趟，不并发、不重试、不取消、不支持断点续传，
-// 所以没有独立的生成任务表——「这门课生成到哪了」就是 Status，「为什么没做完」就是
-// GenerationError。将来若开放「对同一门课重新生成」，才会需要单独记录每一趟任务。
-//
-// 约束（§4.2）：CHECK (mode IN (...))、CHECK (status IN (...)) 由字段上的 check tag 声明，
-// 与 §5.1 一一对应；增减状态值时必须同时改两处。外键 classrooms_folder_id_fkey 由下方
-// Folder 关联字段上的 constraint tag 声明，二者都由 AutoMigrate 建。
+
 type Classroom struct {
 	BaseModel
 
@@ -44,28 +35,18 @@ type Classroom struct {
 	Requirement string `gorm:"column:requirement;type:text;not null;comment:用户提交的原始生成需求，重新生成时以它为准" json:"requirement"`                                                                                                                                                      // 用户原始生成需求
 	Mode        string `gorm:"column:mode;type:varchar(32);not null;check:classrooms_mode_check,mode IN ('vocational', 'interactive');comment:课程模式，取值 vocational（职业技能）/ interactive（互动课堂）" json:"mode"`                                                                     // vocational | interactive
 	Status      string `gorm:"column:status;type:varchar(32);not null;check:classrooms_status_check,status IN ('generating', 'playable', 'ready', 'failed');comment:课程状态，取值 generating（生成中，首页未就绪进不去）/ playable（首页已就绪可进入）/ ready（全部场景完整生成）/ failed（中断且首页未就绪）" json:"status"` // 课程当前状态，见 §5.1
+	// GenerationError 记录生成中断的原因，为空表示没有中断。
+	// 与 status 配合读：playable 且它为空表示大纲已完成、场景仍在后台生成；非空表示流程已中断。
+	GenerationError *string `gorm:"column:generation_error;type:text;comment:生成中断的原因；为空表示未中断。status=playable 且此列为空表示大纲已完成、场景仍在生成" json:"generation_error"`
 
-	// GenerationError 这次生成没能把课做完整的原因，给用户看的一句话；为空表示课程生成完整、
-	// 不必再等。换句话说：这一列有值 ⇔ 这门课不会再生成了。
-	//
-	// 与 Status 是正交的两个问题：Status 只回答「能不能进课堂」，这一列只回答「还会不会继续
-	// 生成」。所以它不只在 failed 上有值——首页已就绪（playable）时出问题，课程照样能进，
-	// 只是剩下的场景不会再补上，这时 Status 留 playable、只写这一列。把这种课打成 failed 是错的，
-	// 那等于把用户此前明明进得去的课给锁了。
-	//
-	// 两种写入时机都要照顾到，第二种尤其容易漏：
-	//  1. 流程中断：进程挂了、崩溃了，剩下的场景永远不会再生成。
-	//  2. 流程跑完了，但带着洞：某些页面生成失败被跳过（见 Scene.ErrorMessage），而 V1 没有重试，
-	//     这些洞就永远留在那儿。流程自己跑到了终点，Status 停在 playable，没有任何东西会再来改它，
-	//     不留记录的话前端会一直显示「正在生成」，等一个不会来的结果。
-	// 相应地 Status 为 ready 的含义收紧为「全部完整生成，没有洞」。
-	//
-	// 与 scenes.error_message 分工不同：那边记的是「这一页为什么没生成出来」，记的时候整条流程
-	// 还在往下跑；这里记的是「这门课为什么没做完」。大纲阶段挂掉时一条场景都还没建，scenes 表
-	// 里空无一物，这一列是唯一的失败记录。
-	// 同样只写能给人看的摘要，禁止写入原始 API 响应、堆栈和密钥，落库前按字符截断（建议 500）。
-	// 用 text 而非 varchar：varchar 超长是报错，会把整个生成事务回滚掉。
-	GenerationError *string `gorm:"column:generation_error;type:text;comment:这门课为什么没做完的一句话；有值即表示不会再继续生成。与 status 正交 —— status 只看能不能进课堂" json:"generation_error"`
+	Plan json.RawMessage `gorm:"column:plan;type:jsonb;not null;default:'{}';comment:本轮生成的课堂计划快照（JSON）；同时作为前端大纲与段二执行的唯一事实源" json:"plan"`
+	// PlanVersion 计划的版本号，首轮为 1，重新规划时递增。
+	// 用它判断已落库的场景结果是否属于当前计划，而不是解析 JSON 再比。
+	PlanVersion int32 `gorm:"column:plan_version;type:int;not null;default:1;comment:计划版本号；首轮为 1，重新规划时递增，用于判断已落库的场景结果是否属于当前计划" json:"plan_version"`
+
+	// GenerationRunID 是本轮生成运行的标识：课程受理时生成，同一门课的所有重试沿用同一个。
+	// 任务重投时靠它区分「同一趟运行的再次尝试」与「新一轮生成」，链路追踪也以它为一条 trace。
+	GenerationRunID string `gorm:"column:generation_run_id;type:varchar(64);not null;default:'';comment:本轮生成运行的唯一标识；受理时生成，任务重试沿用同一个，用于幂等判重与链路追踪归属" json:"generation_run_id"`
 
 	// GenerationConfig 本次生成的模型、搜索、解析器等快照。
 	GenerationConfig json.RawMessage `gorm:"column:generation_config;type:jsonb;not null;default:'{}';comment:本次生成用的模型、搜索、解析器等配置快照（JSON）" json:"generation_config"`
