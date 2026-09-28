@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -281,6 +282,23 @@ func TestRetrieveRejectsEmptyQuery(t *testing.T) {
 	}
 	if retrieval.input.Text != "" {
 		t.Fatalf("空检索词不该被转发给检索链路: %+v", retrieval.input)
+	}
+}
+
+// TestRetrievePassesQueryVariants 校验 queries 变体原样透传给检索链路 ——
+// 多路召回的编排与融合在外层门面（internal/rag/einoretriever），服务层只做透传。
+func TestRetrievePassesQueryVariants(t *testing.T) {
+	retrieval := &fakeRetriever{}
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval)
+
+	if _, err := svc.Retrieve(context.Background(), requestdto.KnowledgeRetrieve{
+		Query:   "原查询",
+		Queries: []string{"变体一", "变体二"},
+	}); err != nil {
+		t.Fatalf("检索失败: %v", err)
+	}
+	if retrieval.input.Text != "原查询" || !slices.Equal(retrieval.input.Variants, []string{"变体一", "变体二"}) {
+		t.Fatalf("变体没有透传: %+v", retrieval.input)
 	}
 }
 

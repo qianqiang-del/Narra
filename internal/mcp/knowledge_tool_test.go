@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -103,11 +104,17 @@ func TestKnowledgeRetrieveToolInfoDescribesContract(t *testing.T) {
 	if schema.Properties["top_k"].Type != "integer" {
 		t.Fatalf("top_k 应当是整数参数: %s", raw)
 	}
+	if schema.Properties["queries"].Type != "array" {
+		t.Fatalf("queries 应当是数组参数: %s", raw)
+	}
 	if !containsString(schema.Required, "query") {
 		t.Fatalf("query 必须标成必填: %s", raw)
 	}
 	if containsString(schema.Required, "top_k") {
 		t.Fatalf("top_k 应当可选（服务层会钳位）：%s", raw)
+	}
+	if containsString(schema.Required, "queries") {
+		t.Fatalf("queries 应当可选（没有变体时就是单查询）：%s", raw)
 	}
 }
 
@@ -126,6 +133,19 @@ func TestKnowledgeRetrieveToolPassesQueryAndTopK(t *testing.T) {
 	}
 	if !strings.Contains(output, `"results"`) {
 		t.Fatalf("输出里应当有 results: %s", output)
+	}
+}
+
+// TestKnowledgeRetrieveToolPassesQueries 校验同义变体列表原样透传给服务层 ——
+// 多路召回的编排在服务层之后（见 internal/rag/einoretriever），工具只负责转发。
+func TestKnowledgeRetrieveToolPassesQueries(t *testing.T) {
+	searcher := &fakeKnowledgeSearcher{}
+	if _, err := newTestKnowledgeTool(t, searcher).InvokableRun(context.Background(),
+		`{"query":"原查询","queries":["变体一","变体二"]}`); err != nil {
+		t.Fatalf("调用失败: %v", err)
+	}
+	if searcher.input.Query != "原查询" || !slices.Equal(searcher.input.Queries, []string{"变体一", "变体二"}) {
+		t.Fatalf("queries 没有原样透传: %+v", searcher.input)
 	}
 }
 
