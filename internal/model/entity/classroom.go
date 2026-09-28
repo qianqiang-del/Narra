@@ -31,11 +31,15 @@ type Classroom struct {
 	// 业务代码禁止给它赋值或 Preload：赋了非空值再保存本课程，GORM 会连带 upsert folders 行。
 	Folder *Folder `gorm:"foreignKey:FolderID;constraint:classrooms_folder_id_fkey,OnDelete:SET NULL" json:"-"`
 
-	Title       string          `gorm:"column:title;type:varchar(200);not null;comment:课程名称" json:"title"`                                                                                                                                                                           // 课程名称
-	Requirement string          `gorm:"column:requirement;type:text;not null;comment:用户提交的原始生成需求，重新生成时以它为准" json:"requirement"`                                                                                                                                                      // 用户原始生成需求
-	Mode        string          `gorm:"column:mode;type:varchar(32);not null;check:classrooms_mode_check,mode IN ('vocational', 'interactive');comment:课程模式，取值 vocational（职业技能）/ interactive（互动课堂）" json:"mode"`                                                                     // vocational | interactive
-	Status      string          `gorm:"column:status;type:varchar(32);not null;check:classrooms_status_check,status IN ('generating', 'playable', 'ready', 'failed');comment:课程状态，取值 generating（生成中，首页未就绪进不去）/ playable（首页已就绪可进入）/ ready（全部场景完整生成）/ failed（中断且首页未就绪）" json:"status"` // 课程当前状态，见 §5.1
-	Plan        json.RawMessage `gorm:"column:plan;type:jsonb;not null;default:'{}';comment:本轮生成的课堂计划快照（JSON）；同时作为前端大纲与段二执行的唯一事实源" json:"plan"`
+	Title       string `gorm:"column:title;type:varchar(200);not null;comment:课程名称" json:"title"`                                                                                                                                                                           // 课程名称
+	Requirement string `gorm:"column:requirement;type:text;not null;comment:用户提交的原始生成需求，重新生成时以它为准" json:"requirement"`                                                                                                                                                      // 用户原始生成需求
+	Mode        string `gorm:"column:mode;type:varchar(32);not null;check:classrooms_mode_check,mode IN ('vocational', 'interactive');comment:课程模式，取值 vocational（职业技能）/ interactive（互动课堂）" json:"mode"`                                                                     // vocational | interactive
+	Status      string `gorm:"column:status;type:varchar(32);not null;check:classrooms_status_check,status IN ('generating', 'playable', 'ready', 'failed');comment:课程状态，取值 generating（生成中，首页未就绪进不去）/ playable（首页已就绪可进入）/ ready（全部场景完整生成）/ failed（中断且首页未就绪）" json:"status"` // 课程当前状态，见 §5.1
+	// GenerationError 记录生成中断的原因，为空表示没有中断。
+	// 与 status 配合读：playable 且它为空表示大纲已完成、场景仍在后台生成；非空表示流程已中断。
+	GenerationError *string `gorm:"column:generation_error;type:text;comment:生成中断的原因；为空表示未中断。status=playable 且此列为空表示大纲已完成、场景仍在生成" json:"generation_error"`
+
+	Plan json.RawMessage `gorm:"column:plan;type:jsonb;not null;default:'{}';comment:本轮生成的课堂计划快照（JSON）；同时作为前端大纲与段二执行的唯一事实源" json:"plan"`
 	// PlanVersion 计划的版本号，首轮为 1，重新规划时递增。
 	// 用它判断已落库的场景结果是否属于当前计划，而不是解析 JSON 再比。
 	PlanVersion int32 `gorm:"column:plan_version;type:int;not null;default:1;comment:计划版本号；首轮为 1，重新规划时递增，用于判断已落库的场景结果是否属于当前计划" json:"plan_version"`

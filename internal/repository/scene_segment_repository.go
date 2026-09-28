@@ -21,7 +21,7 @@ func NewSceneSegmentRepository(db *gorm.DB) SceneSegmentRepository {
 
 func (r *sceneSegmentRepository) ListByScene(ctx context.Context, sceneID uint64) ([]entity.SceneSegment, error) {
 	var segments []entity.SceneSegment
-	err := r.db.WithContext(ctx).
+	err := conn(ctx, r.db).
 		Where("scene_id = ?", sceneID).
 		Order("sort_order ASC").
 		Find(&segments).Error
