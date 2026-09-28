@@ -16,6 +16,7 @@ import (
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
 	"narra/internal/service"
+	"narra/pkg/config"
 	"narra/pkg/documentparser"
 )
 
@@ -59,7 +60,7 @@ func (p *stubParser) Status(context.Context) documentparser.Status {
 // newEventsController 把秒级的推送节奏压到毫秒级，否则一条状态流转要等两三秒。
 func newEventsController(t *testing.T, svc service.KnowledgeService, parser documentparser.Parser) *Controller {
 	t.Helper()
-	controller := NewController(svc, t.TempDir(), parser)
+	controller := NewController(svc, t.TempDir(), parser, config.KnowledgeIngestConfig{})
 	controller.eventsQueryInterval = 5 * time.Millisecond
 	controller.eventsHeartbeatInterval = time.Minute
 	controller.eventsMaxDuration = time.Minute

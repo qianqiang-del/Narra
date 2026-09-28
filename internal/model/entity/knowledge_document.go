@@ -9,7 +9,6 @@ import (
 const (
 	KnowledgeDocumentSourceManual = "manual" // 用户在编辑器里直接录入的正文
 	KnowledgeDocumentSourceImport = "import" // 由文件导入（上传的原件）
-	KnowledgeDocumentSourceAPI    = "api"    // 外部系统通过接口同步
 )
 
 // 文档的处理状态。上传后由后台异步推进（解析一份 PDF 可能几分钟），
@@ -47,8 +46,8 @@ type KnowledgeDocument struct {
 
 	Title           string  `gorm:"column:title;type:varchar(300);not null;comment:文章展示名，上限 300 字；留空时由正文首个一级标题、再退到原始文件名顶替" json:"title"`                                                                                                                                                  // 文章展示标题
 	Content         string  `gorm:"column:content;type:text;not null;check:knowledge_documents_ready_has_content_check,status <> 'ready' OR length(content) > 0;comment:未切分的完整原文，不参与检索，只作为重建切片的唯一来源" json:"content"`                                                                      // 未切分的完整原文，是重建切片的唯一来源；CHECK 跨 status 与 content 两列，挂在本字段（每字段限一条 check tag）
-	SourceType      string  `gorm:"column:source_type;type:varchar(32);not null;check:knowledge_documents_source_type_check,source_type IN ('manual', 'import', 'api');comment:来源类型，取值 manual（手工录入）/ import（文件导入）/ api（接口同步）" json:"source_type"`                                         // 文章来源类型：manual、import 或 api
-	SourceURI       *string `gorm:"column:source_uri;type:text;comment:来源标识；文件导入时是原始文件名，接口同步时是外部地址，手工录入为空" json:"source_uri"`                                                                                                                                                             // 外部来源地址、文件位置或接口标识；手工文章可为空
+	SourceType      string  `gorm:"column:source_type;type:varchar(32);not null;check:knowledge_documents_source_type_check,source_type IN ('manual', 'import');comment:来源类型，取值 manual（手工录入）/ import（文件导入）" json:"source_type"`                                                           // 文章来源类型：manual 或 import
+	SourceURI       *string `gorm:"column:source_uri;type:text;comment:来源标识；文件导入时是原始文件名，手工录入为空" json:"source_uri"`                                                                                                                                                                        // 文件位置或原始文件名；手工文章可为空
 	ContentChecksum *string `gorm:"column:content_checksum;type:char(64);comment:正文的 SHA-256 摘要（64 位十六进制），用于判断内容变没变、要不要重新切片" json:"content_checksum"`                                                                                                                                     // 原文内容的 SHA-256 摘要，用于判断是否需要重新切片
 	Enabled         bool    `gorm:"column:enabled;not null;comment:是否参与知识检索；为 false 时本文档的切片不会被召回" json:"enabled"`                                                                                                                                                                         // 是否允许该文章的切片参与 RAG 检索
 	Status          string  `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_documents_status_check,status IN ('pending', 'processing', 'ready', 'failed');comment:处理状态，取值 pending（排队）/ processing（处理中）/ ready（可用）/ failed（失败，原因在 metadata）" json:"status"` // 处理状态：pending、processing、ready 或 failed

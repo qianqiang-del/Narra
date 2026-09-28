@@ -31,7 +31,17 @@ type KnowledgeService interface {
 	//
 	// 返回的文档 status 是 pending，chunks 是 0 —— 解析与向量化由 rag.Worker 推进。
 	// 调用方拿返回的 id 用 Get 轮询进度。
+	//
+	// 收录队列（pending + processing）达到配置上限时返回可判定的 ErrIngestQueueFull，
+	// 接口层据此翻成 409；判定与建行在收录链路的事务里原子完成，服务层不做二次判断。
 	SubmitFile(ctx context.Context, input requestdto.KnowledgeIngestFile) (responsedto.KnowledgeDocument, error)
+
+	// SubmitFiles 逐个提交一批文件，返回与入参同序的逐项结果。
+	//
+	// 它是批量上传的入口：每个文件独立成败，被拒项（队列满、写库失败）带上原因，
+	// 已入队的项带上 document_id，互不影响。整体错误只可能来自请求体层面，
+	// 那在接口层就被拦掉了，所以这里不返回 error。
+	SubmitFiles(ctx context.Context, inputs []requestdto.KnowledgeIngestFile) []responsedto.KnowledgeIngestItem
 
 	// Retry 把一条收录失败的文档重新排队，让它再跑一遍（**原地重试**）。
 	//
@@ -42,7 +52,7 @@ type KnowledgeService interface {
 	//
 	// 三种情形返回可判定的错误，接口层据此翻成 409 而不是 400：
 	// 状态不是 failed（ErrRetryNotFailed）、原件与中间结果全都不在（ErrRecoveryInputMissing）、
-	// 或此刻还有其他任务在跑（ErrIngestBusy）。
+	// 或收录队列已满（ErrIngestQueueFull）。
 	Retry(ctx context.Context, id uint64) (responsedto.KnowledgeDocument, error)
 
 	// IngestText 直接把一段正文收录为 Markdown，跳过解析。这条链路仍是同步的。
@@ -66,6 +76,13 @@ type KnowledgeService interface {
 
 	// Get 返回单篇文档。文档不存在时返回带明确说明的错误。
 	Get(ctx context.Context, id uint64) (responsedto.KnowledgeDocument, error)
+
+	// SetEnabled 切换一篇文档是否参与检索，返回更新后的文档。
+	//
+	// 停用不删任何东西：切片与向量原样保留，只是两条召回 SQL 过滤掉它
+	// （见 knowledge_search_repository），改回 true 立即恢复。文档不存在时返回
+	// 带明确说明的错误；它对文档状态没有要求（字段与收录状态正交）。
+	SetEnabled(ctx context.Context, id uint64, enabled bool) (responsedto.KnowledgeDocument, error)
 
 	// Preview 返回单篇文档的解析正文。正文只有这个接口会出网。
 	Preview(ctx context.Context, id uint64) (responsedto.KnowledgeDocumentPreview, error)

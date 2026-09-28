@@ -192,8 +192,8 @@ func TestUploadRecordDeleteKeepsReadyDocument(t *testing.T) {
 	}
 }
 
-// 删记录要连带删掉那份还没收录成功的文档：它是上传闸门 CountActive 的输入，
-// 留着会让"一次只收一份"永久返回 409，而删掉记录之后用户再也没有入口清掉它。
+// 删记录要连带删掉那份还没收录成功的文档：它占着收录队列的名额（CountActive），
+// 留着会让容量迟迟不释放，而删掉记录之后用户再也没有入口清掉它。
 func TestUploadRecordDeleteCascadesUnfinishedDocument(t *testing.T) {
 	tx := testTx(t)
 	documents := NewKnowledgeDocumentRepository(tx)

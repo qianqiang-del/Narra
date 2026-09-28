@@ -4,7 +4,7 @@
  *
  * 三块：
  * - **主页列表**只列已收录（ready）的文档，滚到底自动续接下一批（每批 10 条）；
- * - **新增知识库**收进弹层：一次只能传一份，上一份处理完才放开；
+ * - **新增知识库**收进弹层：支持批量选择，每份文件独立显示排队 / 处理 / 完成 / 失败；
  * - **上传记录**收进抽屉：每一次文件投递的流水（批 ② 起独立成表），含已收录成功的。
  *
  * 收录取自后端异步链路：上传请求只落盘建行，解析与向量化在后台推进。所以这里的
@@ -183,6 +183,28 @@ async function retryRecord(record: KnowledgeUploadRecord) {
   }
 }
 
+/**
+ * 切换一篇文档是否参与检索。
+ *
+ * 不加确认框：它是可逆的，切片与向量都不动，只是召回时被过滤掉 —— 与重试同一个口径。
+ * 开关是**乐观更新**：store 先把那一行翻过来再发请求，所以点击即时生效；
+ * 请求期间该行开关置灰（togglingIds），直到服务端返回才解除，防止连点钻进竞态。
+ */
+async function toggleEnabled(document: KnowledgeDocument) {
+  if (store.togglingIds.has(document.id)) return
+
+  try {
+    const updated = await store.setEnabled(document, !document.enabled)
+    toast.success(
+      t(updated.enabled ? 'knowledge.toggle.enabled' : 'knowledge.toggle.disabled', {
+        title: updated.title,
+      }),
+    )
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : t('knowledge.error.toggle'))
+  }
+}
+
 function askDeleteRecord(record: KnowledgeUploadRecord) {
   pendingDelete.value = { kind: 'record', record }
   confirmOpen.value = true
@@ -328,6 +350,30 @@ function goBack() {
             :document="document"
           >
             <template #actions>
+              <!-- 启停开关放最前：绿=参与检索，红=已停用；"启用/停用"直接写在开关里面 -->
+              <button
+                type="button"
+                role="switch"
+                :aria-checked="document.enabled"
+                :disabled="store.togglingIds.has(document.id)"
+                :title="document.enabled ? t('knowledge.action.disable') : t('knowledge.action.enable')"
+                class="relative inline-flex h-6 w-16 shrink-0 cursor-pointer items-center rounded-full p-0.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                :class="document.enabled ? 'bg-emerald-500' : 'bg-red-400 dark:bg-red-500/80'"
+                @click="toggleEnabled(document)"
+              >
+                <span
+                  class="absolute inset-y-0 flex w-10 -translate-y-px items-center justify-center text-[11px] leading-none font-medium text-white select-none"
+                  :class="document.enabled ? 'left-0.5' : 'right-0.5'"
+                >
+                  {{
+                    document.enabled ? t('knowledge.toggle.stateOn') : t('knowledge.toggle.stateOff')
+                  }}
+                </span>
+                <span
+                  class="size-5 rounded-full bg-white shadow-sm transition-transform"
+                  :class="document.enabled ? 'translate-x-10' : 'translate-x-0'"
+                />
+              </button>
               <button
                 type="button"
                 class="inline-flex cursor-pointer items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs text-zinc-700 transition-colors hover:bg-muted dark:text-zinc-300"

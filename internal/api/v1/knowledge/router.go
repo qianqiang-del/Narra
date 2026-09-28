@@ -9,14 +9,20 @@ import "github.com/gin-gonic/gin"
 //
 // 注意 /parser/status 与 /:id/preview 都是两段路径：gin 的路由树里静态段优先于参数段，
 // 所以 "parser" 不会被当成一个文档 ID，两个接口可以共存，注册顺序也不影响。
+// /upload-limits 同理，它是上传契约而不是某一篇文档的子资源。
 func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	documents := g.Group("/knowledge/documents")
 	documents.POST("", c.Upload)
 	documents.POST("/text", c.IngestText)
+	// 上传限制由状态接口下发，前端据此做选择文件时的预检（服务端仍是唯一裁判）。
+	documents.GET("/upload-limits", c.UploadLimits)
 	// 重试是"让这一篇再跑一遍"，所以它是文档的子动作，不是新的一次上传（POST 而非 PUT）：
 	// 收的是状态流转，不是内容。路由段与 /:id/preview 同一形状，能共存。
 	documents.POST("/:id/retry", c.Retry)
 	documents.GET("", c.List)
+	// 启停是"改这一篇的一个字段"，所以是文档的子资源式路径 + PATCH：只动 enabled，
+	// 不重传正文、也不新建资源（与 LLM provider 的 /:id/enabled 同一种写法）。
+	documents.PATCH("/:id/enabled", c.SetEnabled)
 	documents.GET("/parser/status", c.ParserStatus)
 	// 收录进度走 SSE：上传/重试返回后前端订阅这条流，直到文档到终态。
 	// 它挂在文档下面而不是另开一组资源 —— 推的就是这一篇的状态变化。

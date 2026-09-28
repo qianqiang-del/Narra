@@ -17,6 +17,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"narra/internal/agent/classroom"
+	"narra/internal/agent/discussion"
 	"narra/internal/api"
 	"narra/internal/bootstrap"
 	internalmcp "narra/internal/mcp"
@@ -209,6 +210,13 @@ func (a *App) initDependencies() error {
 	// SSE 侧只读。
 	conversationRepo := repository.NewConversationRepository(a.postgresDB)
 	conversationEventRepo := repository.NewConversationEventRepository(a.postgresDB)
+	// 多 Agent 讨论（成员 C）用到的仓储：消息、运行、回合、上下文摘要、共享记忆。
+	// 这几个表此前没有任何生产代码使用过 —— 讨论链路是它们的第一个使用者。
+	messageRepo := repository.NewMessageRepository(a.postgresDB)
+	runRepo := repository.NewRunRepository(a.postgresDB)
+	turnRepo := repository.NewTurnRepository(a.postgresDB)
+	compactionRepo := repository.NewContextCompactionRepository(a.postgresDB)
+	sharedMemoryRepo := repository.NewSharedMemoryRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
 	roleSvc := service.NewRoleService(roleRepo)
@@ -242,8 +250,14 @@ func (a *App) initDependencies() error {
 	// 运行时模块（rag.Ingester / mcp.Manager）在这里建好，再作为依赖注入服务层。
 	// 文档与上传记录是两个仓储：前者是资产，后者是投递历史，表也不同。
 	parser := newDocumentParser(a.cfg)
+	knowledgeIngest := a.cfg.KnowledgeIngest.WithDefaults()
 	knowledgeIngester := rag.NewIngester(
-		knowledgeDocumentRepo, knowledgeUploadRecordRepo, embeddingModelRepo, embeddingManager, parser)
+		knowledgeDocumentRepo, knowledgeUploadRecordRepo, embeddingModelRepo, embeddingManager, parser,
+		rag.IngestOptions{
+			Tx:                   txManager,
+			QueueCapacity:        knowledgeIngest.QueueCapacity,
+			EmbeddingConcurrency: knowledgeIngest.EmbeddingConcurrency,
+		})
 	uploadDir := a.cfg.Storage.UploadDir
 	if uploadDir == "" {
 		uploadDir = "data/uploads"
@@ -259,10 +273,11 @@ func (a *App) initDependencies() error {
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 		return fmt.Errorf("创建上传目录失败: %w", err)
 	}
-	// 文件收录跑在后台 worker 里：上传接口只建 pending 行，解析与向量化由它按秒轮询推进。
-	// 并发固定为 1 —— 收录同时吃 CPU 和上游额度，MVP 阶段串行跑更容易定位问题；
+	// 文件收录跑在后台 worker 里：上传接口只建 pending 行，解析与向量化由它轮询推进。
+	// 并发数来自 knowledge_ingest.parse_concurrency（默认 2）：解析同时吃 CPU 与 OCR，
+	// 上限是"别把机器挤满"；向量化另有独立的 embedding_concurrency，见 rag.IngestOptions。
 	// uploadDir 必须和上面给 controller、service 的是同一个值，否则删除时的暂存清理会静默失效。
-	a.knowledgeWorker = rag.NewWorker(knowledgeDocumentRepo, knowledgeIngester, uploadDir, 1)
+	a.knowledgeWorker = rag.NewWorker(knowledgeDocumentRepo, knowledgeIngester, uploadDir, knowledgeIngest.ParseConcurrency)
 	a.knowledgeWorker.Start()
 	// 检索是收录的另一半门面：两路召回（余弦相似度 + 词项命中）经 RRF 融合，
 	// 编排在 rag.Retriever，服务层只做 DTO 映射。向量模型的登记与索引维护走
@@ -327,6 +342,43 @@ func (a *App) initDependencies() error {
 	// 事件的写入不经过服务层 —— 它属于产生内容的那条链路（编排 / 工作台）的事务。
 	conversationSvc := service.NewConversationService(conversationRepo, conversationEventRepo)
 
+	// 多 Agent 讨论（成员 C）：用户发一句话 → 跑一趟讨论，过程写进事件表，
+	// 由上面那条 SSE 流带给前端。
+	//
+	// ⚠️ 模型现在用的是**不花钱的替身**（FakeModel）：这一步接的是"触发入口"这条链路 ——
+	// 用户消息落库、角色与模型从库里凑齐、讨论真的跑起来并落库。接真实大模型是下一步，
+	// 届时只改下面这几个 Model / Summarizer / Extractor 的赋值（换成读课程快照、
+	// 解密 API Key、建 llm 客户端的那一版），入口与编排都不用动。
+	discussionOrchestrator, err := discussion.New(discussion.Deps{
+		Tx:            txManager,
+		Conversations: conversationRepo,
+		Messages:      messageRepo,
+		Runs:          runRepo,
+		Turns:         turnRepo,
+		Compactions:   compactionRepo,
+		Memories:      sharedMemoryRepo,
+		Events:        conversationEventRepo,
+		Model:         discussion.FakeModel{},
+		Summarizer:    discussion.FakeModel{},
+		Extractor:     discussion.FakeModel{},
+		// 按上一轮给出的动作换人：会"停下来问用户"，也会在认不出动作时兜底换人。
+		Director: discussion.TurnTakingDirector{},
+		Logger:   logger.GetLogger(),
+	})
+	if err != nil {
+		return fmt.Errorf("装配讨论编排器失败: %w", err)
+	}
+	discussionSvc := service.NewDiscussionService(service.DiscussionDeps{
+		Conversations: conversationRepo,
+		Classrooms:    classroomRepo,
+		Agents:        classroomAgentRepo,
+		Roles:         roleRepo,
+		Messages:      messageRepo,
+		Tx:            txManager,
+		Orchestrator:  discussionOrchestrator,
+		Logger:        logger.GetLogger(),
+	})
+
 	// 过程数据的过期清理：expires_at 在写入时就按各自保留期算好了（事件 7 天），
 	// 清理侧只认这一列。没有它事件表会一直涨，而它记录的事实另有更长的生命周期。
 	a.retention = retention.New(
@@ -339,7 +391,7 @@ func (a *App) initDependencies() error {
 	}
 
 	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo)
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, sceneSvc, knowledgeSvc, conversationSvc, uploadDir, parser)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, uploadDir, parser, knowledgeIngest)
 	return nil
 }
 
@@ -403,10 +455,16 @@ func (a *App) initServer() {
 	a.router.Setup(engine)
 
 	// 创建 HTTP 服务器
+	// 读超时要覆盖"最大批量上传在较慢链路上传完"的时间，否则 100MB 的限制会被网络
+	// 提前掐断（见 config.AppConfig.ReadTimeout）。没配置时退回 60s 的历史值。
+	readTimeout := a.cfg.App.ReadTimeout
+	if readTimeout <= 0 {
+		readTimeout = 60 * time.Second
+	}
 	a.server = &http.Server{
 		Addr:           fmt.Sprintf(":%d", a.cfg.App.Port),
 		Handler:        engine,
-		ReadTimeout:    60 * time.Second,
+		ReadTimeout:    readTimeout,
 		WriteTimeout:   60 * time.Second,
 		MaxHeaderBytes: 1 << 20, // 1 MB
 	}
