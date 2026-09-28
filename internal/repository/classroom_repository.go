@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 
 	"gorm.io/gorm"
 
@@ -50,7 +51,7 @@ func (r *classroomRepository) Delete(ctx context.Context, id uint64) error {
 
 // UpdateTitle 更新课程标题。
 func (r *classroomRepository) UpdateTitle(ctx context.Context, id uint64, title string) error {
-	return r.db.WithContext(ctx).
+	return conn(ctx, r.db).
 		Model(&entity.Classroom{}).
 		Where("id = ?", id).
 		Update("title", title).
@@ -59,10 +60,35 @@ func (r *classroomRepository) UpdateTitle(ctx context.Context, id uint64, title 
 
 // UpdateStatus 更新课程状态与生成失败原因。
 func (r *classroomRepository) UpdateStatus(ctx context.Context, id uint64, status string, generationError *string) error {
-	return r.db.WithContext(ctx).
+	return conn(ctx, r.db).
 		Model(&entity.Classroom{}).
 		Where("id = ?", id).
 		Updates(map[string]any{"status": status, "generation_error": generationError}).
+		Error
+}
+
+// SavePlan 写入本轮生成的计划快照、计划版本号与运行标识，三者一次更新。
+//
+// json.RawMessage 是 []byte，直接当参数会被当成 bytea，所以转成字符串交给 PostgreSQL
+// 按目标列类型解析（同 sceneRepository.UpdateContent）。
+func (r *classroomRepository) SavePlan(ctx context.Context, id uint64, plan json.RawMessage, version int32, runID string) error {
+	return conn(ctx, r.db).
+		Model(&entity.Classroom{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"plan":              string(plan),
+			"plan_version":      version,
+			"generation_run_id": runID,
+		}).
+		Error
+}
+
+// UpdateRunID 写入本轮生成的运行标识。
+func (r *classroomRepository) UpdateRunID(ctx context.Context, id uint64, runID string) error {
+	return conn(ctx, r.db).
+		Model(&entity.Classroom{}).
+		Where("id = ?", id).
+		Update("generation_run_id", runID).
 		Error
 }
 

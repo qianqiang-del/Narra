@@ -4,15 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
 	"narra/internal/repository"
 	apperrors "narra/pkg/errors"
+	"narra/pkg/logger"
+	"narra/pkg/utils"
 )
 
 // modelLister 提供可用模型清单，受理时校验所选模型是否可用。
@@ -20,9 +27,10 @@ type modelLister interface {
 	AvailableModels(ctx context.Context) ([]responsedto.AvailableLLMModel, error)
 }
 
-// JobQueue 受理成功后投递生成任务。
+// JobQueue 受理成功后投递生成任务，删除课堂时撤掉它。
 type JobQueue interface {
 	Enqueue(classroomID uint64) error
+	Remove(classroomID uint64) error
 }
 
 // 角色选择模式，取值与请求体的 agent_mode 一致。
@@ -43,9 +51,11 @@ type classroomService struct {
 	models     modelLister
 	queue      JobQueue
 	tx         repository.TransactionManager
+	// audioDir 是课堂音频的根目录，删除课堂时按 <audioDir>/<课堂 ID> 清理。
+	audioDir string
 }
 
-// NewClassroomService 构造课堂服务。queue 受理成功后投递生成任务。
+// NewClassroomService 构造课堂服务。queue 受理成功后投递生成任务，audioDir 供删除课堂时清理音频。
 func NewClassroomService(
 	classrooms repository.ClassroomRepository,
 	agents repository.ClassroomAgentRepository,
@@ -54,6 +64,7 @@ func NewClassroomService(
 	models modelLister,
 	queue JobQueue,
 	tx repository.TransactionManager,
+	audioDir string,
 ) ClassroomService {
 	return &classroomService{
 		classrooms: classrooms,
@@ -63,6 +74,7 @@ func NewClassroomService(
 		models:     models,
 		queue:      queue,
 		tx:         tx,
+		audioDir:   audioDir,
 	}
 }
 
@@ -169,11 +181,16 @@ func (s *classroomService) Create(ctx context.Context, input requestdto.CreateCl
 		return nil, err
 	}
 
+	runID, err := utils.RandomHex(16)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "生成运行标识失败", err)
+	}
 	classroom := &entity.Classroom{
 		Title:            truncateText(requirement, 200),
 		Requirement:      requirement,
 		Mode:             mode,
 		Status:           entity.ClassroomStatusGenerating,
+		GenerationRunID:  runID,
 		GenerationConfig: generationConfig,
 		AgentConfig:      agentConfig,
 	}
@@ -333,12 +350,40 @@ func (s *classroomService) List(ctx context.Context) ([]*responsedto.Classroom, 
 	return items, nil
 }
 
+// Delete 删除课堂：先撤掉生成任务，再删库，最后清音频。
+//
+// 顺序有讲究。先撤任务：否则删完库还留着页面继续跑模型，白花钱。
+// 最后清音频：库删干净之后 data/audio/<id>/ 里那些 wav 就再没人引用了，留着只是垃圾。
+//
+// 「停止写旧结果」不在这里做，也不该在这里做：页面每次写库都带页面租约校验，
+// 行都被级联删掉了，旧执行者的写入自然影响 0 行——靠代码结构保证，不靠删除方记得去拦。
 func (s *classroomService) Delete(ctx context.Context, id uint64) error {
+	if err := s.queue.Remove(id); err != nil {
+		// 撤任务失败不拦着删课：任务真跑起来发现课没了会自己结束（Generate 读不到课程直接返回），
+		// 用户想删的课却删不掉才是更糟的结果。
+		logger.Warn("撤销生成任务失败，继续删除课堂", zap.Uint64("classroom_id", id), zap.Error(err))
+	}
 	if err := s.classrooms.Delete(ctx, id); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
 		}
 		return apperrors.NewWithErr(apperrors.CodeInternalError, "删除课堂失败", err)
+	}
+	if err := s.removeAudio(id); err != nil {
+		logger.Warn("清理课堂音频失败", zap.Uint64("classroom_id", id), zap.Error(err))
+	}
+	return nil
+}
+
+// removeAudio 删掉这门课的音频目录。删的是本程序自己写出去的目录，
+// 路径由 audioDir 加课程 ID 拼成，不含任何外部输入。
+func (s *classroomService) removeAudio(classroomID uint64) error {
+	if s.audioDir == "" {
+		return nil
+	}
+	dir := filepath.Join(s.audioDir, strconv.FormatUint(classroomID, 10))
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("删除音频目录 %s 失败: %w", dir, err)
 	}
 	return nil
 }

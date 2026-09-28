@@ -75,6 +75,19 @@ func (s *Server) TaskExists(taskID string) (bool, error) {
 	return true, nil
 }
 
+// RemoveQueued 从队列里删掉一个还没开始跑的任务（待处理 / 计划中 / 待重试 / 已归档）。
+//
+// 已经在执行的任务删不掉：asynq 对 active 状态的任务直接报错——它没有中断执行的手段，
+// 只能等任务自己结束。那一头由生成链路的取消登记表负责，这里只管排队中的那一份。
+// 任务本就不在队列里不算错：说明它已经跑完，或者压根没投出去过。
+func (s *Server) RemoveQueued(taskID string) error {
+	err := s.inspector.DeleteTask(defaultQueue, taskID)
+	if err == nil || errors.Is(err, asynq.ErrTaskNotFound) {
+		return nil
+	}
+	return fmt.Errorf("删除排队中的任务失败: %w", err)
+}
+
 // Permanent 把错误标记为「重试也不会成功」。
 func Permanent(err error) error {
 	return fmt.Errorf("%w: %w", err, asynq.SkipRetry)

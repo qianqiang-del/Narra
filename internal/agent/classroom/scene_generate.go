@@ -5,101 +5,174 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"narra/internal/model/entity"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
+
+	"narra/internal/model/entity"
+	"narra/pkg/logger"
 )
 
-// maxModelRetry 是一次模型调用失败后的重试次数。
-const maxModelRetry = 1
-
-// maxTTSRetry 是一段讲稿合成失败后的重试次数；TTS 是纯网络 IO，抖动比模型调用多。
-const maxTTSRetry = 2
-
-// retryBackoff 是两次重试之间的固定等待。
-const retryBackoff = time.Second
-
+// generateScenes 段二入口：把还没生成完的页交给页面执行器，全部结束后汇总课堂状态。
 func generateScenes(ctx context.Context, deps Deps, classroom *entity.Classroom, config GenerationConfig) error {
 	scenes, err := deps.Scenes.ListByClassroom(ctx, classroom.ID)
 	if err != nil {
 		return err
 	}
+	plan := classroomPlanOf(classroom, scenes)
+	tasks := pendingPages(plan, scenes)
+	if len(tasks) == 0 {
+		return deps.Classrooms.UpdateStatus(ctx, classroom.ID, entity.ClassroomStatusReady, nil)
+	}
+
+	// 逐页抢租约需要两个标识：runID 说「这一页属于哪一轮生成」，owner 说「现在是谁在做」。
+	runID, err := EnsureRunID(ctx, deps, classroom)
+	if err != nil {
+		return err
+	}
+	owner, err := newLeaseOwner(runID)
+	if err != nil {
+		return err
+	}
+
 	teacher, voice, err := classroomTeacher(ctx, deps, classroom.ID)
 	if err != nil {
 		return err
 	}
-	rt, err := newRuntime(ctx, deps, config.ProviderID, config.ModelID, false)
+	// 页面级的调研要用到与规划同一个工具集，所以联网开关要一路带到这里。
+	rt, err := newRuntime(ctx, deps, config.ProviderID, config.ModelID, config.WebSearch)
 	if err != nil {
 		return err
 	}
-	contentChain, err := buildContentChain(ctx, rt)
-	if err != nil {
-		return err
+
+	executor := &pageExecutor{
+		deps:      deps,
+		classroom: classroom,
+		teacher:   teacher,
+		voice:     voice,
+		rt:        rt,
+		context:   buildClassroomContext(classroom, plan),
+		outline:   outlineIndex(plan.Pages),
+		ttsPool:   newTTSLimiter(effectiveTTSPoolSize(deps)),
+		runID:     runID,
+		owner:     owner,
 	}
-	narrationChain, err := buildNarrationChain(ctx, rt)
-	if err != nil {
-		return err
-	}
-	failed := make([]string, 0)
-	for _, scene := range scenes {
-		if scene.Type == entity.SceneTypeComplete || scene.Status == entity.SceneStatusReady {
+	concurrency := effectivePageConcurrency(deps)
+	logger.Info("课堂页面开始生成",
+		zap.Uint64("classroom_id", classroom.ID),
+		zap.Int("pages", len(tasks)),
+		zap.Int("concurrency", concurrency),
+		zap.String("run_id", runID),
+	)
+
+	outcomes := runPages(ctx, tasks, concurrency, executor.run)
+	failures := make(map[int32]string, len(outcomes))
+	for _, outcome := range outcomes {
+		if outcome.err == nil {
 			continue
 		}
-		if err := deps.Scenes.UpdateStatus(ctx, scene.ID, entity.SceneStatusGenerating, nil); err != nil {
-			return err
+		failures[outcome.task.Scene.SortOrder] = outcome.task.Scene.Title + "：" + truncateRunes(outcome.err.Error(), 500)
+	}
+
+	// 收尾写库脱离任务 ctx：整课预算到点时这个 ctx 已经失效，而课堂状态必须落地，
+	// 否则这门课会永远停在 generating，只能等对账把失败原因写成一句与事实无关的话。
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	if errors.Is(context.Cause(ctx), errBudgetExceeded) {
+		// 时长预算到点：已经做完的页照常可用，没做的页留给下一次（它们的 status 还是 pending/failed）。
+		// 这里必须返回 nil 而不是错误——任务层重试只会把同样长的时间再烧一遍，
+		// 「部分可用 + 说明」是个明确终态，比反复重试更实在。
+		if len(failures) == 0 {
+			return deps.Classrooms.UpdateStatus(writeCtx, classroom.ID, entity.ClassroomStatusReady, nil)
 		}
-		input := &sceneChainInput{Classroom: classroom, Scenes: scenes, Current: scene, Teacher: teacher}
-		blocks, runErr := invokeWithRetryIf(ctx, maxModelRetry, retryableSceneError, func() ([]contentBlock, error) {
-			generated, err := contentChain.Invoke(ctx, input)
-			if err != nil {
-				return nil, err
-			}
-			validated, validationErr := validateBlocks(generated, scene.Type)
-			if validationErr != nil {
-				input.ValidationError = validationErr.Error()
-			}
-			return validated, validationErr
-		})
-		if runErr == nil {
-			input.Blocks = blocks
-			var narration []narrationSegment
-			narration, runErr = invokeWithRetryIf(ctx, maxModelRetry, retryableModelError, func() ([]narrationSegment, error) {
-				items, invokeErr := narrationChain.Invoke(ctx, input)
-				if invokeErr != nil {
-					return nil, invokeErr
-				}
-				return validateNarration(items, blocks)
-			})
-			if runErr == nil {
-				var segments []*entity.SceneSegment
-				segments, runErr = persistSceneWithRetry(ctx, deps, scene.ID, blocks, narration, deps.TTS == nil)
-				if runErr == nil && deps.TTS != nil {
-					runErr = synthesizeSegments(ctx, deps, classroom.ID, voice, segments)
-				}
-			}
-		}
-		if runErr != nil {
-			message := truncateRunes(runErr.Error(), 500)
-			_ = deps.Scenes.UpdateStatus(context.WithoutCancel(ctx), scene.ID, entity.SceneStatusFailed, &message)
-			failed = append(failed, scene.Title+"："+message)
-			continue
-		}
-		if err := deps.Scenes.UpdateStatus(ctx, scene.ID, entity.SceneStatusReady, nil); err != nil {
-			return err
+		done := len(tasks) - len(failures)
+		logger.Warn("整课生成超过时长上限",
+			zap.Uint64("classroom_id", classroom.ID),
+			zap.String("max_duration", deps.MaxDuration.String()),
+			zap.Int("done", done),
+			zap.Int("pages", len(tasks)),
+		)
+		message := truncateRunes(fmt.Sprintf("整课生成超过时长上限（%s）：已完成 %d/%d 页，其余页可稍后重试",
+			deps.MaxDuration, done, len(tasks)), 500)
+		return deps.Classrooms.UpdateStatus(writeCtx, classroom.ID, entity.ClassroomStatusPlayable, &message)
+	}
+
+	if len(failures) == 0 {
+		return deps.Classrooms.UpdateStatus(writeCtx, classroom.ID, entity.ClassroomStatusReady, nil)
+	}
+
+	reasons := make([]string, 0, len(failures))
+	for _, task := range tasks {
+		if reason, ok := failures[task.Scene.SortOrder]; ok {
+			reasons = append(reasons, reason)
 		}
 	}
-	if len(failed) > 0 {
-		message := truncateRunes("部分场景生成失败："+strings.Join(failed, "；"), 500)
-		return deps.Classrooms.UpdateStatus(ctx, classroom.ID, entity.ClassroomStatusPlayable, &message)
-	}
-	return deps.Classrooms.UpdateStatus(ctx, classroom.ID, entity.ClassroomStatusReady, nil)
+	message := truncateRunes("部分场景生成失败："+strings.Join(reasons, "；"), 500)
+	return deps.Classrooms.UpdateStatus(writeCtx, classroom.ID, entity.ClassroomStatusPlayable, &message)
 }
 
+// pageTask 是段二的一页：计划里的那一页，与它对应的场景行。
+type pageTask struct {
+	Page  PlanPage
+	Scene entity.Scene
+}
+
+// classroomPlanOf 取本课堂的计划快照；旧课堂没有快照时按场景行退化重建。
+func classroomPlanOf(classroom *entity.Classroom, scenes []entity.Scene) *ClassroomPlan {
+	if raw := strings.TrimSpace(string(classroom.Plan)); raw != "" && raw != "{}" {
+		var plan ClassroomPlan
+		if err := json.Unmarshal([]byte(raw), &plan); err == nil && len(plan.Pages) > 0 {
+			return &plan
+		}
+	}
+	return fallbackPlan(scenes)
+}
+
+// fallbackPlan 按场景行重建一份计划，供改造之前生成、没有计划快照的课堂继续生成。
+func fallbackPlan(scenes []entity.Scene) *ClassroomPlan {
+	plan := &ClassroomPlan{Version: initialPlanVersion}
+	for _, scene := range scenes {
+		if scene.Type == entity.SceneTypeComplete {
+			continue
+		}
+		plan.Pages = append(plan.Pages, PlanPage{
+			PlanID:  fmt.Sprintf("page-%02d", scene.SortOrder+1),
+			Order:   int(scene.SortOrder),
+			Type:    scene.Type,
+			Title:   scene.Title,
+			Brief:   scene.Brief,
+			SceneID: scene.ID,
+		})
+	}
+	return plan
+}
+
+// pendingPages 挑出还没生成完的页，并把计划里的页与场景行配对。
+func pendingPages(plan *ClassroomPlan, scenes []entity.Scene) []pageTask {
+	byOrder := make(map[int]entity.Scene, len(scenes))
+	for _, scene := range scenes {
+		byOrder[int(scene.SortOrder)] = scene
+	}
+	tasks := make([]pageTask, 0, len(plan.Pages))
+	for _, page := range plan.Pages {
+		scene, ok := byOrder[page.Order]
+		if !ok || scene.Type == entity.SceneTypeComplete || scene.Status == entity.SceneStatusReady {
+			continue
+		}
+		tasks = append(tasks, pageTask{Page: page, Scene: scene})
+	}
+	return tasks
+}
+
+// classroomTeacher 取本课堂的教师角色与音色。
 func classroomTeacher(ctx context.Context, deps Deps, classroomID uint64) (entity.PresetAgent, string, error) {
 	links, err := deps.Agents.ListByClassroom(ctx, classroomID)
 	if err != nil {
@@ -125,37 +198,70 @@ func classroomTeacher(ctx context.Context, deps Deps, classroomID uint64) (entit
 	return entity.PresetAgent{}, "", fmt.Errorf("课堂没有教师角色")
 }
 
-func persistScene(ctx context.Context, deps Deps, sceneID uint64, blocks []contentBlock, narration []narrationSegment, textOnly bool) ([]*entity.SceneSegment, error) {
+// persistScene 在一个事务里写页面内容、审核摘要与讲解段落，并返回落库后的段落。
+//
+// 段落是按 content_key 幂等替换的：讲稿没变的段落仍是库里原来那行、音频路径照旧。
+// 所以返回的必须是读回来的那一份，而不是内存里的草稿——接着合成语音要靠库里的主键与状态，
+// 草稿里的主键是空的。
+func persistScene(ctx context.Context, deps Deps, sceneID uint64, owner string, blocks []contentBlock, narration []narrationSegment, review json.RawMessage, textOnly bool) ([]entity.SceneSegment, error) {
 	content, err := json.Marshal(map[string]any{"blocks": blocks})
 	if err != nil {
 		return nil, err
 	}
-	segments := make([]*entity.SceneSegment, 0, len(narration))
 	status := entity.SceneSegmentStatusPending
 	if textOnly {
 		status = entity.SceneSegmentStatusReady
 	}
+	segments := make([]*entity.SceneSegment, 0, len(narration))
 	for i, item := range narration {
 		segments = append(segments, &entity.SceneSegment{SceneID: sceneID, ContentKey: item.ContentKey, SortOrder: int32(i), Text: item.Text, Status: status})
 	}
+
+	var stored []entity.SceneSegment
 	err = deps.Tx.Run(ctx, func(txCtx context.Context) error {
-		if err := deps.Segments.DeleteByScene(txCtx, sceneID); err != nil {
+		// 先写内容：这一步带租约校验，租约易主时整个事务回滚，段落替换也一并撤掉，
+		// 不会留下「内容没换、音频却按新讲稿洗过一遍」的半截状态。
+		if err := deps.Scenes.UpdateContent(txCtx, sceneID, owner, content, review); err != nil {
 			return err
 		}
-		if err := deps.Scenes.UpdateContent(txCtx, sceneID, content); err != nil {
+		if err := deps.Segments.ReplaceByScene(txCtx, sceneID, segments); err != nil {
 			return err
 		}
-		return deps.Segments.CreateBatch(txCtx, segments)
+		var listErr error
+		stored, listErr = deps.Segments.ListByScene(txCtx, sceneID)
+		return listErr
 	})
-	return segments, err
+	if err != nil {
+		return nil, err
+	}
+	return stored, nil
 }
 
-func synthesizeSegments(ctx context.Context, deps Deps, classroomID uint64, voice string, segments []*entity.SceneSegment) error {
+// persistSceneWithRetry 落库失败按可重试的数据库错误重试一次。
+func persistSceneWithRetry(ctx context.Context, deps Deps, sceneID uint64, owner string, blocks []contentBlock, narration []narrationSegment, review json.RawMessage, textOnly bool) ([]entity.SceneSegment, error) {
+	return invokeWithRetryIf(ctx, 1, retryableDBError, func() ([]entity.SceneSegment, error) {
+		return persistScene(ctx, deps, sceneID, owner, blocks, narration, review, textOnly)
+	})
+}
+
+// synthesizeSegments 逐段合成语音，跳过已经合成好的段落。
+//
+// 跳过是为了断点续传：重投时内容与讲稿都在库里，只差几段音频，只该补那几段，
+// 而不是把整页重讲一遍。已经合成好的段落在 ReplaceByScene 里就保住了音频路径，
+// 这里再认一次状态，两条路都能少做无用功。
+//
+// 每段音频写库都要带 owner：段落本身没有租约，靠所属页面的租约保护。页面租约易主后，
+// 迟到的音频会被挡在库外——否则它会把上一版讲稿的录音挂到已经改过的段落上。
+func synthesizeSegments(ctx context.Context, deps Deps, classroomID, sceneID uint64, owner, voice string, segments []entity.SceneSegment, pool ttsLimiter) error {
 	dir := filepath.Join(deps.AudioDir, strconv.FormatUint(classroomID, 10))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	for _, segment := range segments {
+	for i := range segments {
+		segment := &segments[i]
+		if segmentAudioReady(segment) {
+			continue
+		}
 		parts, err := splitTTS(segment.Text, 600)
 		if err != nil {
 			return err
@@ -163,6 +269,10 @@ func synthesizeSegments(ctx context.Context, deps Deps, classroomID uint64, voic
 		audios := make([][]byte, 0, len(parts))
 		for _, part := range parts {
 			audio, synthErr := invokeWithRetryIf(ctx, maxTTSRetry, retryableTTSError, func() ([]byte, error) {
+				if err := pool.acquire(ctx); err != nil {
+					return nil, err
+				}
+				defer pool.release()
 				return deps.TTS.Synthesize(ctx, part, voice)
 			})
 			if synthErr != nil {
@@ -173,7 +283,7 @@ func synthesizeSegments(ctx context.Context, deps Deps, classroomID uint64, voic
 		}
 		if err != nil {
 			message := truncateRunes(err.Error(), 500)
-			_ = deps.Segments.UpdateStatus(context.WithoutCancel(ctx), segment.ID, entity.SceneSegmentStatusFailed, &message)
+			_ = deps.Segments.UpdateStatus(context.WithoutCancel(ctx), sceneID, segment.ID, owner, entity.SceneSegmentStatusFailed, &message)
 			return fmt.Errorf("合成讲稿 %s 失败: %w", segment.ContentKey, err)
 		}
 		audio, err := concatWAV(audios)
@@ -189,66 +299,17 @@ func synthesizeSegments(ctx context.Context, deps Deps, classroomID uint64, voic
 			return err
 		}
 		rel := filepath.ToSlash(filepath.Join(strconv.FormatUint(classroomID, 10), name))
-		if err := deps.Segments.UpdateAudio(ctx, segment.ID, rel, entity.SceneSegmentStatusReady); err != nil {
+		if err := deps.Segments.UpdateAudio(ctx, sceneID, segment.ID, owner, rel, entity.SceneSegmentStatusReady); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func invokeWithRetry[T any](ctx context.Context, maxRetry int, invoke func() (T, error)) (T, error) {
-	return invokeWithRetryIf(ctx, maxRetry, func(error) bool { return true }, invoke)
-}
-
-func invokeWithRetryIf[T any](ctx context.Context, maxRetry int, retryable func(error) bool, invoke func() (T, error)) (T, error) {
-	var zero T
-	var lastErr error
-	for attempt := 0; attempt <= maxRetry; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return zero, ctx.Err()
-			case <-time.After(retryBackoff):
-			}
-		}
-		result, err := invoke()
-		if err == nil {
-			return result, nil
-		}
-		lastErr = err
-		if !retryable(err) {
-			break
-		}
-	}
-	return zero, lastErr
-}
-
-func retryableModelError(err error) bool {
-	if err == nil {
-		return false
-	}
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "429") || strings.Contains(text, "500") || strings.Contains(text, "502") || strings.Contains(text, "503") || strings.Contains(text, "504") || strings.Contains(text, "timeout") || strings.Contains(text, "temporary") || strings.Contains(text, "connection")
-}
-
-func retryableTTSError(err error) bool { return retryableModelError(err) }
-
-func retryableSceneError(err error) bool {
-	return retryableModelError(err) || strings.Contains(err.Error(), "内容块") || strings.Contains(err.Error(), "场景")
-}
-
-func persistSceneWithRetry(ctx context.Context, deps Deps, sceneID uint64, blocks []contentBlock, narration []narrationSegment, textOnly bool) ([]*entity.SceneSegment, error) {
-	return invokeWithRetryIf(ctx, 1, retryableDBError, func() ([]*entity.SceneSegment, error) {
-		return persistScene(ctx, deps, sceneID, blocks, narration, textOnly)
-	})
-}
-
-func retryableDBError(err error) bool {
-	if err == nil {
-		return false
-	}
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "connection") || strings.Contains(text, "deadlock") || strings.Contains(text, "timeout") || strings.Contains(text, "temporarily")
+// segmentAudioReady 报告这一段的音频是否已经落库：状态 ready 且音频路径非空。
+func segmentAudioReady(segment *entity.SceneSegment) bool {
+	return segment.Status == entity.SceneSegmentStatusReady &&
+		segment.AudioPath != nil && strings.TrimSpace(*segment.AudioPath) != ""
 }
 
 func splitTTS(text string, max int) ([]string, error) {

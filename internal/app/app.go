@@ -311,25 +311,32 @@ func (a *App) initDependencies() error {
 	}
 
 	// ========== 课堂受理 + 生成任务 ==========
+	// TTS 未启用时 ttsClient 是 nil 指针；直接塞进接口会让接口非 nil，
+	// 下游 deps.TTS == nil 的判断失效。所以只在真的有客户端时才赋值。
 	classroomDeps := classroom.Deps{
-		Providers:     llmProviderRepo,
-		Classrooms:    classroomRepo,
-		Scenes:        sceneRepo,
-		Segments:      sceneSegmentRepo,
-		Agents:        classroomAgentRepo,
-		Roles:         roleRepo,
-		Tx:            txManager,
-		TTS:           ttsClient,
-		AudioDir:      audioDir,
-		Tools:         a.mcpManager,
-		EncryptionKey: encryptionKey,
+		Providers:       llmProviderRepo,
+		Classrooms:      classroomRepo,
+		Scenes:          sceneRepo,
+		Segments:        sceneSegmentRepo,
+		Agents:          classroomAgentRepo,
+		Roles:           roleRepo,
+		Tx:              txManager,
+		AudioDir:        audioDir,
+		Tools:           a.mcpManager,
+		EncryptionKey:   encryptionKey,
+		PageConcurrency: a.cfg.Classroom.PageConcurrency,
+		TTSPoolSize:     a.cfg.Classroom.TTSPoolSize,
+		MaxDuration:     a.cfg.Classroom.MaxDuration,
+	}
+	if ttsClient != nil {
+		classroomDeps.TTS = ttsClient
 	}
 	queue, workerRuntime, err := bootstrap.BuildWorker(classroomDeps, a.cfg)
 	if err != nil {
 		return err
 	}
 	a.worker = workerRuntime
-	classroomSvc := service.NewClassroomService(classroomRepo, classroomAgentRepo, roleRepo, sceneRepo, llmProviderSvc, queue, txManager)
+	classroomSvc := service.NewClassroomService(classroomRepo, classroomAgentRepo, roleRepo, sceneRepo, llmProviderSvc, queue, txManager, audioDir)
 
 	// 对话事件流（SSE）：执行过程与最终结果从 conversation_events 里增量读、推给前端。
 	// 事件的写入不经过服务层 —— 它属于产生内容的那条链路（编排 / 工作台）的事务。
