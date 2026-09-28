@@ -338,10 +338,9 @@ func (a *App) initDependencies() error {
 	// 多 Agent 讨论（成员 C）：用户发一句话 → 跑一趟讨论，过程写进事件表，
 	// 由上面那条 SSE 流带给前端。
 	//
-	// ⚠️ 模型现在用的是**不花钱的替身**（FakeModel）：这一步接的是"触发入口"这条链路 ——
-	// 用户消息落库、角色与模型从库里凑齐、讨论真的跑起来并落库。接真实大模型是下一步，
-	// 届时只改下面这几个 Model / Summarizer / Extractor 的赋值（换成读课程快照、
-	// 解密 API Key、建 llm 客户端的那一版），入口与编排都不用动。
+	// 编排器上挂的 Model / Summarizer / Extractor 是**兜底**：真正每次讨论用的那套
+	// 由 ModelFactory 按课程快照现建（哪门课选了哪个服务商、哪个模型），
+	// 建成之后经 WithModels 换到一个新编排器上，不会动这个共享实例。
 	discussionOrchestrator, err := discussion.New(discussion.Deps{
 		Tx:            txManager,
 		Conversations: conversationRepo,
@@ -369,7 +368,10 @@ func (a *App) initDependencies() error {
 		Messages:      messageRepo,
 		Tx:            txManager,
 		Orchestrator:  discussionOrchestrator,
-		Logger:        logger.GetLogger(),
+		// 读课程快照里的服务商与模型 → 解密 API Key → 建 llm 客户端 →
+		// 包成讨论要的三件能力。密钥与课堂生成那条链路同源，都是 JWT Secret 派生的。
+		ModelFactory: discussion.NewRuntimeFactory(discussion.NewEntityProviderFinder(llmProviderRepo), encryptionKey),
+		Logger:       logger.GetLogger(),
 	})
 
 	// 过程数据的过期清理：expires_at 在写入时就按各自保留期算好了（事件 7 天），

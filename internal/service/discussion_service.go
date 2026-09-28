@@ -37,6 +37,16 @@ const (
 	defaultDiscussionTimeout = 15 * time.Minute
 )
 
+// DiscussionModelFactory 按课堂配置现建一套模型能力。
+//
+// 这里声明的是**窄接口**（只有 Build 一个方法），而不是直接写
+// *discussion.RuntimeFactory：服务层要的是"给两个 ID，换一套模型能力"这件事，
+// 至于背后是查库解密建 HTTP 客户端、还是别的什么，不归它管。窄接口也让本层用例
+// 不必去造真的配置仓储。
+type DiscussionModelFactory interface {
+	Build(ctx context.Context, providerID uint64, modelID string) (discussion.Models, error)
+}
+
 // DiscussionDeps 是讨论入口所需的外部依赖。
 //
 // 用结构体而不是一长串参数：这里有八个依赖，参数列表既难读又容易传错顺序
@@ -52,7 +62,13 @@ type DiscussionDeps struct {
 	// Orchestrator 是真正跑讨论的那台。由装配方构造好传进来 ——
 	// 编排器的依赖（模型、事件仓储、记忆仓储……）比这里更多，
 	// 让入口去凑齐它们只会把两层的装配缠在一起。
+	//
+	// 它身上挂着的那套模型能力是**兜底**：每趟讨论会按课程配置另建一套
+	// （见 ModelFactory），建不出来时的兜底行为与"配置缺失"有关，与它无关。
 	Orchestrator *discussion.Orchestrator
+
+	// ModelFactory 按课堂快照里的服务商与模型现建一套模型能力。
+	ModelFactory DiscussionModelFactory
 
 	Logger *zap.Logger
 
@@ -69,6 +85,7 @@ type discussionService struct {
 	messages      repository.MessageRepository
 	tx            repository.TransactionManager
 	orchestrator  *discussion.Orchestrator
+	modelFactory  DiscussionModelFactory
 	logger        *zap.Logger
 	timeout       time.Duration
 
@@ -104,6 +121,8 @@ func NewDiscussionService(deps DiscussionDeps) DiscussionService {
 		panic("讨论入口缺少事务管理器")
 	case deps.Orchestrator == nil:
 		panic("讨论入口缺少编排器")
+	case deps.ModelFactory == nil:
+		panic("讨论入口缺少模型工厂")
 	}
 
 	log := deps.Logger
@@ -125,6 +144,7 @@ func NewDiscussionService(deps DiscussionDeps) DiscussionService {
 		messages:      deps.Messages,
 		tx:            deps.Tx,
 		orchestrator:  deps.Orchestrator,
+		modelFactory:  deps.ModelFactory,
 		logger:        log,
 		timeout:       timeout,
 		running:       make(map[uint64]struct{}),
@@ -135,10 +155,11 @@ func NewDiscussionService(deps DiscussionDeps) DiscussionService {
 //
 // 校验顺序是有讲究的，从"最便宜、最可能被拒"排到"最贵"：
 //
-//	内容 → 对话在不在、还开不开 → 有没有别的讨论在跑 → 桌上有谁 → 模型配了没 → 落库 → 开跑
+//	内容 → 对话在不在、还开不开 → 有没有别的讨论在跑 → 桌上有谁 → 模型配了没、建不建得出来 → 落库 → 开跑
 //
-// 把"桌上没人""没配模型"放在落库之前，是为了让失败干净：用户得到的是一句明确的话，
-// 库里也不会留下一条"发了消息却没人理"的记录。
+// 把"桌上没人""没配模型""模型建不出来"都放在落库之前，是为了让失败干净：
+// 用户得到的是一句明确的话，库里也不会留下一条"发了消息却没人理"的记录
+// —— 更不会留下一个已经建好、却注定跑不起来的运行。
 func (s *discussionService) Start(ctx context.Context, conversationID uint64, content string) (*responsedto.DiscussionStart, error) {
 	text := strings.TrimSpace(content)
 	if text == "" {
@@ -187,6 +208,24 @@ func (s *discussionService) Start(ctx context.Context, conversationID uint64, co
 		return nil, err
 	}
 
+	// 按这堂课选的服务商与模型现建一套模型能力，再交给编排器。
+	//
+	// 必须在落库之前做完：配置错（模型列表空、密钥换了环境解不开、地址是空的）
+	// 是一类"每次都会失败"的错，用户该收到一句明确的话，而不是先看到自己的消息
+	// 出现在屏幕上、然后一场注定失败的讨论转了半天圈。
+	//
+	// 也不能直接改共享那份 orchestrator：它上面挂的模型是进程级共用的，
+	// 改了会让正在跑的别的讨论一起换模型。WithModels 返回的是一个新实例。
+	models, err := s.modelFactory.Build(ctx, model.ProviderID, model.ModelID)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "按课程配置创建大模型失败", err)
+	}
+	orchestrator, err := s.orchestrator.WithModels(models)
+	if err != nil {
+		// 只可能是模型三件套缺了哪一个 —— 工厂返回的就是它们，真出现了是装配问题。
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "装配本次讨论的模型失败", err)
+	}
+
 	message, err := s.appendUserMessage(ctx, conversationID, text)
 	if err != nil {
 		return nil, err
@@ -195,7 +234,7 @@ func (s *discussionService) Start(ctx context.Context, conversationID uint64, co
 	// 交出去：讨论在后台跑，这个请求立刻返回。
 	// 用独立的 context（不接请求的 ctx）——请求一返回，它的 ctx 就被取消了，
 	// 而讨论才刚开始。
-	go s.run(conversationID, message.ID, participants)
+	go s.run(orchestrator, conversationID, message.ID, participants)
 
 	handedOver = true
 	s.logger.Info("讨论已受理",
@@ -214,10 +253,13 @@ func (s *discussionService) Start(ctx context.Context, conversationID uint64, co
 
 // run 在后台跑完一趟讨论。
 //
+// orchestrator 是"这一趟专用"的那台（已换成按课程配置建的模型），
+// 不是服务持有的共享实例 —— 同一条对话的两次讨论可能配了不同的模型。
+//
 // 这是唯一一处"结果没人接收"的调用：它返回时 HTTP 请求早已结束，所以成败只能靠
 // 日志和事件表说话 —— 讨论失败时编排器会自己往事件表写一条 run.failed，
 // 前端据此把等待结束掉，不会一直转圈。
-func (s *discussionService) run(conversationID uint64, triggerMessageID uint64, participants []discussion.Participant) {
+func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversationID uint64, triggerMessageID uint64, participants []discussion.Participant) {
 	// 无论怎么结束都要放锁，否则这条对话只能讨论一次。
 	defer s.release(conversationID)
 
@@ -235,7 +277,7 @@ func (s *discussionService) run(conversationID uint64, triggerMessageID uint64, 
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
 
-	result, err := s.orchestrator.Run(ctx, discussion.Request{
+	result, err := orchestrator.Run(ctx, discussion.Request{
 		ConversationID:   conversationID,
 		TriggerMessageID: triggerMessageID,
 		Participants:     participants,
@@ -334,8 +376,8 @@ type modelConfig struct {
 // 才失败 —— 那时运行记录已经建了，用户看到的是一场莫名其妙的失败，
 // 而不是一句"这堂课没有配置大模型"。
 //
-// ⚠️ 现在读出来只用于校验与日志（讨论还用替身模型）。接上真实大模型时，
-// 就是在这个位置按 providerID 查出连接信息、解密密钥、建客户端。
+// 读出来的两个 ID 交给 ModelFactory 去建真正的模型能力：这里只负责把配置读正确，
+// "怎么建"不归它管。
 func (s *discussionService) modelSnapshot(ctx context.Context, classroomID uint64) (modelConfig, error) {
 	classroom, err := s.classrooms.FindByID(ctx, classroomID)
 	if err != nil {
