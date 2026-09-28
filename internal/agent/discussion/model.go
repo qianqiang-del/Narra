@@ -93,6 +93,20 @@ type MemoryExtractor interface {
 	Extract(ctx context.Context, history []HistoryMessage) ([]MemoryCandidate, error)
 }
 
+// Models 是一次讨论要用的整套模型能力。
+//
+// 为什么要把这三样打成一包：它们以前各自散在 Deps 里，是"整个进程共用一份"的。
+// 但接真实模型后，每个课堂会选不同的服务商和模型 —— 同一份共享配置会被几场并发讨论串用，
+// A 课堂的发言跑到 B 课堂的模型上去。打包之后，上层可以按"这一次讨论"单独传一套进来
+// （见 Orchestrator.WithModels），共享的那份原地不动。
+//
+// 三者都必填：缺任何一个都由 New 的依赖校验当场拦下，不会等到第一次发言或收尾才炸。
+type Models struct {
+	Model      Model           // 生成某个角色的发言
+	Summarizer Summarizer      // 把过长的上下文压成摘要
+	Extractor  MemoryExtractor // 讨论结束后提炼共享记忆
+}
+
 // Generate 返回一段格式固定、内容可辨识的假回复。
 func (FakeModel) Generate(ctx context.Context, request GenerationRequest) (GenerationResponse, error) {
 	if err := ctx.Err(); err != nil {

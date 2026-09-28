@@ -115,6 +115,27 @@ func New(deps Deps) (*Orchestrator, error) {
 	return &Orchestrator{deps: deps}, nil
 }
 
+// WithModels 返回一个"换成这套模型能力"的新编排器，原编排器不受影响。
+//
+// 为什么要有它：Deps 里那三个模型相关的能力是进程级共享的，而每场讨论该用哪套模型
+// 是跟着课堂走的。直接在共享实例上改字段，并发跑着的其他讨论会跟着一起变 ——
+// 上一轮还在用 A 模型，下一轮就发到 B 模型去了，而且不会报任何错。
+//
+// 做法是"复制一份 deps 换掉三个字段再重新装配"：
+//   - 不碰 o.deps 的任何字段，原实例连并发读都不受影响；
+//   - 借 New 做一次依赖校验，缺哪个当场报错（错误信息与启动时那句一致）；
+//   - 顺带沿用 New 的兜底（选人策略、日志器），新旧两版的默认行为不会漂移。
+//
+// 仓储等其余依赖是照搬的：它们本身就是并发安全的句柄，没有"按次隔离"的必要。
+func (o *Orchestrator) WithModels(models Models) (*Orchestrator, error) {
+	// 值拷贝：Deps 里全是接口与标量，拷出来的字段与原实例互不影响。
+	deps := o.deps
+	deps.Model = models.Model
+	deps.Summarizer = models.Summarizer
+	deps.Extractor = models.Extractor
+	return New(deps)
+}
+
 // Run 跑一次讨论：开一趟运行，逐个角色发言，直到该停为止。
 //
 // 它只在"确实跑起来了"的情况下返回 nil 错误；一旦中途失败，会尽力把运行和当前回合
