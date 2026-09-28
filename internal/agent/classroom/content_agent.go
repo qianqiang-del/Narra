@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"narra/internal/agent"
+	"narra/internal/model/entity"
 )
 
 // contentInput 是内容专家的输入：本页分层上下文、证据包与修订反馈。
@@ -23,6 +24,12 @@ type contentInput struct {
 // blocksOutput 是内容专家的原始输出结构。
 type blocksOutput struct {
 	Blocks []contentBlock `json:"blocks"`
+}
+
+// pageContent 是一页的模型产物：内容块，以及交互页独有的完整 HTML 文档。
+type pageContent struct {
+	Blocks []contentBlock
+	HTML   string
 }
 
 // buildContentChain 建内容专家的执行单元：拼提示词 → 模型 → 解析成内容块。
@@ -45,10 +52,15 @@ func buildContentChain(ctx context.Context, rt *runtime) (compose.Runnable[*cont
 }
 
 // generateContent 生成一页内容并校验，不合规就带着提示重跑同一条 Chain。
-func generateContent(ctx context.Context, rt *runtime, budget *pageBudget, in *contentInput, sceneType string) ([]contentBlock, error) {
+//
+// 交互页走另一条路：它的正文是一份完整 HTML 文档，不是内容块。
+func generateContent(ctx context.Context, rt *runtime, budget *pageBudget, in *contentInput, sceneType string) (pageContent, error) {
+	if sceneType == entity.SceneTypeInteractive {
+		return generateInteractiveContent(ctx, rt, budget, in)
+	}
 	chain, err := buildContentChain(ctx, rt)
 	if err != nil {
-		return nil, err
+		return pageContent{}, err
 	}
 	var lastErr error
 	for attempt := 0; attempt <= maxValidateRetry; attempt++ {
@@ -70,12 +82,84 @@ func generateContent(ctx context.Context, rt *runtime, budget *pageBudget, in *c
 			validateErr = checkContentSize(validated)
 		}
 		if validateErr == nil {
-			return validated, nil
+			return pageContent{Blocks: validated}, nil
 		}
 		lastErr = validateErr
 		in.Feedback = outputFeedback(validateErr)
 	}
-	return nil, lastErr
+	return pageContent{}, lastErr
+}
+
+// buildInteractiveChain 建交互页的执行单元：拼提示词 → 模型 → 原样取回完整 HTML 文档。
+func buildInteractiveChain(ctx context.Context, rt *runtime) (compose.Runnable[*contentInput, string], error) {
+	chain := compose.NewChain[*contentInput, string]()
+	chain.AppendLambda(compose.InvokableLambda(func(_ context.Context, in *contentInput) ([]*schema.Message, error) {
+		system, ok := agent.BuildTaskPrompt(agent.TaskSceneInteractive)
+		if !ok {
+			return nil, fmt.Errorf("交互页面提示词未注册")
+		}
+		return []*schema.Message{schema.SystemMessage(system), schema.UserMessage(contentUserPrompt(in))}, nil
+	})).AppendChatModel(rt.chatModel).AppendLambda(compose.InvokableLambda(func(_ context.Context, msg *schema.Message) (string, error) {
+		return msg.Content, nil
+	}))
+	return chain.Compile(ctx)
+}
+
+// generateInteractiveContent 生成一页交互 HTML 并校验，不合规就带着提示重跑。
+//
+// 内容块里只留一个讲解锚点：讲稿、段落与语音的既有流程因此完全不用改，
+// 交互页的正文（HTML）走 scenes.interactive_html 那一列。
+func generateInteractiveContent(ctx context.Context, rt *runtime, budget *pageBudget, in *contentInput) (pageContent, error) {
+	chain, err := buildInteractiveChain(ctx, rt)
+	if err != nil {
+		return pageContent{}, err
+	}
+	anchor := interactiveAnchor(in.Page.Current)
+	var lastErr error
+	for attempt := 0; attempt <= maxValidateRetry; attempt++ {
+		if !budget.trySpend() {
+			lastErr = fmt.Errorf("这一页的模型调用预算已用尽")
+			break
+		}
+		raw, runErr := chain.Invoke(ctx, in)
+		if runErr != nil {
+			lastErr = runErr
+			if !retryableModelError(runErr) {
+				break
+			}
+			in.Feedback = outputFeedback(runErr)
+			continue
+		}
+		document, validateErr := extractHTMLDocument(raw)
+		if validateErr == nil {
+			validateErr = validateHTMLDocument(document)
+		}
+		if validateErr == nil {
+			return pageContent{Blocks: []contentBlock{anchor}, HTML: document}, nil
+		}
+		lastErr = validateErr
+		in.Feedback = htmlFeedback(validateErr)
+	}
+	return pageContent{}, lastErr
+}
+
+// interactiveAnchor 造交互页在内容块里的讲解锚点，讲稿段落挂在它的 key 上。
+//
+// 用 paragraph 而不是 interactive：交互页的正文在 HTML 里，这一块只是讲稿的落点，
+// paragraph 能让还没接 iframe 的前端至少把这一页要讲什么显示出来，不至于整页空白。
+func interactiveAnchor(page PlanPage) contentBlock {
+	content := strings.TrimSpace(page.Brief)
+	if content == "" {
+		content = strings.TrimSpace(page.Title)
+	}
+	if content == "" {
+		content = "在这一页里动手操作，观察结果怎么随输入变化。"
+	}
+	return contentBlock{
+		Key:     interactiveAnchorKey,
+		Type:    blockTypeParagraph,
+		Content: truncateRunes(content, maxAnchorRunes),
+	}
 }
 
 // checkContentSize 兜住一页内容的体积，见 maxPageContentBytes。

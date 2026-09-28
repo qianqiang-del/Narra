@@ -103,14 +103,23 @@ export async function createMcpServer(input: CreateMcpServerInput): Promise<McpS
   return toMcpServer(d)
 }
 
-/** 部分更新 MCP 服务。只传需要修改的字段。 */
-export async function updateMcpServer(
-  id: number,
-  input: { enabled?: boolean; enabledTools?: string[] },
-): Promise<McpServer> {
+/** 部分更新 MCP 服务时可改的字段。超时用 Go duration 写法，例如 30s、1m。 */
+export interface UpdateMcpServerInput {
+  enabled?: boolean
+  enabledTools?: string[]
+  startupTimeout?: string
+  discoveryTimeout?: string
+  callTimeout?: string
+}
+
+/** 部分更新 MCP 服务。只传需要修改的字段；改超时后端会按新配置重连，不用重启服务。 */
+export async function updateMcpServer(id: number, input: UpdateMcpServerInput): Promise<McpServer> {
   const body: Record<string, unknown> = {}
   if (input.enabled !== undefined) body.enabled = input.enabled
   if (input.enabledTools !== undefined) body.enabled_tools = input.enabledTools
+  if (input.startupTimeout !== undefined) body.startup_timeout = input.startupTimeout
+  if (input.discoveryTimeout !== undefined) body.discovery_timeout = input.discoveryTimeout
+  if (input.callTimeout !== undefined) body.call_timeout = input.callTimeout
   const d = await request<McpServerDTO>(`/mcp/servers/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(body),

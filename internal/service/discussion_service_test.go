@@ -40,6 +40,13 @@ import (
 // 讨论用的模型是替身（不调真实大模型）：本用例要验的是入口链路，不是模型答得好不好。
 const discussionIntegrationEnv = "NARRA_INTEGRATION_TEST"
 
+// discussionRoleSortOrderBase 是测试角色在 preset_agents.sort_order 上的起始值。
+//
+// 那一列有全局唯一约束，而人工维护的角色池用的是 0 起步的小数字（见
+// migrations/0002_seed_preset_agents.sql）。测试固定用 9000 段，就不会和它们撞上，
+// 也不会因为"库里有几个角色"而变成偶发失败。
+const discussionRoleSortOrderBase = 9000
+
 var (
 	discussionTestDBOnce sync.Once
 	discussionTestDB     *gorm.DB
@@ -134,19 +141,6 @@ func newDiscussionFixture(t *testing.T) *discussionFixture {
 
 	db := openDiscussionTestDB(t)
 	suffix := randomSuffix(t)
-	// 课程先入库，角色的全局排序号随后用它的 ID 分段。这样每套夹具的三个
-	// sort_order 都不同，即使 go test 并行跑 service 与 discussion 两个包也不会撞。
-	classroom := &entity.Classroom{
-		Title:            "擦枪安全讨论课",
-		Requirement:      "讲清楚操作前为什么要先确认枪口安全",
-		Mode:             entity.ClassroomModeVocational,
-		Status:           entity.ClassroomStatusPlayable,
-		GenerationConfig: json.RawMessage(`{"llm_provider_id":1,"llm_model_id":"qwen-max","web_search":false,"bio":""}`),
-		AgentConfig:      json.RawMessage(`{"agent_mode":"preset"}`),
-	}
-	if err := db.Create(classroom).Error; err != nil {
-		t.Fatalf("建测试课程失败: %v", err)
-	}
 
 	// 角色用固定的三种身份，名字带随机后缀：preset_agents.agent_key 有唯一约束，
 	// 用例并行或上次异常退出留下残留时，随机后缀能保证每次都建得出来。
@@ -165,22 +159,34 @@ func newDiscussionFixture(t *testing.T) *discussionFixture {
 	roles := make([]entity.PresetAgent, 0, len(roleSpecs))
 	for index, spec := range roleSpecs {
 		roles = append(roles, entity.PresetAgent{
-			AgentKey: spec.key,
-			Name:     spec.name,
-			Role:     spec.role,
-			RoleType: spec.roleType,
-			Persona:  spec.persona,
-			Avatar:   "/avatars/teacher-2.png",
-			Color:    "#722ed1",
-			VoiceID:  "zh-CN-XiaoxiaoNeural",
-			// sort_order 全局唯一。课堂 ID 由数据库分配，故跨包并行测试时每套夹具占的
-			// 三个位置也不同；同一堂课内 index 保证角色顺序稳定。
-			SortOrder: int32(classroom.ID*10) + int32(index),
+			AgentKey:  spec.key,
+			Name:      spec.name,
+			Role:      spec.role,
+			RoleType:  spec.roleType,
+			Persona:   spec.persona,
+			Avatar:    "/avatars/teacher-2.png",
+			Color:     "#722ed1",
+			VoiceID:   "zh-CN-XiaoxiaoNeural",
+			SortOrder: int32(discussionRoleSortOrderBase + index),
 			Enabled:   true,
 		})
 	}
 	if err := db.Create(&roles).Error; err != nil {
 		t.Fatalf("建测试角色失败: %v", err)
+	}
+
+	// 课程快照里带上模型配置：触发入口会读它、并且在没有它时拒绝开跑。
+	// 值本身是假的（本用例不真的调模型），但形状与真实快照一致。
+	classroom := &entity.Classroom{
+		Title:            "擦枪安全讨论课",
+		Requirement:      "讲清楚操作前为什么要先确认枪口安全",
+		Mode:             entity.ClassroomModeVocational,
+		Status:           entity.ClassroomStatusPlayable,
+		GenerationConfig: json.RawMessage(`{"llm_provider_id":1,"llm_model_id":"qwen-max","web_search":false,"bio":""}`),
+		AgentConfig:      json.RawMessage(`{"agent_mode":"preset"}`),
+	}
+	if err := db.Create(classroom).Error; err != nil {
+		t.Fatalf("建测试课程失败: %v", err)
 	}
 
 	links := make([]entity.ClassroomAgent, 0, len(roles))
@@ -325,7 +331,6 @@ func (f *discussionFixture) newServiceWithFactory(t *testing.T, model discussion
 		Compactions:   f.compactions,
 		Memories:      f.memories,
 		Events:        f.events,
-		Spans:         repository.NewAgentTraceSpanRepository(f.db),
 		Model:         model,
 		Summarizer:    model,
 		Extractor:     model,

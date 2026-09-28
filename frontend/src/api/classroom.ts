@@ -121,6 +121,8 @@ export async function* streamClassroomEvents(id: number, signal?: AbortSignal) {
 export interface SceneDetailDTO {
   id: number; sort_order: number; type: string; title: string; brief: string; status: string
   content: { blocks?: { key?: string; type?: string; content?: string; text?: string; interaction?: { kind?: string; controls?: Record<string, unknown>[]; options?: string[]; answer?: string; config?: Record<string, unknown> } }[] }
+  /** 交互页的完整 HTML 文档，其余场景类型为空串；前端拿它喂沙箱 iframe */
+  interactive_html: string
   narration: { id: number; content_key: string; sort_order: number; text: string; status: string; audio_path: string | null }[]
   error_message: string | null
 }

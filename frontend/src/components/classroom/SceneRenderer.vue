@@ -3,140 +3,314 @@
  * SceneRenderer —— 文档 §6.5 的场景分发。
  *
  * 原项目由已删除的 `@openmaic/renderer` 包渲染真实课件，
- * 这里按场景类型自绘等效版式（slide / quiz / interactive / pbl）。
+ * 这里按场景类型自绘等效版式（slide / quiz）。
+ *
+ * `interactive` 例外：它的正文是模型生成的完整 HTML，交给沙箱 iframe 渲染；
+ * 只有旧课堂（正文还是控件配置）才回落到底部的兼容渲染器。
  */
-import { ref } from 'vue'
+import { computed, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Cpu } from 'lucide-vue-next'
+import { Check, Info } from 'lucide-vue-next'
 
-import type { Scene } from '@/types/scene'
+import { interactiveHTML, type Scene } from '@/types/scene'
 import { cn } from '@/lib/utils'
+import InteractiveIframeRenderer from './InteractiveIframeRenderer.vue'
 import InteractiveRenderer from './InteractiveRenderer.vue'
 
 const props = defineProps<{ scene: Scene; activeContentKey?: string | null }>()
 
 const { t } = useI18n()
 
-const picked = ref<number | null>(null)
-const revealed = ref(false)
+/** 交互页的沙箱 HTML；旧课堂只写了控件配置，这里为空串。 */
+const sandboxHTML = computed(() => interactiveHTML(props.scene))
 
-function pickQuiz(i: number) {
-  picked.value = i
-  revealed.value = true
+/** 旧课堂的交互块带控件配置，交给兼容渲染器。 */
+const hasControls = computed(() =>
+  (props.scene.blocks ?? []).some((block) => (block.interaction?.controls?.length ?? 0) > 0),
+)
+
+/** 这一页的题目；每个 `type` 为 quiz 的内容块对应一道。 */
+const questions = computed(() => props.scene.quiz?.questions ?? [])
+
+/** 每道题的作答状态，按题目 key 存；切页时组件按 scene.id 重建，状态自然清空。 */
+const quizAnswers = reactive<Record<string, { picked: string; revealed: boolean }>>({})
+
+function pickedOf(key: string): string {
+  return quizAnswers[key]?.picked ?? ''
 }
+
+function revealedOf(key: string): boolean {
+  return quizAnswers[key]?.revealed ?? false
+}
+
+function pickQuiz(key: string, option: string) {
+  quizAnswers[key] = { picked: option, revealed: true }
+}
+
+/* ---------- 讲解页的排版 ---------- */
+
+/** 要点卡片里的一行，`label` 为空时按普通条目排版。 */
+interface SlideRow { key: string; label: string; text: string }
+
+/** 讲解页正文的一个渲染单元；相邻的 list-item 合成一张要点卡片。 */
+interface SlideUnit {
+  id: string
+  type: 'heading' | 'paragraph' | 'code' | 'callout' | 'list' | 'takeaway'
+  /** 小节标题、段落与代码的原文 */
+  text: string
+  /** `callout` 按「标签：正文」拆出的标签，没有标签时为空串 */
+  label: string
+  /** `callout` 拆掉标签后的正文 */
+  rest: string
+  /** 卡片里是否有带标签的行；没有就整张卡片退回普通条目排版 */
+  hasLabel: boolean
+  rows: SlideRow[]
+}
+
+/** 把「标签：正文」拆成两列，让要点排得像表格；标签不像短语时原样返回。 */
+function splitLabel(text: string): { label: string; rest: string } {
+  const matched = /^([^：:。！？；，,;]{1,20})[：:]\s*(\S[\s\S]*)$/.exec(text.trim())
+  return matched ? { label: matched[1], rest: matched[2] } : { label: '', rest: text }
+}
+
+const slideUnits = computed<SlideUnit[]>(() => {
+  const units: SlideUnit[] = []
+  ;(props.scene.slide?.blocks ?? []).forEach((block, index) => {
+    if (block.type === 'list-item') {
+      const { label, rest } = splitLabel(block.text)
+      const row: SlideRow = { key: block.key, label, text: rest }
+      const previous = units[units.length - 1]
+      if (previous?.type === 'list') {
+        previous.rows.push(row)
+        previous.hasLabel = previous.hasLabel || Boolean(row.label)
+      } else {
+        units.push({
+          id: `list-${index}`,
+          type: 'list',
+          text: '',
+          label: '',
+          rest: '',
+          hasLabel: Boolean(row.label),
+          rows: [row],
+        })
+      }
+      return
+    }
+    const type: SlideUnit['type'] =
+      block.type === 'heading' || block.type === 'code' || block.type === 'callout' ? block.type : 'paragraph'
+    units.push({ id: block.key || `block-${index}`, type, text: block.text, ...splitLabel(block.text), hasLabel: false, rows: [] })
+  })
+  // 收尾结论永远排在正文最后一块，跟着内容一起滚动。
+  const takeaway = props.scene.slide?.takeaway ?? ''
+  if (takeaway) {
+    units.push({
+      id: props.scene.slide?.takeawayKey || 'takeaway',
+      type: 'takeaway',
+      text: takeaway,
+      label: '',
+      rest: takeaway,
+      hasLabel: false,
+      rows: [],
+    })
+  }
+  return units
+})
 </script>
 
 <template>
-  <!-- slide -->
-  <div v-if="scene.type === 'slide' && scene.slide" class="relative flex size-full flex-col overflow-hidden bg-gradient-to-br from-violet-50 via-white to-blue-50 px-8 py-8 md:px-14 md:py-10 dark:from-violet-950/40 dark:via-gray-900 dark:to-blue-950/40">
-    <div class="pointer-events-none absolute -top-24 -right-20 size-64 rounded-full bg-violet-300/20 blur-3xl dark:bg-violet-500/10" />
-    <div class="pointer-events-none absolute -bottom-24 -left-16 size-56 rounded-full bg-blue-300/20 blur-3xl dark:bg-blue-500/10" />
-    <div class="relative flex min-h-0 flex-1 flex-col">
-      <div class="mb-6 flex items-start justify-between gap-8">
-        <div class="min-w-0 flex-1">
-          <span class="mb-3 inline-flex rounded-full bg-violet-100 px-3 py-1 text-[10px] font-bold tracking-wider text-violet-700 uppercase dark:bg-violet-900/40 dark:text-violet-300">课堂重点</span>
-          <h2 class="text-3xl font-bold tracking-tight text-gray-900 md:text-4xl dark:text-gray-100">
-          {{ scene.slide.heading }}
-          </h2>
-        </div>
-      </div>
-      <ul class="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto pr-1 md:grid-cols-2">
-          <li
-            v-for="(b, i) in scene.slide.bullets"
-            :key="i"
-            :class="props.activeContentKey && scene.slide.bulletKeys?.[i] === props.activeContentKey ? 'active-lesson-card border-white/80 bg-white/75 dark:border-gray-700/60 dark:bg-gray-800/60' : 'border-white/80 bg-white/75 dark:border-gray-700/60 dark:bg-gray-800/60'"
-          >
-            <span
-              :class="props.activeContentKey && scene.slide.bulletKeys?.[i] === props.activeContentKey ? 'active-lesson-dot mt-2 size-3 shrink-0 rounded-full bg-violet-500' : 'mt-2 size-2 shrink-0 rounded-full bg-violet-300'"
-            />
-            <span :class="props.activeContentKey && scene.slide.bulletKeys?.[i] === props.activeContentKey ? 'active-lesson-text min-w-0 font-medium text-violet-700 dark:text-violet-300' : 'min-w-0'">{{ b }}</span>
-          </li>
-        </ul>
-      <div
-        v-if="scene.slide.accent"
-        class="mt-5 rounded-2xl border border-violet-200/70 bg-violet-100/70 px-5 py-3 text-sm font-medium text-violet-800 dark:border-violet-800/60 dark:bg-violet-900/30 dark:text-violet-200"
+  <!-- slide：一页课件，正文块按类型分别排版 -->
+  <div
+    v-if="scene.type === 'slide' && scene.slide"
+    class="flex size-full flex-col overflow-hidden bg-white dark:bg-slate-900"
+  >
+    <!-- 标题区 -->
+    <header class="shrink-0 px-10 pt-9 pb-4 md:px-14 md:pt-10">
+      <h1
+        class="text-[26px] leading-tight font-black tracking-tight text-indigo-950 md:text-[36px] dark:text-indigo-100"
       >
-        {{ scene.slide.accent }}
-      </div>
-    </div>
-  </div>
-
-  <!-- quiz -->
-  <div v-else-if="scene.type === 'quiz' && scene.quiz" class="flex size-full flex-col justify-center px-10 md:px-16">
-    <div class="mb-2 inline-flex w-fit items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-[11px] font-bold tracking-wide text-amber-700 uppercase dark:bg-amber-900/30 dark:text-amber-300">
-      {{ t('scene.typeQuiz') }}
-    </div>
-    <h2 class="text-2xl font-bold tracking-tight text-gray-800 md:text-3xl dark:text-gray-100">
-      {{ scene.quiz.question }}
-    </h2>
-
-    <div class="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-      <button
-        v-for="(opt, i) in scene.quiz.options"
-        :key="i"
-        type="button"
-        :class="
-          cn(
-            'flex items-center gap-3 rounded-xl border px-4 py-3 text-left text-[15px] transition-all',
-            revealed && i === scene.quiz.answer
-              ? 'border-emerald-400 bg-emerald-50 text-emerald-800 dark:bg-emerald-900/25 dark:text-emerald-200'
-              : revealed && i === picked
-                ? 'border-red-300 bg-red-50 text-red-700 dark:bg-red-900/25 dark:text-red-200'
-                : 'border-gray-200 bg-white text-gray-700 hover:border-violet-300 hover:bg-violet-50/50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:border-violet-600',
-          )
-        "
-        @click="pickQuiz(i)"
+        {{ scene.title }}
+      </h1>
+      <p
+        v-if="scene.slide.lead"
+        class="mt-2 text-[14px] leading-6 text-slate-500 md:text-[15px] dark:text-slate-400"
       >
-        <span
-          class="flex size-6 shrink-0 items-center justify-center rounded-md border text-xs font-bold"
-          :class="
-            revealed && i === scene.quiz.answer
-              ? 'border-emerald-400 bg-emerald-400 text-white'
-              : 'border-gray-300 text-gray-500 dark:border-gray-600'
-          "
+        {{ scene.slide.lead }}
+      </p>
+      <div class="mt-4 h-px bg-slate-200 dark:bg-slate-700" />
+    </header>
+
+    <!-- 正文：内容不满一屏时垂直居中，超出时从顶部开始滚动 -->
+    <div class="slide-body min-h-0 flex-1 overflow-y-auto px-10 md:px-14">
+      <template v-for="unit in slideUnits" :key="unit.id">
+        <!-- 小节标题 -->
+        <h2
+          v-if="unit.type === 'heading'"
+          class="flex items-center gap-2.5 pt-1 text-[16px] font-bold text-indigo-900 md:text-[17px] dark:text-indigo-200"
         >
-          <Check v-if="revealed && i === scene.quiz.answer" class="size-3.5" />
-          <template v-else>{{ String.fromCharCode(65 + i) }}</template>
-        </span>
-        <span class="font-mono">{{ opt }}</span>
-      </button>
-    </div>
-  </div>
+          <span class="h-4 w-1 shrink-0 rounded-full bg-indigo-500" />
+          <span>{{ unit.text }}</span>
+        </h2>
 
-  <!-- interactive：伪浏览器 -->
-  <InteractiveRenderer v-else-if="scene.type === 'interactive'" :scene="scene" />
+        <!-- 代码 -->
+        <div
+          v-else-if="unit.type === 'code'"
+          class="overflow-hidden rounded-xl bg-slate-900 ring-1 ring-slate-700/60 dark:bg-slate-950"
+        >
+          <div class="flex items-center gap-2 border-b border-slate-800/60 px-4 py-2">
+            <span class="size-1.5 rounded-full bg-emerald-400" />
+            <span class="text-[11px] font-medium tracking-wide text-slate-300">
+              {{ t('scene.slideCode') }}
+            </span>
+          </div>
+          <pre class="overflow-x-auto px-4 py-3 font-mono text-[13px] leading-6 text-slate-100 md:text-[14px]">{{ unit.text }}</pre>
+        </div>
 
-  <!-- pbl：3 列看板 -->
-  <div v-else-if="scene.type === 'pbl' && scene.pbl" class="flex size-full flex-col p-8 md:p-10">
-    <div class="mb-4 flex items-center gap-2">
-      <div class="flex size-7 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-900/40">
-        <Cpu class="size-4 text-blue-600 dark:text-blue-300" />
-      </div>
-      <h2 class="text-xl font-bold tracking-tight text-gray-800 dark:text-gray-100">
-        {{ scene.pbl!.heading }}
-      </h2>
-    </div>
+        <!-- 强调：结论、规律、注意事项 -->
+        <div
+          v-else-if="unit.type === 'callout'"
+          class="flex items-start gap-3 rounded-xl border-l-[3px] border-sky-400 bg-sky-50/60 px-5 py-3.5 dark:bg-sky-950/30"
+        >
+          <Info class="mt-0.5 size-4 shrink-0 text-sky-500" />
+          <p class="text-[14px] leading-[1.8] text-slate-700 md:text-[15px] dark:text-slate-200">
+            <span v-if="unit.label" class="font-bold text-sky-900 dark:text-sky-200">{{ unit.label }}：</span>{{ unit.rest }}
+          </p>
+        </div>
 
-    <div class="grid min-h-0 flex-1 grid-cols-3 gap-4">
-      <div
-        v-for="(col, ci) in scene.pbl!.columns"
-        :key="ci"
-        class="flex min-h-0 flex-col rounded-xl border border-blue-100 bg-blue-50/50 p-3 dark:border-blue-900/40 dark:bg-blue-950/20"
-      >
-        <span class="mb-2 text-[11px] font-bold tracking-wide text-blue-700 uppercase dark:text-blue-300">
-          {{ col.title }}
-        </span>
-        <div class="flex flex-col gap-2 overflow-y-auto">
+        <!-- 并列要点：一张卡片逐行分隔，带标签的行分两列对齐 -->
+        <div
+          v-else-if="unit.type === 'list'"
+          class="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/40"
+        >
           <div
-            v-for="(item, ii) in col.items"
-            :key="ii"
-            class="rounded-lg border border-blue-100 bg-white px-3 py-2 text-[13px] text-gray-700 shadow-sm dark:border-blue-900/40 dark:bg-gray-800 dark:text-gray-200"
+            v-for="(row, rowIndex) in unit.rows"
+            :key="row.key || rowIndex"
+            :class="
+              cn(
+                'items-start px-4 py-2.5 md:px-5',
+                unit.hasLabel ? 'grid grid-cols-[200px_1fr] gap-0' : 'flex gap-2.5',
+                rowIndex > 0 && 'border-t border-slate-200 dark:border-slate-700',
+              )
+            "
           >
-            {{ item }}
+            <span v-if="row.label" class="border-r border-slate-200 bg-indigo-50/40 pr-4 text-[13px] leading-[1.75] font-bold text-indigo-900 dark:border-slate-700 dark:bg-indigo-950/30 dark:text-indigo-200">
+              {{ row.label }}
+            </span>
+            <span v-else class="pt-[0.5rem]">
+              <span class="block size-1.5 rounded-full bg-indigo-400" />
+            </span>
+            <span :class="cn('text-[13.5px] leading-[1.75] text-slate-600 md:text-[14px] dark:text-slate-300', unit.hasLabel && 'pl-4')">{{ row.text }}</span>
           </div>
         </div>
-      </div>
+
+        <!-- 收尾结论：正文的最后一块 -->
+        <div
+          v-else-if="unit.type === 'takeaway'"
+          class="flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50/60 px-5 py-3.5 dark:border-emerald-900/60 dark:bg-emerald-950/40"
+        >
+          <Check class="mt-0.5 size-4 shrink-0 text-emerald-500" />
+          <div class="min-w-0">
+            <p class="text-[11px] font-bold tracking-wider text-emerald-500 uppercase">{{ t('scene.slideTakeaway') }}</p>
+            <p class="mt-0.5 text-[14px] leading-6 text-emerald-900 dark:text-emerald-100">{{ unit.text }}</p>
+          </div>
+        </div>
+
+        <!-- 正文段落 -->
+        <p v-else class="text-[14px] leading-[1.85] text-slate-600 md:text-[15px] dark:text-slate-300">
+          {{ unit.text }}
+        </p>
+      </template>
     </div>
+  </div>
+
+  <!-- quiz：一页可以有多道选择题，每道题各自作答与揭晓 -->
+  <div
+    v-else-if="scene.type === 'quiz' && questions.length"
+    class="flex size-full flex-col gap-4 overflow-y-auto px-8 py-7 md:px-12"
+  >
+    <div class="flex shrink-0 items-center gap-2">
+      <span class="inline-flex w-fit items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-[11px] font-bold tracking-wide text-amber-700 uppercase dark:bg-amber-900/30 dark:text-amber-300">
+        {{ t('scene.typeQuiz') }}
+      </span>
+      <span class="text-xs text-gray-400 tabular-nums dark:text-gray-500">{{ questions.length }}</span>
+    </div>
+
+    <section
+      v-for="(item, qi) in questions"
+      :key="item.key"
+      :class="
+        cn(
+          'shrink-0 rounded-2xl border bg-white/75 p-5 transition-all duration-300 dark:bg-gray-800/60',
+          props.activeContentKey === item.key
+            ? 'border-violet-300 ring-2 ring-violet-200/70 dark:border-violet-700 dark:ring-violet-900/50'
+            : 'border-gray-200 dark:border-gray-700',
+        )
+      "
+    >
+      <div class="flex items-start gap-3">
+        <span class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+          {{ qi + 1 }}
+        </span>
+        <h2 class="text-lg font-bold tracking-tight text-gray-800 md:text-xl dark:text-gray-100">
+          {{ item.question }}
+        </h2>
+      </div>
+
+      <div class="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+        <button
+          v-for="(opt, oi) in item.options"
+          :key="oi"
+          type="button"
+          :class="
+            cn(
+              'flex items-center gap-3 rounded-xl border px-4 py-2.5 text-left text-sm transition-all',
+              revealedOf(item.key) && opt === item.answer
+                ? 'border-emerald-400 bg-emerald-50 text-emerald-800 dark:bg-emerald-900/25 dark:text-emerald-200'
+                : revealedOf(item.key) && pickedOf(item.key) === opt
+                  ? 'border-red-300 bg-red-50 text-red-700 dark:bg-red-900/25 dark:text-red-200'
+                  : 'border-gray-200 bg-white text-gray-700 hover:border-violet-300 hover:bg-violet-50/50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:border-violet-600',
+            )
+          "
+          @click="pickQuiz(item.key, opt)"
+        >
+          <span
+            class="flex size-6 shrink-0 items-center justify-center rounded-md border text-xs font-bold"
+            :class="
+              revealedOf(item.key) && opt === item.answer
+                ? 'border-emerald-400 bg-emerald-400 text-white'
+                : 'border-gray-300 text-gray-500 dark:border-gray-600'
+            "
+          >
+            <Check v-if="revealedOf(item.key) && opt === item.answer" class="size-3.5" />
+            <template v-else>{{ String.fromCharCode(65 + oi) }}</template>
+          </span>
+          <span class="min-w-0">{{ opt }}</span>
+        </button>
+      </div>
+
+      <p
+        v-if="revealedOf(item.key) && item.explanation"
+        class="mt-3 rounded-xl bg-violet-50 px-4 py-2.5 text-[13px] leading-6 text-violet-800 dark:bg-violet-950/30 dark:text-violet-200"
+      >
+        {{ item.explanation }}
+      </p>
+    </section>
+  </div>
+
+  <!-- interactive：正文是完整 HTML，走沙箱 iframe -->
+  <InteractiveIframeRenderer
+    v-else-if="scene.type === 'interactive' && sandboxHTML"
+    :html="sandboxHTML"
+    :interactive="true"
+  />
+
+  <!-- 旧课堂的交互页：正文还写在控件配置里 -->
+  <InteractiveRenderer v-else-if="scene.type === 'interactive' && hasControls" :scene="scene" />
+
+  <div
+    v-else-if="scene.type === 'interactive'"
+    class="flex size-full items-center justify-center bg-gray-50 text-xs text-gray-400 dark:bg-gray-800 dark:text-gray-500"
+  >
+    {{ t('scene.interactiveUnavailable') }}
   </div>
 
   <div v-else-if="scene.blocks?.length" class="flex size-full flex-col gap-4 overflow-y-auto p-8 md:p-12">
@@ -156,16 +330,43 @@ function pickQuiz(i: number) {
 </template>
 
 <style scoped>
-@keyframes lesson-dot-breathe {
-  0%, 100% { transform: scale(0.9); opacity: 0.75; }
-  50% { transform: scale(1.15); opacity: 1; }
+/*
+ * 讲解页正文的纵向排布：内容不满一屏时居中，撑满时靠上并出现滚动条。
+ * `safe` 关键字让居中对齐在内容超出容器时退回起点，否则第一行会被推到滚动区之上。
+ */
+.slide-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: safe center;
+  gap: 0.75rem;
+  padding-block: 0.5rem 1rem;
+  scrollbar-color: rgb(148 163 184 / 0.5) transparent;
+  scrollbar-width: thin;
 }
 
-.active-lesson-text { display: inline-block; animation: lesson-text-nudge 1.8s ease-in-out infinite; }
-.active-lesson-dot { animation: lesson-dot-breathe 1.6s ease-in-out infinite; }
+/*
+ * 子项一律不许收缩。flex 子项默认 flex-shrink: 1，内容超出时会被压扁，
+ * 而卡片自身是 overflow-hidden —— 结果内容被裁掉、容器却不产生滚动。
+ */
+.slide-body > * {
+  flex-shrink: 0;
+}
 
-@keyframes lesson-text-nudge {
-  0%, 100% { transform: translateX(0); }
-  50% { transform: translateX(3px); }
+.slide-body::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.slide-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.slide-body::-webkit-scrollbar-thumb {
+  background-color: rgb(148 163 184 / 0.45);
+  border-radius: 999px;
+}
+
+.slide-body::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(148 163 184 / 0.7);
 }
 </style>

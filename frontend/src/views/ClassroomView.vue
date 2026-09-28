@@ -14,7 +14,7 @@ import { useRouter } from 'vue-router'
 import { AlertCircle, Loader2 } from 'lucide-vue-next'
 
 import PlaybackChrome from '@/components/classroom/PlaybackChrome.vue'
-import type { Classroom, Scene } from '@/types/scene'
+import type { Classroom, Scene, SlideContent } from '@/types/scene'
 import { fetchClassroomAgents, fetchClassroomScenes, fetchScene, streamClassroomEvents, type RoleCardDTO, type SceneDetailDTO } from '@/api/classroom'
 
 const props = defineProps<{ id: string }>()
@@ -34,6 +34,65 @@ function load() {
   void loadReal()
 }
 
+/** 讲解页的内容块；后端把整页正文都放在这个有序数组里。 */
+type SceneBlockDTO = NonNullable<SceneDetailDTO['content']['blocks']>[number]
+
+/** 比较标题时忽略空白与结尾标点。 */
+function sameAsTitle(text: string, title: string): boolean {
+  const normalize = (value: string) => value.replace(/\s+/g, '').replace(/[：:。.、]+$/, '')
+  return normalize(text) === normalize(title)
+}
+
+/**
+ * 组装讲解页正文：剔除与页面标题重复的标题块，拆出副标题与收尾结论。
+ *
+ * 后端每页的第一个块几乎都是与页面标题同名的 heading，直接渲染会让标题出现两次，
+ * 所以这里把它记成 `titleKey`（讲稿讲到它时高亮大标题）；剩下的首块若仍是 heading，
+ * 说明它是比标题更具体的一句话，当作副标题；正文末尾的 callout 拿出来做结论条。
+ */
+function toSlideContent(title: string, blocks: SceneBlockDTO[]): SlideContent {
+  const kept = blocks
+    .map((block) => ({ key: block.key ?? '', type: block.type ?? 'paragraph', text: (block.content ?? block.text ?? '').trim() }))
+    .filter((block) => block.text.length > 0)
+
+  const titleIndex = kept.findIndex((block) => block.type === 'heading' && sameAsTitle(block.text, title))
+  const titleKey = titleIndex >= 0 ? kept[titleIndex].key : ''
+  const body = kept.filter((_, index) => index !== titleIndex)
+
+  const lead = body[0]?.type === 'heading' ? body.shift()!.text : ''
+  const last = body[body.length - 1]
+  const takeaway = last?.type === 'callout' ? body.pop()!.text : ''
+
+  return { titleKey, lead, blocks: body, takeaway, takeawayKey: takeaway ? last.key : '' }
+}
+
+/** 把一个场景详情响应组装成前端视图模型；三种类型的正文来源各不相同。 */
+function toScene(item: SceneDetailDTO): Scene {
+  const type = (item.type as Scene['type']) || 'slide'
+  const blocks = item.content.blocks ?? []
+  const scene: Scene = {
+    id: String(item.id), title: item.title, type, status: item.status as Scene['status'], blocks,
+  }
+  if (type === 'interactive') {
+    scene.interactive = { html: item.interactive_html ?? '' }
+  } else if (type === 'quiz') {
+    scene.quiz = {
+      questions: blocks
+        .filter((block) => block.type === 'quiz')
+        .map((block) => ({
+          key: block.key ?? '',
+          question: block.content ?? block.text ?? '',
+          options: Array.isArray(block.interaction?.options) ? block.interaction.options : [],
+          answer: block.interaction?.answer ?? '',
+          explanation: typeof block.interaction?.config?.explanation === 'string' ? block.interaction.config.explanation : '',
+        })),
+    }
+  } else {
+    scene.slide = toSlideContent(item.title, blocks)
+  }
+  return scene
+}
+
 async function loadReal() {
   try {
     const [summaries, currentAgents] = await Promise.all([fetchClassroomScenes(Number(props.id)), fetchClassroomAgents(Number(props.id))])
@@ -42,25 +101,7 @@ async function loadReal() {
     const details = await Promise.all(ready.map((item) => fetchScene(item.id)))
     agents.value = currentAgents
     sceneDetails.value = Object.fromEntries(details.map((item) => [String(item.id), item]))
-    const scenes: Scene[] = details.map((item) => {
-      const type = (item.type as Scene['type']) || 'slide'
-      const blocks = item.content.blocks ?? []
-      const text = blocks.map((block) => block.content ?? block.text ?? '').filter(Boolean)
-      const scene: Scene = {
-        id: String(item.id), title: item.title, type, status: item.status as Scene['status'], blocks,
-      }
-      if (type === 'interactive') {
-        scene.interactive = { url: 'interactive://classroom', heading: item.title, note: text.join(' ') }
-      } else if (type === 'quiz') {
-        scene.quiz = { question: text[0] || item.title, options: text.slice(1, 5), answer: 0 }
-      } else if (type === 'pbl') {
-        scene.pbl = { heading: item.title, columns: [{ title: '课堂内容', items: text }] }
-      } else {
-        scene.slide = { heading: item.title, bullets: text, bulletKeys: blocks.map((block) => block.key ?? '') }
-      }
-      return scene
-    })
-    classroom.value = { id: props.id, title: '课堂', scenes }
+    classroom.value = { id: props.id, title: '课堂', scenes: details.map(toScene) }
     phase.value = 'ok'
   } catch {
     phase.value = 'error'
@@ -72,14 +113,8 @@ async function refreshScenes() {
   const ready = summaries.filter((item) => item.status === 'ready')
   if (!ready.length) return
   const details = await Promise.all(ready.map((item) => fetchScene(item.id)))
-  const nextDetails = Object.fromEntries(details.map((item) => [String(item.id), item]))
-  sceneDetails.value = { ...sceneDetails.value, ...nextDetails }
-  if (classroom.value) {
-    classroom.value.scenes = details.map((item) => ({
-      id: String(item.id), title: item.title, type: (item.type as Scene['type']) || 'slide', status: item.status as Scene['status'], blocks: item.content.blocks ?? [],
-      slide: { heading: item.title, bullets: (item.content.blocks ?? []).map((block) => block.content ?? block.text ?? '').filter(Boolean), bulletKeys: (item.content.blocks ?? []).map((block) => block.key ?? '') },
-    }))
-  }
+  sceneDetails.value = { ...sceneDetails.value, ...Object.fromEntries(details.map((item) => [String(item.id), item])) }
+  if (classroom.value) classroom.value.scenes = details.map(toScene)
 }
 
 onMounted(async () => {

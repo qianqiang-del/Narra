@@ -53,10 +53,14 @@ func (r *sceneRepository) ListByClassroom(ctx context.Context, classroomID uint6
 	return scenes, err
 }
 
-// UpdateContent 写内容列与审核结论列。json.RawMessage 是 []byte，直接当参数会被当成 bytea，
-// 所以转成字符串交给 PostgreSQL 按目标列类型解析。
-func (r *sceneRepository) UpdateContent(ctx context.Context, id uint64, owner string, content, review json.RawMessage) error {
-	return r.guardedUpdate(ctx, id, owner, map[string]any{"content": string(content), "review": string(review)})
+// UpdateContent 写内容列、审核结论列与交互 HTML 列。json.RawMessage 是 []byte，直接当参数会被当成 bytea，
+// 所以转成字符串交给 PostgreSQL 按目标列类型解析。interactiveHTML 只有交互页非空。
+func (r *sceneRepository) UpdateContent(ctx context.Context, id uint64, owner string, content, review json.RawMessage, interactiveHTML string) error {
+	return r.guardedUpdate(ctx, id, owner, map[string]any{
+		"content":          string(content),
+		"review":           string(review),
+		"interactive_html": interactiveHTML,
+	})
 }
 
 // UpdatePhase 只更新进度标记，不碰状态与内容。

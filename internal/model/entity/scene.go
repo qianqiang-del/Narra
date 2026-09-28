@@ -12,7 +12,6 @@ const (
 	SceneTypeSlide       = "slide"
 	SceneTypeQuiz        = "quiz"
 	SceneTypeInteractive = "interactive"
-	SceneTypePBL         = "pbl"
 	SceneTypeComplete    = "complete" // 课程完成页
 )
 
@@ -60,10 +59,10 @@ const (
 type Scene struct {
 	BaseModel
 
-	ClassroomID uint64 `gorm:"column:classroom_id;not null;uniqueIndex:scenes_classroom_id_sort_order_key;comment:所属课程 ID，指向 classrooms.id；课程删除时级联删除" json:"classroom_id"`                                                                                                 // 所属课程；级联删除
-	SortOrder   int32  `gorm:"column:sort_order;not null;uniqueIndex:scenes_classroom_id_sort_order_key;check:scenes_sort_order_check,sort_order >= 0;comment:场景在课程里的顺序，从 0 开始；与 classroom_id 组成唯一约束" json:"sort_order"`                                                   // 场景顺序，从 0 开始
-	Type        string `gorm:"column:type;type:varchar(32);not null;check:scenes_type_check,type IN ('slide', 'quiz', 'interactive', 'pbl', 'complete');comment:场景分类标签，不参与渲染（前端按 content 里每个 block 的 type 渲染），取值 slide / quiz / interactive / pbl / complete" json:"type"` // 场景分类标签，不参与渲染；slide | quiz | interactive | pbl | complete
-	Title       string `gorm:"column:title;type:varchar(200);not null;comment:场景标题；由大模型产出，写入前截断到 200 字以内" json:"title"`                                                                                                                                                    // 场景标题；由大模型产出，写入前须按字符截断到 200 以内
+	ClassroomID uint64 `gorm:"column:classroom_id;not null;uniqueIndex:scenes_classroom_id_sort_order_key;comment:所属课程 ID，指向 classrooms.id；课程删除时级联删除" json:"classroom_id"`                                                                                    // 所属课程；级联删除
+	SortOrder   int32  `gorm:"column:sort_order;not null;uniqueIndex:scenes_classroom_id_sort_order_key;check:scenes_sort_order_check,sort_order >= 0;comment:场景在课程里的顺序，从 0 开始；与 classroom_id 组成唯一约束" json:"sort_order"`                                      // 场景顺序，从 0 开始
+	Type        string `gorm:"column:type;type:varchar(32);not null;check:scenes_type_check,type IN ('slide', 'quiz', 'interactive', 'complete');comment:场景分类标签，不参与渲染（前端按 content 里每个 block 的 type 渲染），取值 slide / quiz / interactive / complete" json:"type"` // 场景分类标签，不参与渲染；slide | quiz | interactive | complete
+	Title       string `gorm:"column:title;type:varchar(200);not null;comment:场景标题；由大模型产出，写入前截断到 200 字以内" json:"title"`                                                                                                                                       // 场景标题；由大模型产出，写入前须按字符截断到 200 以内
 	Brief       string `gorm:"column:brief;type:text;not null;default:'';comment:大纲阶段生成的场景内容摘要；供场景生成及任务重入恢复" json:"brief"`
 
 	Status string `gorm:"column:status;type:varchar(32);not null;check:scenes_status_check,status IN ('pending', 'generating', 'ready', 'failed');comment:场景状态，取值 pending / generating / ready / failed；ready 表示页面 JSON 与它全部讲解段落都已就绪" json:"status"` // 场景状态，见 §5.2；Ready = 页面 JSON 与全部讲解段落都已就绪
@@ -92,11 +91,18 @@ type Scene struct {
 	// 前端按每个 block 的 type 渲染，与场景的 Type 无关。block 的 type 取值是一份
 	// 前后端契约（heading、paragraph、list-item、callout、code、quiz、browser、columns），
 	// 每种 type 的 JSON schema 由后端领域层校验；同一场景内 block 的 key 不得重复，
-	// 且必须能被 scene_segments.content_key 找到；大模型只生成结构化 JSON，不生成 HTML。
+	// 且必须能被 scene_segments.content_key 找到。交互页的正文不在这里，见 InteractiveHTML。
 	//
 	// block 是最小的可高亮单位：content_key 只指向具体 block，不支持 list.2 这类子路径，
 	// 所以列表的每个要点、分栏里的每个条目都各占一个 block。
 	Content json.RawMessage `gorm:"column:content;type:jsonb;not null;default:'{}';comment:页面内容 JSON，固定是一个 blocks 数组（形如 {“blocks”: [...]}）；前端按每个 block 的 type 渲染，block.key 是讲解段落挂钩子的地方" json:"content"`
+
+	// InteractiveHTML 交互页的完整 HTML 文档，其余场景类型固定为空串。
+	//
+	// 独立成列而不是塞进 blocks：一份自包含的可运行文档放不进结构化块，而 content 的
+	// blocks 结构要留给讲解段落挂钩子（content_key 指向 block.key），交互页因此在 blocks
+	// 里只留一个锚块。前端按这一列是否非空决定是走 iframe 还是旧控件渲染。
+	InteractiveHTML string `gorm:"column:interactive_html;type:text;not null;default:'';comment:交互页可运行的完整 HTML 文档，含内联样式与脚本；其他场景类型固定为空串。前端据此在沙箱 iframe 里渲染这一页" json:"interactive_html"`
 
 	// ErrorMessage 本场景生成失败的错误摘要。一页失败不会中断流程——跳过它、继续生成后面的
 	// 场景，所以这一页为什么没出得来只有这里记。与 classrooms.generation_error 分工不同：

@@ -13,19 +13,21 @@ type SceneNarrationSegment struct {
 }
 
 type SceneContentResponse struct {
-	SceneID uint64          `json:"scene_id"`
-	Status  string          `json:"status"`
-	Content json.RawMessage `json:"content"`
+	SceneID         uint64          `json:"scene_id"`
+	Status          string          `json:"status"`
+	Content         json.RawMessage `json:"content"`
+	InteractiveHTML string          `json:"interactive_html"`
 }
 
 type SceneDetailResponse struct {
-	ID           uint64                  `json:"id"`
-	SortOrder    int32                   `json:"sort_order"`
-	Type         string                  `json:"type"`
-	Title        string                  `json:"title"`
-	Brief        string                  `json:"brief"`
-	Status       string                  `json:"status"`
-	Content      json.RawMessage         `json:"content"`
-	Narration    []SceneNarrationSegment `json:"narration"`
-	ErrorMessage *string                 `json:"error_message"`
+	ID              uint64                  `json:"id"`
+	SortOrder       int32                   `json:"sort_order"`
+	Type            string                  `json:"type"`
+	Title           string                  `json:"title"`
+	Brief           string                  `json:"brief"`
+	Status          string                  `json:"status"`
+	Content         json.RawMessage         `json:"content"`
+	InteractiveHTML string                  `json:"interactive_html"`
+	Narration       []SceneNarrationSegment `json:"narration"`
+	ErrorMessage    *string                 `json:"error_message"`
 }

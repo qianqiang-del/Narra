@@ -15,15 +15,26 @@ import (
 // toolNameSubmitReview 是审核交卷用的工具名。
 const toolNameSubmitReview = "submit_page_review"
 
-// reviewInput 是审核专家的输入：本页计划、最终内容与讲稿。
+// reviewInput 是审核专家的输入：本页计划、最终内容、最终讲稿与交互页的 HTML 文档。
 type reviewInput struct {
 	Page      PageContext
 	Plan      *PageExecutionPlan
 	Blocks    []contentBlock
 	Narration []narrationSegment
+	HTML      string
 }
 
+// maxReviewHTMLBytes 是送进审核的交互 HTML 上限。
+//
+// 页面本身可以到 maxInteractiveHTMLBytes，整份塞进审核提示词会显著推高一次调用的成本与延迟。
+// 截断而不是换成摘要：判断「确实可交互、不是静态文字」看原样开头最可靠；
+// 截断时在提示词里如实说明，免得审核凭残缺的文档下结论。
+const maxReviewHTMLBytes = 48 * 1024
+
 // reviewPage 审核一页内容与讲稿的质量：一次调用加强制结构化输出，不挂工具。
+//
+// 模型调用本身出错（超时、限流、响应读断）也重试一次：审核是一次长调用，一次抖动不该让
+// 这一页丢掉审核结论——审核失败不否决页面，但页面记录里就只剩一句"审核未完成"。
 func reviewPage(ctx context.Context, rt *runtime, in *reviewInput) (*ReviewResult, error) {
 	system, ok := agent.BuildTaskPrompt(agent.TaskReview)
 	if !ok {
@@ -33,7 +44,9 @@ func reviewPage(ctx context.Context, rt *runtime, in *reviewInput) (*ReviewResul
 
 	var lastErr error
 	for attempt := 0; attempt <= maxValidateRetry; attempt++ {
-		arguments, err := rt.generateToolCall(ctx, messages, reviewToolInfo())
+		arguments, err := invokeWithRetryIf(ctx, maxTransientRetry, retryableModelError, func() (string, error) {
+			return rt.generateToolCall(ctx, messages, reviewToolInfo())
+		})
 		if err != nil {
 			return nil, fmt.Errorf("审核这一页失败: %w", err)
 		}
@@ -71,6 +84,16 @@ func reviewPrompt(in *reviewInput) string {
 	}
 	blocks, _ := json.Marshal(in.Blocks)
 	fmt.Fprintf(&builder, "\n## 最终内容块\n%s\n", blocks)
+	if document := strings.TrimSpace(in.HTML); document != "" {
+		if len(document) > maxReviewHTMLBytes {
+			// 截断只在字节层面做，回退到合法字符，别把一个汉字切成两半。
+			document = strings.ToValidUTF8(document[:maxReviewHTMLBytes], "")
+			fmt.Fprintf(&builder, "\n## 最终交互页面（HTML 文档，共 %d 字节，这里只给前 %d 字节）\n%s\n",
+				len(in.HTML), maxReviewHTMLBytes, document)
+		} else {
+			fmt.Fprintf(&builder, "\n## 最终交互页面（HTML 文档）\n%s\n", document)
+		}
+	}
 	narration, _ := json.Marshal(in.Narration)
 	fmt.Fprintf(&builder, "\n## 最终讲稿\n%s\n", narration)
 	return builder.String()
