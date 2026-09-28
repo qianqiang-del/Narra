@@ -2,8 +2,6 @@ package bootstrap
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -99,15 +97,21 @@ func BuildWorker(deps classroom.Deps, cfg *config.Config) (service.JobQueue, *Wo
 		if err != nil {
 			return worker.Permanent(err)
 		}
-		// 同一门课的重试归到同一条 session，便于在 Langfuse 里按课堂查。
+		// trace 标识用 run_id：同一门课的所有重试归到同一条 trace，
+		// 用每次尝试现生成的随机值会让重试分裂成多条。
 		if cfg.Langfuse.Enabled {
-			traceID, traceErr := newLangfuseTraceID()
-			if traceErr != nil {
-				return worker.Permanent(fmt.Errorf("生成 Langfuse trace ID 失败: %w", traceErr))
+			record, findErr := deps.Classrooms.FindByID(ctx, classroomID)
+			if findErr != nil {
+				return worker.Permanent(fmt.Errorf("读取课程失败: %w", findErr))
+			}
+			runID, runErr := classroom.EnsureRunID(ctx, deps, record)
+			if runErr != nil {
+				return worker.Permanent(runErr)
 			}
 			ctx = langfuse.SetTrace(ctx,
-				langfuse.WithID(traceID),
+				langfuse.WithID(runID),
 				langfuse.WithName("classroom-generation"),
+				langfuse.WithTags("classroom", "generation"),
 				langfuse.WithSessionID(fmt.Sprintf("%d", classroomID)),
 				langfuse.WithMetadata(map[string]string{"classroom_id": fmt.Sprintf("%d", classroomID)}),
 			)
@@ -127,22 +131,38 @@ func BuildWorker(deps classroom.Deps, cfg *config.Config) (service.JobQueue, *Wo
 	})
 
 	queue := worker.NewQueue(client, cfg.Worker.MaxRetry, cfg.Worker.Timeout)
+	revocable := cancellableQueue{queue: queue, server: server}
 	runtime := &WorkerRuntime{
 		Server:   server,
 		Client:   client,
 		deps:     deps,
-		queue:    queue,
+		queue:    revocable,
 		interval: cfg.Worker.ReconcileInterval,
 	}
-	return queue, runtime, nil
+	return revocable, runtime, nil
 }
 
-func newLangfuseTraceID() (string, error) {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(raw[:]), nil
+// cancellableQueue 给生成任务的队列补上「撤掉这一堂课」。
+//
+// 删课堂要断两头，而两头各归一个组件管：排队中的任务只能从队列里删（Queue 不会删任务），
+// 正在执行的那一趟只能靠进程内的取消登记表喊停（队列管不到 active 任务）。
+// 在这里合成一个口子，服务层只调一次 Remove，不必知道下面拆成了两件事。
+type cancellableQueue struct {
+	queue  *worker.Queue
+	server *worker.Server
+}
+
+// Enqueue 投递生成任务。
+func (q cancellableQueue) Enqueue(classroomID uint64) error {
+	return q.queue.Enqueue(classroomID)
+}
+
+// Remove 撤掉这堂课的生成任务：先停正在跑的，再删排队中的。
+//
+// 先停再删：反过来的话，任务可能在这两步之间被取走开跑，而那时已经没人喊停它了。
+func (q cancellableQueue) Remove(classroomID uint64) error {
+	classroom.CancelGeneration(classroomID)
+	return q.server.RemoveQueued(worker.ClassroomTaskID(classroomID))
 }
 
 // redisOpt 返回 asynq 连接 Redis 的配置。

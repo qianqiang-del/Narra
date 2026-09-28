@@ -4,16 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/flow/agent/react"
+	"github.com/cloudwego/eino/schema"
+	"go.uber.org/zap"
 
 	"narra/internal/repository"
 	appcrypto "narra/pkg/crypto"
 	"narra/pkg/llm"
+	"narra/pkg/logger"
 )
 
 type Synthesizer interface {
@@ -41,12 +46,21 @@ type Deps struct {
 	AudioDir      string
 	Tools         ToolSource
 	EncryptionKey []byte
+	// PageConcurrency 是同时生成的页面数，TTSPoolSize 是同时发出的语音合成请求数；两者不大于 0 时按缺省值。
+	PageConcurrency int
+	TTSPoolSize     int
+	// MaxDuration 是一堂课生成的总时长上限，不大于 0 表示不限制。
+	MaxDuration time.Duration
 }
 
 // runtime 是一个课堂的运行环境：模型 + 工具。每个课堂建一套，用完即弃。
 type runtime struct {
 	chatModel model.ToolCallingChatModel
 	tools     []tool.BaseTool
+
+	mutex sync.Mutex
+	// forcedUnsupported 记录本 Provider 拒绝过强制工具调用，之后不再重试那条路。
+	forcedUnsupported bool
 }
 
 // newRuntime 读配置 → 解密 → 建模型 → 定工具集。
@@ -101,20 +115,85 @@ func newRuntime(ctx context.Context, deps Deps, providerID uint64, modelID strin
 	return &runtime{chatModel: chatModel, tools: tools}, nil
 }
 
-// outlineAgent 建大纲 Agent。工具集为空时同样能建。
-func (r *runtime) outlineAgent(ctx context.Context) (*react.Agent, error) {
-	config := &react.AgentConfig{
-		ToolCallingModel: r.chatModel, // 不自己 WithTools：工具经 ToolsConfig 给
-		MaxStep:          4,
-	}
-	if len(r.tools) > 0 {
-		config.ToolsConfig = compose.ToolsNodeConfig{Tools: r.tools}
-	}
-	agent, err := react.NewAgent(ctx, config)
+// plannerAgent 建规划 Agent：工具集是调研工具加交卷工具。
+//
+// 交卷工具进 ToolReturnDirectly，模型一调它 Agent 就返回，返回值即计划 JSON。
+func (r *runtime) plannerAgent(ctx context.Context) (*react.Agent, error) {
+	tools := make([]tool.BaseTool, 0, len(r.tools)+1)
+	tools = append(tools, r.tools...)
+	tools = append(tools, newEmitPlanTool())
+
+	agent, err := react.NewAgent(ctx, &react.AgentConfig{
+		ToolCallingModel:   r.chatModel,
+		MaxStep:            maxPlannerStep,
+		ToolsConfig:        compose.ToolsNodeConfig{Tools: tools},
+		ToolReturnDirectly: map[string]struct{}{toolNameEmitPlan: {}},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("构造大纲 Agent 失败: %w", err)
+		return nil, fmt.Errorf("构造规划 Agent 失败: %w", err)
 	}
 	return agent, nil
+}
+
+// generateToolCall 调一次模型，返回指定工具调用的参数。
+//
+// 默认按强制工具调用发；Provider 拒绝这条参数时（思考模式的模型只允许自动选择工具）
+// 退回自动选择重发一次，并记住这个能力，同一堂课后面的调用不再白付一次失败请求。
+func (r *runtime) generateToolCall(ctx context.Context, messages []*schema.Message, info *schema.ToolInfo) (string, error) {
+	tools := []*schema.ToolInfo{info}
+	choice := schema.ToolChoiceForced
+	if !r.allowForcedToolChoice() {
+		choice = schema.ToolChoiceAllowed
+	}
+	message, err := r.chatModel.Generate(ctx, messages, model.WithTools(tools), model.WithToolChoice(choice))
+	if err != nil && choice == schema.ToolChoiceForced && isToolChoiceRejected(err) {
+		logger.Warn("Provider 不支持强制工具调用，改用自动选择", zap.String("tool", info.Name), zap.Error(err))
+		r.markForcedUnsupported()
+		message, err = r.chatModel.Generate(ctx, messages, model.WithTools(tools), model.WithToolChoice(schema.ToolChoiceAllowed))
+	}
+	if err != nil {
+		return "", err
+	}
+	arguments := toolCallArguments(message, info.Name)
+	if arguments == "" {
+		return "", fmt.Errorf("模型没有调用 %s 交卷", info.Name)
+	}
+	return arguments, nil
+}
+
+// allowForcedToolChoice 报告本 Provider 是否还能用强制工具调用。
+func (r *runtime) allowForcedToolChoice() bool {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	return !r.forcedUnsupported
+}
+
+// markForcedUnsupported 记住本 Provider 不支持强制工具调用。
+func (r *runtime) markForcedUnsupported() {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.forcedUnsupported = true
+}
+
+// isToolChoiceRejected 判断错误是否是 Provider 不接受这个 tool_choice 参数。
+func isToolChoiceRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "tool_choice")
+}
+
+// toolCallArguments 从消息里取指定工具调用的参数。
+func toolCallArguments(message *schema.Message, name string) string {
+	if message == nil {
+		return ""
+	}
+	for _, call := range message.ToolCalls {
+		if call.Function.Name == name {
+			return call.Function.Arguments
+		}
+	}
+	return ""
 }
 
 // firstModel 取 llm_providers.models 里的第一个模型。

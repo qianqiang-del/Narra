@@ -51,6 +51,10 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("worker.max_retry", 2)
 	v.SetDefault("worker.timeout", "30m")
 	v.SetDefault("worker.reconcile_interval", "10m")
+	// 课堂生成：页面并发默认 3。调大之前先确认模型与 TTS 厂商的并发额度；
+	// 两个值分开计数，语音合成不占模型的并发名额。
+	v.SetDefault("classroom.page_concurrency", 3)
+	v.SetDefault("classroom.tts_pool_size", 3)
 
 	// 读取配置文件
 	if err := v.ReadInConfig(); err != nil {
@@ -101,6 +105,9 @@ func Load(configPath string) (*Config, error) {
 	}
 	if err := config.Worker.Validate(); err != nil {
 		return nil, fmt.Errorf("后台任务配置无效: %w", err)
+	}
+	if err := config.Classroom.Validate(); err != nil {
+		return nil, fmt.Errorf("课堂生成配置无效: %w", err)
 	}
 	if err := config.Langfuse.Validate(); err != nil {
 		return nil, fmt.Errorf("langfuse 配置无效: %w", err)

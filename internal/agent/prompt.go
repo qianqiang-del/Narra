@@ -18,6 +18,9 @@ const (
 	promptDirRoles      = "prompts/roles"
 	promptFileNarration = "prompts/tasks/narration.md"
 	promptFileOutline   = "prompts/tasks/outline.md"
+	promptFilePagePlan  = "prompts/tasks/page_plan.md"
+	promptFileResearch  = "prompts/tasks/research.md"
+	promptFileReview    = "prompts/tasks/review.md"
 	promptFileScene     = "prompts/tasks/scene.md"
 )
 
@@ -29,6 +32,15 @@ const TaskNarration PromptTask = "narration"
 
 // TaskOutline 生成期的排课，产出 scenes 的骨架。
 const TaskOutline PromptTask = "outline"
+
+// TaskPagePlan 生成期的单页执行计划，产出场景二每页的调研与验收要求。
+const TaskPagePlan PromptTask = "page_plan"
+
+// TaskResearch 生成期的资料调研，压成证据包交给内容专家。
+const TaskResearch PromptTask = "research"
+
+// TaskReview 生成期的页面审核，产出结构化的审核结论。
+const TaskReview PromptTask = "review"
 
 // TaskScene 生成期的单场景内容与讲稿。
 const TaskScene PromptTask = "scene"
@@ -64,10 +76,14 @@ var taskLayer = map[PromptTask]struct {
 	TaskNarration: {mustPromptFile(promptFileNarration), entity.PresetAgentRoleTypeTeacher},
 }
 
-// roleFreeTasks 不需要角色层的任务：排课与出内容不是任何角色在发言，也不该夹带角色池的人设。
+// roleFreeTasks 不需要角色层的任务：排课、页计划、调研、审核与出内容都不是任何角色在发言，
+// 也不该夹带角色池的人设。
 var roleFreeTasks = map[PromptTask]string{
-	TaskOutline: mustPromptFile(promptFileOutline),
-	TaskScene:   mustPromptFile(promptFileScene),
+	TaskOutline:  mustPromptFile(promptFileOutline),
+	TaskPagePlan: mustPromptFile(promptFilePagePlan),
+	TaskResearch: mustPromptFile(promptFileResearch),
+	TaskReview:   mustPromptFile(promptFileReview),
+	TaskScene:    mustPromptFile(promptFileScene),
 }
 
 // BuildSystemPrompt 装配一个角色在指定任务下的完整系统提示词。

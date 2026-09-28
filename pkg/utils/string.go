@@ -3,8 +3,18 @@ package utils
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"strings"
 )
+
+// RandomHex 生成 size 字节随机数的十六进制串，长度为 size 的两倍。
+func RandomHex(size int) (string, error) {
+	buf := make([]byte, size)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
 
 // GenerateRandomString 生成随机字符串
 func GenerateRandomString(length int) (string, error) {

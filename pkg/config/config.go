@@ -20,6 +20,7 @@ type Config struct {
 	Langfuse       LangfuseConfig       `mapstructure:"langfuse"`
 	CORS           CORSConfig           `mapstructure:"cors"`
 	Worker         WorkerConfig         `mapstructure:"worker"`
+	Classroom      ClassroomConfig      `mapstructure:"classroom"`
 	ConfigPath     string               `mapstructure:"-"`
 }
 
@@ -49,6 +50,29 @@ func (c WorkerConfig) Validate() error {
 	}
 	if c.ReconcileInterval < 0 {
 		return fmt.Errorf("worker.reconcile_interval 不能为负")
+	}
+	return nil
+}
+
+// ClassroomConfig 是课堂生成时的并发与预算参数。
+type ClassroomConfig struct {
+	PageConcurrency int `mapstructure:"page_concurrency"` // 单堂课内并发生成的页面数
+	TTSPoolSize     int `mapstructure:"tts_pool_size"`    // 同一时刻最多发出的语音合成请求数
+	// MaxDuration 是一堂课的生成时长上限，0 表示不限制。
+	// 页数与单页调用数都有各自的闸门，但它们的乘积没有上限——只有这一项管得住总时长。
+	MaxDuration time.Duration `mapstructure:"max_duration"`
+}
+
+// Validate 校验课堂生成参数。
+func (c ClassroomConfig) Validate() error {
+	if c.PageConcurrency < 1 {
+		return fmt.Errorf("classroom.page_concurrency 必须大于 0")
+	}
+	if c.TTSPoolSize < 1 {
+		return fmt.Errorf("classroom.tts_pool_size 必须大于 0")
+	}
+	if c.MaxDuration < 0 {
+		return fmt.Errorf("classroom.max_duration 不能为负")
 	}
 	return nil
 }

@@ -67,6 +67,21 @@ type Classroom struct {
 	// 用 text 而非 varchar：varchar 超长是报错，会把整个生成事务回滚掉。
 	GenerationError *string `gorm:"column:generation_error;type:text;comment:这门课为什么没做完的一句话；有值即表示不会再继续生成。与 status 正交 —— status 只看能不能进课堂" json:"generation_error"`
 
+	// Plan 本轮生成的课堂计划快照，同时作为前端大纲与场景生成的唯一事实源。
+	//
+	// 与 scenes 表的分工：这一列记「这门课打算讲成什么样」，scenes 记「实际生成出来的页」。
+	// 两者形状相近但不是一份数据——scenes 会随生成失败出现空洞，plan 始终是完整的设计稿。
+	// 旧课堂这一列为空对象，读它之前先判空。
+	Plan json.RawMessage `gorm:"column:plan;type:jsonb;not null;default:'{}';comment:本轮生成的课堂计划快照（JSON）；同时作为前端大纲与段二执行的唯一事实源" json:"plan"`
+
+	// PlanVersion 计划的版本号，首轮为 1，重新规划时递增。
+	// 用它判断已落库的场景结果是否属于当前计划，而不是解析 JSON 再比。
+	PlanVersion int32 `gorm:"column:plan_version;type:int;not null;default:1;comment:计划版本号；首轮为 1，重新规划时递增，用于判断已落库的场景结果是否属于当前计划" json:"plan_version"`
+
+	// GenerationRunID 是本轮生成运行的标识：课程受理时生成，同一门课的所有重试沿用同一个。
+	// 任务重投时靠它区分「同一趟运行的再次尝试」与「新一轮生成」，链路追踪也以它为一条 trace。
+	GenerationRunID string `gorm:"column:generation_run_id;type:varchar(64);not null;default:'';comment:本轮生成运行的唯一标识；受理时生成，任务重试沿用同一个，用于幂等判重与链路追踪归属" json:"generation_run_id"`
+
 	// GenerationConfig 本次生成的模型、搜索、解析器等快照。
 	GenerationConfig json.RawMessage `gorm:"column:generation_config;type:jsonb;not null;default:'{}';comment:本次生成用的模型、搜索、解析器等配置快照（JSON）" json:"generation_config"`
 
