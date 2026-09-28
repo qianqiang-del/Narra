@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -506,6 +507,115 @@ func TestOrchestratorRejectsBadInput(t *testing.T) {
 	}
 	if len(runs) != 0 {
 		t.Errorf("参数校验失败却留下了 %d 条运行记录", len(runs))
+	}
+}
+
+// ---- 第 8 步第 1 小步：一次讨论用一套专属模型 ----
+//
+// WithModels 的职责只有一件事：复制 Deps、换掉三个模型字段。所以这里直接比对
+// 新旧编排器的 deps 字段，不去跑整趟讨论 —— Run 怎么用这三样，既有用例已经覆盖。
+
+// namedModel / namedSummarizer / namedExtractor 是三个自报家门的最小替身，
+// 用同一版名字构造一套，才能断言"换上去的是这一套"。
+type namedModel struct{ name string }
+
+func (m namedModel) Generate(_ context.Context, _ GenerationRequest) (GenerationResponse, error) {
+	return GenerationResponse{Content: m.name}, nil
+}
+
+type namedSummarizer struct{ name string }
+
+func (m namedSummarizer) Summarize(_ context.Context, _ string, _ []HistoryMessage) (string, error) {
+	return m.name, nil
+}
+
+type namedExtractor struct{ name string }
+
+func (m namedExtractor) Extract(_ context.Context, _ []HistoryMessage) ([]MemoryCandidate, error) {
+	return nil, nil
+}
+
+// namedModels 用同一个名字造一套模型能力。
+func namedModels(name string) Models {
+	return Models{
+		Model:      namedModel{name: name},
+		Summarizer: namedSummarizer{name: name},
+		Extractor:  namedExtractor{name: name},
+	}
+}
+
+// TestOrchestratorWithModelsUsesNewAndKeepsOriginal 验证换上的三项能力归新编排器，
+// 原编排器一份都没被动过。
+func TestOrchestratorWithModelsUsesNewAndKeepsOriginal(t *testing.T) {
+	f := newFixture(t)
+	defer f.cleanup()
+
+	original := f.newOrchestrator(t, FakeModel{})
+	beforeModel, beforeSummarizer, beforeExtractor := original.deps.Model, original.deps.Summarizer, original.deps.Extractor
+
+	models := namedModels("新模型")
+	swapped, err := original.WithModels(models)
+	if err != nil {
+		t.Fatalf("换模型能力失败: %v", err)
+	}
+
+	if swapped == original {
+		t.Error("WithModels 应返回一个新的编排器")
+	}
+	model, ok := swapped.deps.Model.(namedModel)
+	if !ok || model.name != "新模型" {
+		t.Errorf("新编排器的发言模型 = %#v，期望新模型", swapped.deps.Model)
+	}
+	summarizer, ok := swapped.deps.Summarizer.(namedSummarizer)
+	if !ok || summarizer.name != "新模型" {
+		t.Errorf("新编排器的摘要器 = %#v，期望新模型", swapped.deps.Summarizer)
+	}
+	extractor, ok := swapped.deps.Extractor.(namedExtractor)
+	if !ok || extractor.name != "新模型" {
+		t.Errorf("新编排器的提炼器 = %#v，期望新模型", swapped.deps.Extractor)
+	}
+
+	if original.deps.Model != beforeModel {
+		t.Errorf("原编排器的发言模型被换掉了: %#v", original.deps.Model)
+	}
+	if original.deps.Summarizer != beforeSummarizer {
+		t.Errorf("原编排器的摘要器被换掉了: %#v", original.deps.Summarizer)
+	}
+	if original.deps.Extractor != beforeExtractor {
+		t.Errorf("原编排器的提炼器被换掉了: %#v", original.deps.Extractor)
+	}
+}
+
+// TestOrchestratorWithModelsRejectsMissing 验证三项缺任何一项都报错，且指明缺的是哪一项。
+func TestOrchestratorWithModelsRejectsMissing(t *testing.T) {
+	f := newFixture(t)
+	defer f.cleanup()
+
+	original := f.newOrchestrator(t, FakeModel{})
+	full := namedModels("新模型")
+
+	cases := []struct {
+		name   string
+		models Models
+		reason string
+	}{
+		{"没给发言模型", Models{Summarizer: full.Summarizer, Extractor: full.Extractor}, "缺少模型"},
+		{"没给摘要器", Models{Model: full.Model, Extractor: full.Extractor}, "缺少摘要器"},
+		{"没给记忆提炼器", Models{Model: full.Model, Summarizer: full.Summarizer}, "缺少记忆提炼器"},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			swapped, err := original.WithModels(item.models)
+			if err == nil {
+				t.Fatalf("期望报错，实际换成功了")
+			}
+			if swapped != nil {
+				t.Error("报错时不该返回编排器")
+			}
+			if !strings.Contains(err.Error(), item.reason) {
+				t.Errorf("错误信息 = %q，期望包含 %q（要能看出缺的是哪一项）", err.Error(), item.reason)
+			}
+		})
 	}
 }
 
