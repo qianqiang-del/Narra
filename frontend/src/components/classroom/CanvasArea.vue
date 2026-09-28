@@ -57,8 +57,8 @@ const { t } = useI18n()
         <!-- 课程完成页 -->
         <ClassroomComplete v-if="courseComplete" :stats="stats" />
 
-        <!-- 场景内容 -->
-        <SceneRenderer v-else-if="scene.status === 'ready'" :scene="scene" :active-content-key="activeContentKey" />
+        <!-- 场景内容；按场景 id 重建，切页时重置作答状态与 iframe -->
+        <SceneRenderer v-else-if="scene.status === 'ready'" :key="scene.id" :scene="scene" :active-content-key="activeContentKey" />
 
         <!-- 生成中 -->
         <div

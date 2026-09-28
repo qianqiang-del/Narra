@@ -26,7 +26,6 @@
 - `slide` 只生成 heading、paragraph、list-item、callout、code，不生成 interaction。
 - `quiz` 必须生成一个 type 为 `quiz` 的 block，并提供结构化 `interaction`：`{"kind":"quiz","options":["..."],"answer":"..."}`。选项必须是独立字符串，不能把选项和答案埋在 content 文本中。
 - `interaction.kind` 不能省略；它只描述这条交互的性质（如 `choice`），不要使用学科或实验名称。
-- `pbl` 优先使用 columns、list-item、callout。
 - `interaction` 是机器可执行配置，必须是合法 JSON 对象；content 只用于展示说明，不要把结构化配置编码成自然语言。
 
 ## 内容块职责
@@ -64,7 +63,6 @@
 
 - `slide`：以 heading、paragraph、list-item、callout、code 为主；不得生成 interaction。
 - `quiz`：必须包含一个或多个 type 为 `quiz` 的 block；每个 quiz block 必须提供 interaction.options 和 interaction.answer。
-- `pbl`：使用 columns、list-item、paragraph、callout 表达任务、分组、证据和结论。
 - 不要根据学科名称创造新的 scene type；所有页面必须使用上述固定类型。
 
 ### `slide` 详细规则
@@ -102,14 +100,6 @@
   }
 }
 ```
-
-### `pbl` 详细规则
-
-- 用于任务驱动、项目实践、分组协作、证据整理和方案评价。
-- 使用 `columns` 表达任务阶段、角色分工、证据和结论等分组信息。
-- 使用 `list-item` 表达待完成任务或检查清单。
-- 使用 `callout` 表达评价标准、关键约束和最终结论。
-- columns 中每一组必须有明确标题，不能只返回一大段用分隔符拼接的文本。
 
 ### 完成页规则
 

@@ -38,8 +38,9 @@ type KnowledgeSearcher interface {
 
 // knowledgeRetrieveArgs 是工具入参，字段名就是模型要填的 JSON 键。
 type knowledgeRetrieveArgs struct {
-	Query string `json:"query"`
-	TopK  int    `json:"top_k"`
+	Query   string   `json:"query"`
+	TopK    int      `json:"top_k"`
+	Queries []string `json:"queries"`
 }
 
 // knowledgeRetrieveHit 是工具出参里的一条命中。
@@ -88,12 +89,23 @@ func (t *knowledgeRetrieveTool) Info(context.Context) (*schema.ToolInfo, error) 
 			"凡是需要依据这些资料作答、或需要核对原文细节的问题都应当先调用它；" +
 			"查公开的、时效性的信息请改用联网搜索工具。" +
 			"返回的每条结果都带来源，引用时请说明出处。" +
+			"一次没查到想要的内容时，换一种说法或换几个关键词再查一次（也可以一次给出多个说法，见 queries），不要原样重复同一条检索词；" +
 			"若返回里带 error 字段，说明本次检索未成功，可改用其他工具或凭已有知识作答。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"query": {
-				Type:     schema.String,
-				Desc:     "检索词：一句自然语言、关键词，或两者混着写。用提问的原话即可，不要加引号或布尔语法。",
+				Type: schema.String,
+				Desc: "检索词：直接写你要找的内容 —— 几个关键词或一句自然语言都行" +
+					"（如「令牌桶算法」或「服务内存一直涨是什么原因」）。" +
+					"不要写「请帮我找下」这类客套话，也不要把整段需求原样复制进来；" +
+					"不要加引号或布尔语法。",
 				Required: true,
+			},
+			"queries": {
+				Type:     schema.Array,
+				ElemInfo: &schema.ParameterInfo{Type: schema.String},
+				Desc: "同一问题的其他说法（可选，最多 3 条）：拿不准用哪种措辞时，" +
+					"可以一次给 2-3 个不同角度的问法，服务端会把各自的检索结果" +
+					"融合后统一排序。空串、重复、与 query 相同的条目会被忽略。",
 			},
 			"top_k": {
 				Type: schema.Integer,
@@ -119,7 +131,7 @@ func (t *knowledgeRetrieveTool) InvokableRun(ctx context.Context, arguments stri
 		})
 	}
 
-	result, err := t.searcher.Retrieve(ctx, requestdto.KnowledgeRetrieve{Query: args.Query, TopK: args.TopK})
+	result, err := t.searcher.Retrieve(ctx, requestdto.KnowledgeRetrieve{Query: args.Query, TopK: args.TopK, Queries: args.Queries})
 	if err != nil {
 		// 失败详情留在日志里（排障要完整诊断），给模型的是同一句话的中文说明 ——
 		// 模型不需要错误码，它需要的只是"这条路这次走不通"。

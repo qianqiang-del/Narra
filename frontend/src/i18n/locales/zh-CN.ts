@@ -126,7 +126,6 @@ export default {
     typeSlide: '幻灯片',
     typeQuiz: '测验',
     typeInteractive: '互动',
-    typePbl: '项目式',
     typeComplete: '完成',
     statusGenerating: '生成中',
     statusFailed: '生成失败',
@@ -134,6 +133,9 @@ export default {
     retry: '重试',
     play: '开始播放',
     clickToPlay: '点击开始播放',
+    interactiveUnavailable: '交互内容不可用',
+    slideCode: '代码',
+    slideTakeaway: '小结',
   },
   whiteboard: {
     title: '互动白板',
@@ -199,7 +201,6 @@ export default {
     sceneTypeSlide: '幻灯片',
     sceneTypeQuiz: '测验',
     sceneTypeInteractive: '互动',
-    sceneTypePbl: '项目式学习',
   },
   workspace: {
     newSession: '新建对话',

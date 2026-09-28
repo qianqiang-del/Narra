@@ -85,8 +85,16 @@ const rrfConstant = 60.0
 // 用结构体而不是 (text string, topK int)：与 FileInput / TextInput 同一个路数，
 // 将来加过滤条件（来源类型、只在某几篇文档里找）时不用改签名。
 type RetrieveInput struct {
-	Text string // 检索词：一句自然语言、关键词，或两者混着写
+	Text string // 检索词：一句自然语言、关键词，或两者混着写；检索前会过一遍确定性清洗（见 query.go）
 	TopK int    // 返回条数；0 或越界时按 defaultTopK / maxTopK 钳位
+
+	// Variants 是同一问题的其他说法（换个措辞、换个角度），可选、最多 3 条。
+	//
+	// rag.Retriever 本体不消费它 —— 单查询检索只看 Text。把多路召回编排起来的是外层的
+	// 多查询门面（internal/rag/einoretriever）：它把 Text + Variants 各自检索再融合。
+	// 留在这个结构体里是因为它属于"一次检索的输入"：换入口（HTTP / MCP 工具）时不用
+	// 改签名，与当初加 TopK 是同一个理由。
+	Variants []string
 }
 
 // Hit 是一次检索命中的一条切片。
@@ -155,8 +163,8 @@ func NewRetriever(
 
 // Retrieve 两路召回并融合出 topK 条命中。
 //
-// 降级规则一句话说清：**一路挂掉不影响另一路召回，但两条路都没给出结果时，失败原因
-// 必须冒泡**。空结果加一行日志比报错难查得多 —— 用户看到的只是"没搜到"，
+// 检索词先过一遍确定性清洗（见 query.go），两条路共用清洗结果。降级规则一句话说清：
+// **一路挂掉不影响另一路召回，但两条路都没给出结果时，失败原因必须冒泡**。空结果加一行日志比报错难查得多 —— 用户看到的只是"没搜到"，
 // 真实原因却可能是向量服务没配好、也可能是数据库查不动。单路成功时结果照常返回，
 // 来源写在 Hit.Method 里，失败留一条告警日志，不静默。
 //
@@ -169,7 +177,9 @@ func (r *Retriever) Retrieve(ctx context.Context, input RetrieveInput) (Retrieve
 	topK := clampTopK(input.TopK)
 	limit := recallLimit(topK)
 
-	result := RetrieveResult{Terms: lexicalTerms(query)}
+	// 清洗后再分词：词项回在响应里，调参时能直接看到剥壳后的结果。
+	plan := buildQueryPlan(query)
+	result := RetrieveResult{Terms: plan.Terms}
 	var failures []error
 
 	// 向量路的准入条件是模型行：没有它就不知道该用哪个模型向量化查询串。
@@ -187,7 +197,7 @@ func (r *Retriever) Retrieve(ctx context.Context, input RetrieveInput) (Retrieve
 		logger.Warn("向量召回不可用，本次检索只走词法路", zap.Error(err))
 	default:
 		result.Model = model.Name
-		vectorHits, err = r.vectorRecall(ctx, model, query, limit)
+		vectorHits, err = r.vectorRecall(ctx, model, plan.EmbedText, limit)
 		if err != nil {
 			failures = append(failures, err)
 			logger.Warn("向量召回不可用，本次检索只走词法路", zap.Error(err))
@@ -269,6 +279,12 @@ func clampTopK(topK int) int {
 	}
 	return topK
 }
+
+// ClampTopK 是 clampTopK 的导出形式，给外层复用同一套条数口径。
+//
+// 多查询门面（internal/rag/einoretriever）要按"有效 top_k"截断融合后的结果：
+// 两边各写一份钳位规则，改了默认值或上限就会分叉，融合结果与实际口径对不上。
+func ClampTopK(topK int) int { return clampTopK(topK) }
 
 // recallLimit 是每条召回路的候选上限（过采样，见 recallOverfetch）。
 func recallLimit(topK int) int {

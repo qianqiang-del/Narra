@@ -42,8 +42,6 @@ func validateBlocks(blocks []contentBlock, sceneType string) ([]contentBlock, er
 		err = validateSlide(blocks)
 	case entity.SceneTypeQuiz:
 		err = validateQuiz(blocks)
-	case entity.SceneTypePBL:
-		err = validatePBL(blocks)
 	default:
 		err = fmt.Errorf("场景类型 %q 没有对应的校验规则", sceneType)
 	}
@@ -54,6 +52,10 @@ func validateBlocks(blocks []contentBlock, sceneType string) ([]contentBlock, er
 }
 
 // validateInteraction 校验一个块的交互配置。
+//
+// 现在只服务测验：选项与答案在 validateQuiz 里查，这里管它没管的那一半——kind 不能为空。
+// controls 是已停用的旧契约（交互页改用完整 HTML 文档），出现即判违规；
+// 别反过来逐字段校验它，那等于教模型把控件补全。
 func validateInteraction(block contentBlock) error {
 	if block.Interaction == nil {
 		return nil
@@ -61,20 +63,8 @@ func validateInteraction(block contentBlock) error {
 	if strings.TrimSpace(block.Interaction.Kind) == "" {
 		return fmt.Errorf("内容块 %q 的 interaction.kind 不能为空", block.Key)
 	}
-	for _, control := range block.Interaction.Controls {
-		if strings.TrimSpace(control.Name) == "" || strings.TrimSpace(control.Type) == "" || control.Default == nil {
-			return fmt.Errorf("内容块 %q 的交互控件缺少 name、type 或 default", block.Key)
-		}
-		switch control.Type {
-		case "select":
-			if len(control.Options) == 0 {
-				return fmt.Errorf("内容块 %q 的 select 控件缺少 options", block.Key)
-			}
-		case "range":
-			if control.Min == nil || control.Max == nil || control.Step == nil {
-				return fmt.Errorf("内容块 %q 的 range 控件缺少 min、max 或 step", block.Key)
-			}
-		}
+	if len(block.Interaction.Controls) > 0 {
+		return fmt.Errorf("内容块 %q 带了 interaction.controls；交互控件已停用，交互页请改用完整 HTML 文档", block.Key)
 	}
 	return nil
 }

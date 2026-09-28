@@ -45,7 +45,6 @@ var allowedSceneTypes = map[string]struct{}{
 	entity.SceneTypeSlide:       {},
 	entity.SceneTypeQuiz:        {},
 	entity.SceneTypeInteractive: {},
-	entity.SceneTypePBL:         {},
 }
 
 type contentBlock struct {
@@ -56,22 +55,12 @@ type contentBlock struct {
 }
 
 type interactionConfig struct {
-	Kind     string               `json:"kind"`
-	Controls []interactionControl `json:"controls,omitempty"`
-	Options  []string             `json:"options,omitempty"`
-	Answer   string               `json:"answer,omitempty"`
-	Config   map[string]any       `json:"config,omitempty"`
-}
-
-type interactionControl struct {
-	Name    string         `json:"name"`
-	Type    string         `json:"type"`
-	Default any            `json:"default,omitempty"`
-	Min     *float64       `json:"min,omitempty"`
-	Max     *float64       `json:"max,omitempty"`
-	Step    *float64       `json:"step,omitempty"`
-	Options []string       `json:"options,omitempty"`
-	Config  map[string]any `json:"config,omitempty"`
+	Kind string `json:"kind"`
+	// Controls 是已停用的旧契约（交互页改用完整 HTML 文档），只为让校验能认出并拒掉它而保留原样。
+	Controls json.RawMessage `json:"controls,omitempty"`
+	Options  []string        `json:"options,omitempty"`
+	Answer   string          `json:"answer,omitempty"`
+	Config   map[string]any  `json:"config,omitempty"`
 }
 
 type narrationSegment struct {

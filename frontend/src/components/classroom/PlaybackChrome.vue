@@ -269,7 +269,8 @@ updateNotes()
 
 
 const hasActiveSession = computed(() => sessions.value.some((s) => s.active))
-const showPlayHint = computed(() => !playing.value && !courseComplete.value)
+// 交互页自带可操作的沙箱页面，中央播放按钮会挡住它，这一页永远不显示
+const showPlayHint = computed(() => !playing.value && !courseComplete.value && activeScene.value.type !== 'interactive')
 
 /* ---------- 圆桌参与者（原遗漏：学员头像 + 信息卡 + 麦克风/聊天） ---------- */
 const participants = computed<Participant[]>(() =>

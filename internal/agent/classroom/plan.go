@@ -58,7 +58,7 @@ func planClassroom(ctx context.Context, deps Deps, classroom *entity.Classroom, 
 		return nil, err
 	}
 
-	plan, err := generatePlan(ctx, planner, messages)
+	plan, err := generatePlan(rt.retrievalContext(ctx), planner, messages)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +317,7 @@ func pageSchema() *jsonschema.Schema {
 	return objectSchema("计划里的一页", []string{"plan_id", "order", "type", "title", "brief", "learning_objective"},
 		schemaField{"plan_id", valueSchema("string", "页标识符，形如 page-01，全计划唯一")},
 		schemaField{"order", valueSchema("integer", "页序，从 0 开始连续递增")},
-		schemaField{"type", valueSchema("string", "slide / quiz / interactive / pbl 四选一")},
+		schemaField{"type", valueSchema("string", "slide / quiz / interactive 三选一")},
 		schemaField{"title", valueSchema("string", "页面标题")},
 		schemaField{"brief", valueSchema("string", "这一页讲哪几点，1-2 句清单式描述")},
 		schemaField{"learning_objective", valueSchema("string", "学完这一页能做到什么")},

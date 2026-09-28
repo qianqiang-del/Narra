@@ -41,6 +41,15 @@ psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0003_embe
 
 `embedding_settings` 允许保存多条 OpenAI 兼容服务配置，但数据库会限制同时只有一条当前启用配置。
 
+**第五步，更新讲稿 ready 约束**：
+
+```bash
+psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0004_scene_segments_ready_constraint.sql
+```
+
+`0004` 将 `scene_segments` 的 `ready` 约束从“必须有音频”调整为“有音频或有讲稿文本”。
+这样 TTS 未启用时，讲稿仍可以标记为 `ready`，而 `audio_path` 保持为空。
+
 ## 谁拥有约束
 
 **GORM 表达得出的归 GORM，表达不出的归 SQL。同一条约束只能有一处声明。**

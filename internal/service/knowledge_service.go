@@ -100,9 +100,11 @@ type fileRetrier interface {
 // retriever 是本服务对检索能力的最小依赖面。
 //
 // 与 ingester 同一个路数：服务层负责 HTTP 面（DTO 进、DTO 出），检索链路本身归
-// internal/rag。它由 *rag.Retriever 提供，但**不是** ingester 的一部分 ——
-// 收录与检索是两个对象、两种负载（一个吃上游额度，一个吃数据库），合在一起
-// 会让"上传很慢"与"检索很慢"看起来像同一件事。
+// internal/rag。生产装配给的是一个满足同一签名的多查询门面
+// （internal/rag/einoretriever）：单查询直通 rag.Retriever，输入里带变体时走多路
+// 召回再融合。服务层看不见这个区别，只认"两路召回并融合"这一个口径。
+// 它**不是** ingester 的一部分 —— 收录与检索是两个对象、两种负载（一个吃上游额度，
+// 一个吃数据库），合在一起会让"上传很慢"与"检索很慢"看起来像同一件事。
 //
 // 可以是 nil：检索能力没接上（或测试里不关心它）时服务照常提供收录与列表，
 // 只有 Retrieve 会返回一句明确的"知识检索不可用"。与 parser 可以为 nil 同一个理由：
@@ -578,8 +580,12 @@ func (s *knowledgeService) discardStagingDir(path string) {
 // Retrieve 检索知识库，返回最相关的切片。
 //
 // 这是 MCP 契约 rag_retrieve 的进程内入口（见 docs/modules/agent-mcp-tools.md）：
-// { query, top_k } → { results: [{content, source, score}] }。本层多给几列
+// { query, queries?, top_k } → { results: [{content, source, score}] }。本层多给几列
 // （标题、章节、命中方式、相似度）方便界面显示与调参，MCP 适配层按需取用即可。
+//
+// queries 是同一问题的其他说法：本层只负责透传。给了就按它们检索；没给时若本次运行
+// 注入了改写模型（课堂 Agent 会注入自己的模型），多查询门面会用模型自动扩写。
+// 多路召回的编排与融合在外层门面（internal/rag/einoretriever）。
 //
 // 检索词在这里校验而不是全丢给 rag：接口层要按"参数错了"翻 400，而它只认服务层的
 // 错误口径（见 ErrEmptyQuery）。rag 那边同样有一道，供不经服务层的调用方（MCP）兜底。
@@ -594,7 +600,7 @@ func (s *knowledgeService) Retrieve(
 		return responsedto.KnowledgeRetrieveResult{}, ErrEmptyQuery
 	}
 
-	result, err := s.retriever.Retrieve(ctx, rag.RetrieveInput{Text: input.Query, TopK: input.TopK})
+	result, err := s.retriever.Retrieve(ctx, rag.RetrieveInput{Text: input.Query, TopK: input.TopK, Variants: input.Queries})
 	if err != nil {
 		return responsedto.KnowledgeRetrieveResult{}, err
 	}

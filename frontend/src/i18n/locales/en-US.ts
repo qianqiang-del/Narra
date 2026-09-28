@@ -128,7 +128,6 @@ export default {
     typeSlide: 'Slide',
     typeQuiz: 'Quiz',
     typeInteractive: 'Interactive',
-    typePbl: 'Project',
     typeComplete: 'Complete',
     statusGenerating: 'Generating',
     statusFailed: 'Generation failed',
@@ -136,6 +135,9 @@ export default {
     retry: 'Retry',
     play: 'Play',
     clickToPlay: 'Click to play',
+    interactiveUnavailable: 'Interactive content unavailable',
+    slideCode: 'Code',
+    slideTakeaway: 'Takeaway',
   },
   whiteboard: {
     title: 'Interactive Whiteboard',
@@ -203,7 +205,6 @@ export default {
     sceneTypeSlide: 'Slide',
     sceneTypeQuiz: 'Quiz',
     sceneTypeInteractive: 'Interactive',
-    sceneTypePbl: 'PBL',
   },
   workspace: {
     newSession: 'New chat',

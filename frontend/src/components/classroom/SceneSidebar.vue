@@ -1,13 +1,12 @@
 <script setup lang="ts">
 /**
  * SceneSidebar —— 文档 §6.4（左侧场景栏，默认 220 / 170~400，可折叠）。
- * 缩略图按场景类型（slide/quiz/interactive/pbl）用不同配色与示意图。
+ * 缩略图按场景类型（slide/quiz/interactive）用不同配色与示意图。
  */
 import { useI18n } from 'vue-i18n'
 import {
   BookOpen,
   Check,
-  Cpu,
   MousePointer2,
   PanelLeftClose,
   PanelLeftOpen,
@@ -16,8 +15,9 @@ import {
   Trophy,
 } from 'lucide-vue-next'
 
-import { SCENE_TYPE_STYLES, type Scene, type SceneType } from '@/types/scene'
+import { interactiveHTML, SCENE_TYPE_STYLES, type Scene, type SceneType } from '@/types/scene'
 import { cn } from '@/lib/utils'
+import InteractiveIframeRenderer from '@/components/classroom/InteractiveIframeRenderer.vue'
 import SceneRenderer from '@/components/classroom/SceneRenderer.vue'
 
 const props = defineProps<{
@@ -40,7 +40,6 @@ const TYPE_ICON: Record<SceneType, typeof BookOpen> = {
   slide: BookOpen,
   quiz: PieChart,
   interactive: MousePointer2,
-  pbl: Cpu,
   complete: Trophy,
 }
 
@@ -48,7 +47,6 @@ const TYPE_LABEL_KEY: Record<SceneType, string> = {
   slide: 'scene.typeSlide',
   quiz: 'scene.typeQuiz',
   interactive: 'scene.typeInteractive',
-  pbl: 'scene.typePbl',
   complete: 'scene.typeComplete',
 }
 </script>
@@ -138,7 +136,13 @@ const TYPE_LABEL_KEY: Record<SceneType, string> = {
           "
         >
           <div class="absolute inset-0 z-10 overflow-hidden bg-white dark:bg-gray-800">
-            <div class="pointer-events-none origin-top-left scale-[0.19]" style="width: 526%; height: 526%">
+            <!-- 交互页：同样是沙箱 iframe，缩略图模式禁鼠标事件、进视口才挂载 -->
+            <InteractiveIframeRenderer
+              v-if="interactiveHTML(scene)"
+              :html="interactiveHTML(scene)"
+              :interactive="false"
+            />
+            <div v-else class="pointer-events-none origin-top-left scale-[0.19]" style="width: 526%; height: 526%">
               <SceneRenderer :scene="scene" />
             </div>
           </div>
@@ -175,17 +179,17 @@ const TYPE_LABEL_KEY: Record<SceneType, string> = {
           <!-- 正常：按类型画示意图 -->
           <template v-else>
             <!-- slide -->
-            <div v-if="scene.type === 'slide'" class="flex size-full flex-col gap-1 overflow-hidden bg-gradient-to-br from-violet-50 to-blue-50 p-2">
-              <div class="truncate text-[8px] font-bold text-gray-800/90">{{ scene.slide?.heading || scene.title }}</div>
+            <div v-if="scene.type === 'slide'" class="flex size-full flex-col gap-1 overflow-hidden bg-white p-2">
+              <div class="truncate text-[8px] font-black text-indigo-950">{{ scene.title }}</div>
               <div
-                v-for="(bullet, bulletIndex) in (scene.slide?.bullets || []).slice(0, 3)"
-                :key="bulletIndex"
-                class="truncate rounded bg-white/70 px-1 py-0.5 text-[7px] leading-tight text-gray-700/80"
+                v-for="(block, blockIndex) in (scene.slide?.blocks || []).slice(0, 3)"
+                :key="blockIndex"
+                class="truncate rounded bg-slate-100 px-1 py-0.5 text-[7px] leading-tight text-slate-600"
               >
-                {{ bullet }}
+                {{ block.text }}
               </div>
-              <div v-if="scene.slide?.accent" class="mt-auto truncate rounded bg-violet-100/80 px-1 py-0.5 text-[6px] font-medium text-violet-700/80">
-                {{ scene.slide.accent }}
+              <div v-if="scene.slide?.takeaway" class="mt-auto truncate rounded bg-indigo-950 px-1 py-0.5 text-[6px] font-medium text-indigo-50">
+                {{ scene.slide.takeaway }}
               </div>
             </div>
 
@@ -206,15 +210,6 @@ const TYPE_LABEL_KEY: Record<SceneType, string> = {
                 <div class="ml-1 h-1 flex-1 rounded-full bg-white/60" />
               </div>
               <div class="flex-1 rounded-sm bg-white/70" />
-            </div>
-
-            <!-- pbl：3 列看板 -->
-            <div v-else class="grid size-full grid-cols-3 gap-1 p-1.5">
-              <div v-for="n in 3" :key="n" class="flex flex-col gap-0.5 rounded-sm bg-white/50 p-1">
-                <div class="h-1 w-full rounded-full bg-white/80" />
-                <div class="h-1.5 w-full rounded-sm bg-white/60" />
-                <div class="h-1.5 w-2/3 rounded-sm bg-white/60" />
-              </div>
             </div>
           </template>
         </div>
