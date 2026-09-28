@@ -5,7 +5,7 @@
  */
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 import { Bot, Database, Monitor, Moon, Palette, Plug, Plus, SlidersHorizontal, Sun, Trash2, Wifi, X } from 'lucide-vue-next'
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'
 
@@ -14,6 +14,7 @@ import type { McpServer } from '@/api/mcp'
 import { useMcpStore } from '@/stores/mcp'
 import { useLlmStore } from '@/stores/llm'
 import LlmSettingsSection from '@/components/home/LlmSettingsSection.vue'
+import { detectNativeEmbeddingEndpoint, type NativeEmbeddingHint } from '@/lib/embeddingEndpoint'
 import { cn } from '@/lib/utils'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -220,6 +221,9 @@ const loadingEmbedding = ref(false)
 const testingEmbedding = ref(false)
 const savingEmbedding = ref(false)
 
+/** Base URL 命中已知原生协议时的提示；null 表示放行（交给真实请求验证）。 */
+const embeddingBaseUrlHint = computed(() => detectNativeEmbeddingEndpoint(embeddingForm.value.base_url))
+
 async function embeddingRequest(path: string, options: RequestInit = {}) {
   const response = await fetch(`${apiBaseURL}/settings/embedding${path}`, {
     ...options,
@@ -238,6 +242,19 @@ async function embeddingRequest(path: string, options: RequestInit = {}) {
 function showEmbeddingMessage(message: string, isError = false) {
   embeddingMessage.value = message
   embeddingError.value = isError
+}
+
+/** 原生协议提示的完整文案：服务商 id 决定句子，suggestion 插入兼容地址。 */
+function embeddingHintMessage(hint: NativeEmbeddingHint) {
+  return t(`settings.embeddingNativeHint.${hint.rule}`, { suggestion: hint.suggestion })
+}
+
+/** 保存与测试前的拦截；命中时展示提示并返回 true。 */
+function blockedByNativeEndpoint() {
+  const hint = embeddingBaseUrlHint.value
+  if (!hint) return false
+  showEmbeddingMessage(embeddingHintMessage(hint), true)
+  return true
 }
 
 function durationToSeconds(duration: string): number {
@@ -276,6 +293,7 @@ async function loadEmbeddingConfig() {
 }
 
 async function testEmbeddingConfig() {
+  if (blockedByNativeEndpoint()) return
   testingEmbedding.value = true
   try {
     const data = await embeddingRequest('/test', {
@@ -291,6 +309,7 @@ async function testEmbeddingConfig() {
 }
 
 async function saveEmbeddingConfig() {
+  if (blockedByNativeEndpoint()) return
   savingEmbedding.value = true
   try {
     const data = await embeddingRequest('', {
@@ -418,6 +437,9 @@ function openEmbedding() {
                   placeholder="https://api.openai.com/v1"
                   class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-violet-400 focus:ring-2 focus:ring-violet-200 dark:focus:ring-violet-900"
                 />
+                <p v-if="embeddingBaseUrlHint" class="mt-1.5 text-xs font-normal text-destructive">
+                  {{ embeddingHintMessage(embeddingBaseUrlHint) }}
+                </p>
               </label>
 
               <div class="grid gap-4 sm:grid-cols-2">
