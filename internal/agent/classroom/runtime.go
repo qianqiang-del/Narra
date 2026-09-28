@@ -15,6 +15,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 
+	"narra/internal/rag/einoretriever"
 	"narra/internal/repository"
 	appcrypto "narra/pkg/crypto"
 	"narra/pkg/llm"
@@ -133,6 +134,15 @@ func (r *runtime) plannerAgent(ctx context.Context) (*react.Agent, error) {
 		return nil, fmt.Errorf("构造规划 Agent 失败: %w", err)
 	}
 	return agent, nil
+}
+
+// retrievalContext 把本次课堂的模型注入检索链路：Agent 只给一条检索词时，
+// 多查询门面会用它自动扩写（见 einoretriever.WithRewriteModel）。只影响知识库
+// 检索工具，不改变 Agent 自己的模型调用。
+//
+// 规划与调研两个 Agent 都会调用带检索工具的生成入口，各自调用前包一层即可。
+func (r *runtime) retrievalContext(ctx context.Context) context.Context {
+	return einoretriever.WithRewriteModel(ctx, r.chatModel)
 }
 
 // generateToolCall 调一次模型，返回指定工具调用的参数。

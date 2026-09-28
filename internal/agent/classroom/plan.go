@@ -58,7 +58,7 @@ func planClassroom(ctx context.Context, deps Deps, classroom *entity.Classroom, 
 		return nil, err
 	}
 
-	plan, err := generatePlan(ctx, planner, messages)
+	plan, err := generatePlan(rt.retrievalContext(ctx), planner, messages)
 	if err != nil {
 		return nil, err
 	}

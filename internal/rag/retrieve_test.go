@@ -290,6 +290,31 @@ func TestRetrieveEmbedsQueryWithDefaultModel(t *testing.T) {
 	}
 }
 
+// TestRetrieveCleansQueryBeforeRecall 校验清洗层真的接进了两路：
+// 向量路用剥壳后的文本向量化，词法路用剥壳后的词项召回，响应里的 terms 回显的也是它。
+func TestRetrieveCleansQueryBeforeRecall(t *testing.T) {
+	search := &fakeChunkSearcher{}
+	embedder := &stubEmbedder{dimension: testVectorDims}
+	retriever := newTestRetriever(search, embedder)
+
+	result, err := retriever.Retrieve(context.Background(),
+		RetrieveInput{Text: "帮我找下之前上传的那份讲义里讲的令牌桶算法"})
+	if err != nil {
+		t.Fatalf("检索失败: %v", err)
+	}
+
+	if len(embedder.batches) != 1 || len(embedder.batches[0]) != 1 || embedder.batches[0][0] != "讲义 令牌桶算法" {
+		t.Fatalf("向量路应当拿到剥壳后的文本，实际批次: %v", embedder.batches)
+	}
+	const wantTerms = "讲义,令牌,牌桶,桶算,算法"
+	if got := strings.Join(search.lexicalTerms, ","); got != wantTerms {
+		t.Fatalf("词法路应当拿到剥壳后的词项，实际: %v", search.lexicalTerms)
+	}
+	if got := strings.Join(result.Terms, ","); got != wantTerms {
+		t.Fatalf("响应里的 terms 应当回显清洗后的词项，实际: %v", result.Terms)
+	}
+}
+
 // TestRetrieveDegradesToLexicalWhenEmbeddingFails 校验降级规则的前半句：
 // 一路挂掉不影响另一路，结果照常返回，来源写在 Method 里。
 func TestRetrieveDegradesToLexicalWhenEmbeddingFails(t *testing.T) {

@@ -23,6 +23,7 @@ import (
 	internalmcp "narra/internal/mcp"
 	"narra/internal/model/entity"
 	"narra/internal/rag"
+	"narra/internal/rag/einoretriever"
 	"narra/internal/repository"
 	"narra/internal/retention"
 	"narra/internal/service"
@@ -284,7 +285,14 @@ func (a *App) initDependencies() error {
 	// 编排在 rag.Retriever，服务层只做 DTO 映射。向量模型的登记与索引维护走
 	// embeddingModelRepo —— 检索只在同一模型下比向量，那个"默认模型"由它说了算。
 	knowledgeRetriever := rag.NewRetriever(knowledgeSearchRepo, embeddingModelRepo, embeddingManager)
-	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetriever, uploadDir)
+	// 多查询门面：单查询直通 rag.Retriever；输入里带 queries 变体时，经 Eino 的
+	// multiquery 流程并发召回、RRF 融合（见 internal/rag/einoretriever）。
+	// 服务层认的是这一个接口，HTTP 与 MCP 工具两条入口同时受益。
+	knowledgeRetrieval, err := einoretriever.NewMultiQuery(knowledgeRetriever)
+	if err != nil {
+		return fmt.Errorf("创建多查询检索失败: %w", err)
+	}
+	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetrieval, uploadDir)
 
 	// 内置工具 rag_retrieve：把知识库检索直接挂给 Eino agent（见 internal/mcp/knowledge_tool.go）。
 	// 注册点在这里而不是 NewManager 那边，是因为工具的实现依赖知识库服务 ——

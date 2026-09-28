@@ -74,7 +74,7 @@ func researchEvidence(ctx context.Context, rt *runtime, in *researchInput) (*Evi
 	}
 	messages := []*schema.Message{schema.SystemMessage(system), schema.UserMessage(researchPrompt(in))}
 
-	message, err := agentInstance.Generate(ctx, messages)
+	message, err := agentInstance.Generate(rt.retrievalContext(ctx), messages)
 	if err != nil {
 		logger.Warn("资料调研失败，改用空证据继续", zap.Error(err))
 		return &EvidenceBundle{}, truncateRunes("资料调研失败，这一页没有外部资料："+err.Error(), maxResearchNoteRunes)
