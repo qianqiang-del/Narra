@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -278,8 +279,47 @@ type discussionTestModel interface {
 	discussion.MemoryExtractor
 }
 
+// staticDiscussionModelFactory 是模型工厂的替身：不管课程配了什么，都给同一套模型。
+//
+// 记录被问了哪一组 ID，是为了验证"入口确实把课程快照里的配置传下去了"。
+type staticDiscussionModelFactory struct {
+	model discussionTestModel
+
+	// errsByCall 按调用次序给出每次要报的错；短了（或为 nil）就一律成功。
+	//
+	// 做成"按次"而不是一个固定的 err：验证"失败之后锁有没有放开"需要第一次失败、
+	// 第二次成功 —— 两次都给同一个错的话，第二次被拒的原因既可能是锁没放，
+	// 也可能是模型又没建起来，用例就分不清了。
+	errsByCall []error
+
+	askedProviderID uint64
+	askedModelID    string
+	calls           int
+}
+
+func (f *staticDiscussionModelFactory) Build(_ context.Context, providerID uint64, modelID string) (discussion.Models, error) {
+	call := f.calls
+	f.calls++
+	f.askedProviderID = providerID
+	f.askedModelID = modelID
+
+	if call < len(f.errsByCall) && f.errsByCall[call] != nil {
+		return discussion.Models{}, f.errsByCall[call]
+	}
+	return discussion.Models{Model: f.model, Summarizer: f.model, Extractor: f.model}, nil
+}
+
 // newService 用给定模型装配一个讨论入口。
 func (f *discussionFixture) newService(t *testing.T, model discussionTestModel) DiscussionService {
+	t.Helper()
+
+	return f.newServiceWithFactory(t, model, &staticDiscussionModelFactory{model: model})
+}
+
+// newServiceWithFactory 用指定的模型工厂装配一个讨论入口。
+//
+// 工厂单独传是为了让用例能换成一个"注定失败"的工厂，验证配置错误时库里的状态。
+func (f *discussionFixture) newServiceWithFactory(t *testing.T, model discussionTestModel, factory DiscussionModelFactory) DiscussionService {
 	t.Helper()
 
 	orchestrator, err := discussion.New(discussion.Deps{
@@ -308,6 +348,7 @@ func (f *discussionFixture) newService(t *testing.T, model discussionTestModel) 
 		Messages:      f.messages,
 		Tx:            f.tx,
 		Orchestrator:  orchestrator,
+		ModelFactory:  factory,
 		Timeout:       30 * time.Second,
 	})
 }
@@ -355,6 +396,25 @@ func randomSuffix(t *testing.T) string {
 type slowModel struct {
 	discussion.FakeModel
 	delay time.Duration
+}
+
+// markedModel 是"会自报家门"的替身：发言正文里带上一个记号。
+//
+// 用来验证"这一趟讨论跑的确实是工厂刚建出来的那套模型"—— 光看工厂被调用过不够，
+// 还得在落库的内容里找到它的痕迹。
+type markedModel struct {
+	discussion.FakeModel
+	marker string
+}
+
+// Generate 在假回复前面盖上记号。
+func (m markedModel) Generate(ctx context.Context, request discussion.GenerationRequest) (discussion.GenerationResponse, error) {
+	response, err := m.FakeModel.Generate(ctx, request)
+	if err != nil {
+		return response, err
+	}
+	response.Content = m.marker + response.Content
+	return response, nil
 }
 
 // Generate 睡一会儿再交给假模型。
@@ -677,5 +737,124 @@ func TestDiscussionStartReleasesLockAfterFinish(t *testing.T) {
 	}, "等待第一趟彻底结束、锁被放开")
 	if secondErr != nil {
 		t.Fatalf("上一趟跑完后应当可以再发起讨论，实际失败: %v", secondErr)
+	}
+}
+
+// TestDiscussionStartRejectsModelBuildFailure 模型建不出来时不落库、不留痕。
+//
+// 这是"配置错误必须挡在落库之前"那条规矩的用例：模型列表空、密钥换了环境解不开、
+// 地址是空的，都属于"每次都会失败"的错。要是先落库再建模型，用户会先看到自己那句话
+// 出现在屏幕上，然后一场注定失败的讨论转半天圈 —— 而且库里还多了一条没人理的记录。
+//
+// 第二次发起**必须真的跑起来**：让它同样撞在 Build 失败上的话，"第二次被拒"就同时
+// 有两种解释（锁没放开 / 模型又没建起来），那条断言等于什么都没证明。
+// 所以工厂按调用次序放行：第一次报错，之后成功。
+func TestDiscussionStartRejectsModelBuildFailure(t *testing.T) {
+	f := newDiscussionFixture(t)
+	defer f.cleanup()
+
+	factory := &staticDiscussionModelFactory{
+		model:      discussion.FakeModel{},
+		errsByCall: []error{errors.New("大模型配置的模型列表为空")},
+	}
+	svc := f.newServiceWithFactory(t, discussion.FakeModel{}, factory)
+
+	_, err := svc.Start(context.Background(), f.conversation.ID, "在吗")
+	if err == nil {
+		t.Fatal("模型建不出来时应当拒绝开讨论")
+	}
+	var biz *apperrors.BizError
+	if !errors.As(err, &biz) || biz.Code != apperrors.CodeInternalError {
+		t.Fatalf("期望 500 业务错误，实际是 %v", err)
+	}
+
+	if got := f.countMessages(t); got != 0 {
+		t.Errorf("失败时不该落下消息，实际落了 %d 条", got)
+	}
+	var runCount int64
+	f.db.Model(&entity.OrchestrationRun{}).Where("conversation_id = ?", f.conversation.ID).Count(&runCount)
+	if runCount != 0 {
+		t.Errorf("失败时不该留下运行记录，实际有 %d 条", runCount)
+	}
+	var eventCount int64
+	f.db.Model(&entity.ConversationEvent{}).Where("conversation_id = ?", f.conversation.ID).Count(&eventCount)
+	if eventCount != 0 {
+		t.Errorf("失败时不该发事件，实际有 %d 条", eventCount)
+	}
+
+	// 锁要放开：这一趟根本没跑起来，不放的话这条对话就永远开不了讨论了。
+	// 第二次一定成功（工厂已放行），所以能走到"三个角色各说一句"就同时证明了
+	// 锁已放开、且这趟走的是完整的正常链路。
+	if _, err := svc.Start(context.Background(), f.conversation.ID, "再试一次"); err != nil {
+		t.Fatalf("上一趟失败后应当可以再发起讨论，实际失败: %v", err)
+	}
+	waitUntil(t, 20*time.Second, func() bool {
+		return f.countMessages(t) == 1+int64(len(f.roleNames))
+	}, "等待第二次讨论跑完三个角色的发言")
+
+	// 第二次的那条用户消息也落了库，说明它确实进了正常链路而不是被静默丢弃。
+	var messages []entity.ConversationMessage
+	f.db.Where("conversation_id = ? AND sender_type = ?", f.conversation.ID, entity.MessageSenderUser).
+		Order("sequence_no ASC").Find(&messages)
+	if len(messages) != 1 || messages[0].Content != "再试一次" {
+		t.Fatalf("库里的用户消息应当是第二次那句，实际是 %+v", messages)
+	}
+}
+
+// TestDiscussionStartBuildsModelFromSnapshot 入口要把课程快照里的模型配置交给工厂。
+//
+// 快照里的两个 ID 是"这堂课该用哪个模型"的唯一来源（fixture 里是 1 与 qwen-max）。
+// 传错或传空的话，几堂课会共用同一个模型 —— 而且不会报任何错。
+func TestDiscussionStartBuildsModelFromSnapshot(t *testing.T) {
+	f := newDiscussionFixture(t)
+	defer f.cleanup()
+
+	factory := &staticDiscussionModelFactory{model: discussion.FakeModel{}}
+	svc := f.newServiceWithFactory(t, discussion.FakeModel{}, factory)
+
+	if _, err := svc.Start(context.Background(), f.conversation.ID, "在吗"); err != nil {
+		t.Fatalf("发起讨论失败: %v", err)
+	}
+
+	if factory.calls != 1 {
+		t.Errorf("模型工厂被调用了 %d 次，期望 1 次（每趟讨论建一套）", factory.calls)
+	}
+	if factory.askedProviderID != 1 {
+		t.Errorf("传给工厂的服务商 ID = %d，期望 1（课程快照里的 llm_provider_id）", factory.askedProviderID)
+	}
+	if factory.askedModelID != "qwen-max" {
+		t.Errorf("传给工厂的模型 ID = %q，期望 qwen-max（课程快照里的 llm_model_id）", factory.askedModelID)
+	}
+}
+
+// TestDiscussionRunsWithBuiltModel 后台那趟讨论跑的必须是工厂刚建出来的模型。
+//
+// 光验证"工厂被调用了"不够：还得证明建出来的那套真的被用上了。
+// 这里让工厂返回的模型在发言里留个记号，再从落库的角色消息里把它找出来。
+func TestDiscussionRunsWithBuiltModel(t *testing.T) {
+	f := newDiscussionFixture(t)
+	defer f.cleanup()
+
+	factory := &staticDiscussionModelFactory{model: markedModel{marker: "工厂出品"}}
+	svc := f.newServiceWithFactory(t, discussion.FakeModel{}, factory)
+
+	if _, err := svc.Start(context.Background(), f.conversation.ID, "在吗"); err != nil {
+		t.Fatalf("发起讨论失败: %v", err)
+	}
+
+	waitUntil(t, 20*time.Second, func() bool {
+		return f.countMessages(t) == 1+int64(len(f.roleNames))
+	}, "等待三个角色各说一句")
+
+	var messages []entity.ConversationMessage
+	f.db.Where("conversation_id = ? AND sender_type = ?", f.conversation.ID, entity.MessageSenderAgent).
+		Order("sequence_no ASC").Find(&messages)
+	if len(messages) == 0 {
+		t.Fatal("一条角色消息都没有")
+	}
+	for index, message := range messages {
+		if !strings.Contains(message.Content, "工厂出品") {
+			t.Errorf("第 %d 条角色发言不是工厂建的模型说的：%q", index+1, message.Content)
+		}
 	}
 }
