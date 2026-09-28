@@ -39,6 +39,9 @@ type pageRunState struct {
 	Narration []narrationSegment
 	Review    *ReviewResult
 
+	// HTML 是交互页的完整文档，其余场景类型为空串。
+	HTML string
+
 	// ReviewNote 记审核本身没做成的原因，与审核判不通过是两回事。
 	ReviewNote string
 	Rounds     int

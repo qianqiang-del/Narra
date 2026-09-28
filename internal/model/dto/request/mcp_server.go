@@ -20,6 +20,9 @@ type MCPServer struct {
 // MCPServerUpdate 是更新 MCP 服务配置时前端提交的请求体。
 // 指针字段：nil 表示不修改，有值才更新。
 type MCPServerUpdate struct {
-	Enabled      *bool     `json:"enabled,omitempty"`
-	EnabledTools *[]string `json:"enabled_tools,omitempty"`
+	Enabled          *bool     `json:"enabled,omitempty"`
+	EnabledTools     *[]string `json:"enabled_tools,omitempty"`
+	StartupTimeout   *string   `json:"startup_timeout,omitempty"`
+	DiscoveryTimeout *string   `json:"discovery_timeout,omitempty"`
+	CallTimeout      *string   `json:"call_timeout,omitempty"`
 }

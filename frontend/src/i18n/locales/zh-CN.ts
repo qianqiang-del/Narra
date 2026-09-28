@@ -299,6 +299,8 @@ export default {
     noTools: '该服务没有返回任何工具',
     saving: '保存中...',
     empty: '暂无 MCP 服务',
+    timeout: '超时',
+    timeoutHint: 'Go duration 写法，例如 30s、1m；调用超时决定单次工具调用最多等多久。',
     col: {
       name: '名称',
       serverId: '服务 ID',
@@ -318,6 +320,9 @@ export default {
       name: '名称',
       endpoint: '端点地址',
       apiKey: 'API Key',
+      startupTimeout: '启动超时',
+      discoveryTimeout: '工具发现超时',
+      callTimeout: '单次调用超时',
       submit: '创建',
       submitting: '创建中...',
     },

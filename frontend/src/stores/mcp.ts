@@ -16,6 +16,7 @@ import {
   type McpServer,
   type McpTestResult,
   type CreateMcpServerInput,
+  type UpdateMcpServerInput,
 } from '@/api/mcp'
 
 export const useMcpStore = defineStore('mcp', () => {
@@ -57,10 +58,7 @@ export const useMcpStore = defineStore('mcp', () => {
     return server
   }
 
-  async function edit(
-    id: number,
-    input: { enabled?: boolean; enabledTools?: string[] },
-  ): Promise<McpServer> {
+  async function edit(id: number, input: UpdateMcpServerInput): Promise<McpServer> {
     const server = await updateMcpServer(id, input)
     await refresh()
     return server

@@ -303,6 +303,8 @@ export default {
     noTools: 'This server returned no tools',
     saving: 'Saving...',
     empty: 'No MCP servers',
+    timeout: 'Timeouts',
+    timeoutHint: 'Go duration format, e.g. 30s or 1m. The call timeout caps a single tool call.',
     col: {
       name: 'Name',
       serverId: 'Server ID',
@@ -322,6 +324,9 @@ export default {
       name: 'Name',
       endpoint: 'Endpoint',
       apiKey: 'API Key',
+      startupTimeout: 'Startup timeout',
+      discoveryTimeout: 'Tool discovery timeout',
+      callTimeout: 'Call timeout',
       submit: 'Create',
       submitting: 'Creating...',
     },

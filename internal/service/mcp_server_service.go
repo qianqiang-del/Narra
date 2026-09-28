@@ -114,6 +114,8 @@ func (s *mcpServerService) Create(ctx context.Context, input request.MCPServer) 
 }
 
 // Update 部分更新 MCP 服务配置。只有非 nil 的字段会被更新。
+//
+// 改超时也走这里：syncRuntime 会按新配置重连并刷新工具表，所以改完不用重启服务。
 func (s *mcpServerService) Update(ctx context.Context, id uint64, input request.MCPServerUpdate) (*dto.MCPServerItem, error) {
 	srv, err := s.repo.FindByID(ctx, id)
 	if err != nil {
@@ -124,6 +126,25 @@ func (s *mcpServerService) Update(ctx context.Context, id uint64, input request.
 	}
 	if input.EnabledTools != nil {
 		srv.EnabledTools = *input.EnabledTools
+	}
+	timeouts := []struct {
+		target *time.Duration
+		input  *string
+		name   string
+	}{
+		{&srv.StartupTimeout, input.StartupTimeout, "startup_timeout"},
+		{&srv.DiscoveryTimeout, input.DiscoveryTimeout, "discovery_timeout"},
+		{&srv.CallTimeout, input.CallTimeout, "call_timeout"},
+	}
+	for _, item := range timeouts {
+		if item.input == nil {
+			continue
+		}
+		parsed, parseErr := time.ParseDuration(*item.input)
+		if parseErr != nil {
+			return nil, errors.NewWithErr(errors.CodeInvalidParam, item.name+" 格式错误: "+parseErr.Error(), nil)
+		}
+		*item.target = parsed
 	}
 	if err := s.repo.Update(ctx, srv); err != nil {
 		return nil, errors.NewWithErr(errors.CodeInternalError, "更新 MCP 服务失败", err)

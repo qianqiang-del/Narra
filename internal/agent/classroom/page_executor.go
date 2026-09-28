@@ -331,7 +331,7 @@ func (e *pageExecutor) content(ctx context.Context, state *pageRunState) error {
 	if err := e.setPhase(ctx, state.Scene.ID, entity.ScenePhaseContent); err != nil {
 		return err
 	}
-	blocks, err := generateContent(ctx, e.rt, state.Budget, &contentInput{
+	content, err := generateContent(ctx, e.rt, state.Budget, &contentInput{
 		Page:     state.Context,
 		Evidence: state.Evidence,
 		Revision: state.Revision,
@@ -340,7 +340,8 @@ func (e *pageExecutor) content(ctx context.Context, state *pageRunState) error {
 	if err != nil {
 		return err
 	}
-	state.Blocks = blocks
+	state.Blocks = content.Blocks
+	state.HTML = content.HTML
 	state.ContentFeedback = ""
 	return nil
 }
@@ -378,6 +379,7 @@ func (e *pageExecutor) review(ctx context.Context, state *pageRunState) error {
 		Plan:      state.Plan,
 		Blocks:    state.Blocks,
 		Narration: state.Narration,
+		HTML:      state.HTML,
 	})
 	if err != nil {
 		state.ReviewNote = truncateRunes("审核未完成："+err.Error(), 300)
@@ -433,7 +435,7 @@ func (e *pageExecutor) persistResult(ctx context.Context, state *pageRunState) e
 	}
 
 	textOnly := e.deps.TTS == nil
-	segments, err := persistSceneWithRetry(ctx, e.deps, state.Scene.ID, e.owner, state.Blocks, state.Narration, review, textOnly)
+	segments, err := persistSceneWithRetry(ctx, e.deps, state.Scene.ID, e.owner, state.Blocks, state.Narration, review, state.HTML, textOnly)
 	if err != nil {
 		return err
 	}

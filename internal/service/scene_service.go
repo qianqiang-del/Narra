@@ -22,7 +22,7 @@ func (s *sceneService) GetContent(ctx context.Context, sceneID uint64) (*respons
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "场景不存在", err)
 	}
-	return &responsedto.SceneContentResponse{SceneID: scene.ID, Status: scene.Status, Content: scene.Content}, nil
+	return &responsedto.SceneContentResponse{SceneID: scene.ID, Status: scene.Status, Content: scene.Content, InteractiveHTML: scene.InteractiveHTML}, nil
 }
 
 func (s *sceneService) Get(ctx context.Context, sceneID uint64) (*responsedto.SceneDetailResponse, error) {
@@ -38,7 +38,7 @@ func (s *sceneService) Get(ctx context.Context, sceneID uint64) (*responsedto.Sc
 	for _, segment := range segments {
 		narration = append(narration, responsedto.SceneNarrationSegment{ID: segment.ID, SceneID: segment.SceneID, ContentKey: segment.ContentKey, SortOrder: segment.SortOrder, Text: segment.Text, Status: segment.Status, AudioPath: segment.AudioPath})
 	}
-	return &responsedto.SceneDetailResponse{ID: scene.ID, SortOrder: scene.SortOrder, Type: scene.Type, Title: scene.Title, Brief: scene.Brief, Status: scene.Status, Content: scene.Content, Narration: narration, ErrorMessage: scene.ErrorMessage}, nil
+	return &responsedto.SceneDetailResponse{ID: scene.ID, SortOrder: scene.SortOrder, Type: scene.Type, Title: scene.Title, Brief: scene.Brief, Status: scene.Status, Content: scene.Content, InteractiveHTML: scene.InteractiveHTML, Narration: narration, ErrorMessage: scene.ErrorMessage}, nil
 }
 
 func (s *sceneService) ListNarration(ctx context.Context, sceneID uint64) ([]responsedto.SceneNarrationSegment, error) {

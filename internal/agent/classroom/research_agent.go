@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"narra/internal/agent"
+	"narra/internal/toolcall"
 	"narra/pkg/logger"
 )
 
@@ -56,8 +57,9 @@ type researchInput struct {
 // researchEvidence 按页执行计划取证据并压成证据包。
 //
 // 第二个返回值是降级原因，非空表示这一页没有拿到外部资料：工具来自 runtime 的白名单，
-// Agent 拿不到未授权工具；调研失败降级为空证据包继续生成，不让一页资料没查到就整页作废，
-// 但要让"为什么没有资料"留在页面上，而不是只进日志。
+// Agent 拿不到未授权工具；工具失败不再让整趟调研作废——失败原因作为工具结果交回模型，
+// 模型可以换一个查询词重试，也可以按提示交回空证据包继续生成。因此"这一页为什么没有资料"
+// 有两条来源：Agent 整体失败用 err，工具调用失败用记录器里的原因。
 func researchEvidence(ctx context.Context, rt *runtime, in *researchInput) (*EvidenceBundle, string) {
 	if len(rt.tools) == 0 {
 		return &EvidenceBundle{}, ""
@@ -74,7 +76,8 @@ func researchEvidence(ctx context.Context, rt *runtime, in *researchInput) (*Evi
 	}
 	messages := []*schema.Message{schema.SystemMessage(system), schema.UserMessage(researchPrompt(in))}
 
-	message, err := agentInstance.Generate(ctx, messages)
+	recorder := toolcall.NewRecorder()
+	message, err := agentInstance.Generate(toolcall.WithRecorder(ctx, recorder), messages)
 	if err != nil {
 		logger.Warn("资料调研失败，改用空证据继续", zap.Error(err))
 		return &EvidenceBundle{}, truncateRunes("资料调研失败，这一页没有外部资料："+err.Error(), maxResearchNoteRunes)
@@ -83,6 +86,11 @@ func researchEvidence(ctx context.Context, rt *runtime, in *researchInput) (*Evi
 	if parseErr != nil {
 		logger.Warn("证据包解析失败，改用空证据继续", zap.Error(parseErr))
 		return &EvidenceBundle{}, truncateRunes("证据包解析失败，这一页没有外部资料："+parseErr.Error(), maxResearchNoteRunes)
+	}
+	if len(bundle.Items) == 0 {
+		if cause := recorder.Cause(); cause != "" {
+			return bundle, truncateRunes("资料调研失败，这一页没有外部资料："+cause, maxResearchNoteRunes)
+		}
 	}
 	return bundle, ""
 }

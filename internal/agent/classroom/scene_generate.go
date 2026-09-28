@@ -198,12 +198,14 @@ func classroomTeacher(ctx context.Context, deps Deps, classroomID uint64) (entit
 	return entity.PresetAgent{}, "", fmt.Errorf("课堂没有教师角色")
 }
 
-// persistScene 在一个事务里写页面内容、审核摘要与讲解段落，并返回落库后的段落。
+// persistScene 在一个事务里写页面内容、审核摘要、交互 HTML 与讲解段落，并返回落库后的段落。
 //
 // 段落是按 content_key 幂等替换的：讲稿没变的段落仍是库里原来那行、音频路径照旧。
 // 所以返回的必须是读回来的那一份，而不是内存里的草稿——接着合成语音要靠库里的主键与状态，
 // 草稿里的主键是空的。
-func persistScene(ctx context.Context, deps Deps, sceneID uint64, owner string, blocks []contentBlock, narration []narrationSegment, review json.RawMessage, textOnly bool) ([]entity.SceneSegment, error) {
+//
+// html 只有交互页非空；写空串会覆盖掉上一版的 HTML，这是对的：内容重做过就该跟着换。
+func persistScene(ctx context.Context, deps Deps, sceneID uint64, owner string, blocks []contentBlock, narration []narrationSegment, review json.RawMessage, html string, textOnly bool) ([]entity.SceneSegment, error) {
 	content, err := json.Marshal(map[string]any{"blocks": blocks})
 	if err != nil {
 		return nil, err
@@ -221,7 +223,7 @@ func persistScene(ctx context.Context, deps Deps, sceneID uint64, owner string, 
 	err = deps.Tx.Run(ctx, func(txCtx context.Context) error {
 		// 先写内容：这一步带租约校验，租约易主时整个事务回滚，段落替换也一并撤掉，
 		// 不会留下「内容没换、音频却按新讲稿洗过一遍」的半截状态。
-		if err := deps.Scenes.UpdateContent(txCtx, sceneID, owner, content, review); err != nil {
+		if err := deps.Scenes.UpdateContent(txCtx, sceneID, owner, content, review, html); err != nil {
 			return err
 		}
 		if err := deps.Segments.ReplaceByScene(txCtx, sceneID, segments); err != nil {
@@ -238,9 +240,9 @@ func persistScene(ctx context.Context, deps Deps, sceneID uint64, owner string, 
 }
 
 // persistSceneWithRetry 落库失败按可重试的数据库错误重试一次。
-func persistSceneWithRetry(ctx context.Context, deps Deps, sceneID uint64, owner string, blocks []contentBlock, narration []narrationSegment, review json.RawMessage, textOnly bool) ([]entity.SceneSegment, error) {
+func persistSceneWithRetry(ctx context.Context, deps Deps, sceneID uint64, owner string, blocks []contentBlock, narration []narrationSegment, review json.RawMessage, html string, textOnly bool) ([]entity.SceneSegment, error) {
 	return invokeWithRetryIf(ctx, 1, retryableDBError, func() ([]entity.SceneSegment, error) {
-		return persistScene(ctx, deps, sceneID, owner, blocks, narration, review, textOnly)
+		return persistScene(ctx, deps, sceneID, owner, blocks, narration, review, html, textOnly)
 	})
 }
 

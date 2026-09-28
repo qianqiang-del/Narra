@@ -4,7 +4,7 @@
  * 使用左侧导航组织设置项，便于后续扩展更多配置页面。
  */
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
-import { Bot, Database, Monitor, Moon, Palette, Plug, Plus, SlidersHorizontal, Sun, Trash2, Wifi, X } from 'lucide-vue-next'
+import { Bot, Database, Monitor, Moon, Palette, Plug, Plus, SlidersHorizontal, Sun, Timer, Trash2, Wifi, X } from 'lucide-vue-next'
 import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'
@@ -31,6 +31,13 @@ const deleteConfirmId = ref<number | null>(null)
 const testingId = ref<number | null>(null)
 const testResult = ref<{ id: number; success: boolean; message: string; tools?: string[] } | null>(null)
 
+/** 新建服务的超时默认值：调用超时要容得下单次联网搜索的抖动。 */
+const defaultMcpTimeouts = {
+  startupTimeout: '30s',
+  discoveryTimeout: '30s',
+  callTimeout: '60s',
+}
+
 const mcpFormOpen = ref(false)
 const mcpFormSubmitting = ref(false)
 const mcpFormError = ref('')
@@ -42,9 +49,7 @@ const mcpForm = reactive({
   transport: 'streamable_http',
   enabled: true,
   required: false,
-  startupTimeout: '10s',
-  discoveryTimeout: '10s',
-  callTimeout: '30s',
+  ...defaultMcpTimeouts,
   sortOrder: 0,
 })
 
@@ -54,7 +59,7 @@ function openAddForm() {
   Object.assign(mcpForm, {
     serverId: '', name: '', endpoint: '', apiKey: '',
     transport: 'streamable_http', enabled: true, required: false,
-    startupTimeout: '10s', discoveryTimeout: '10s', callTimeout: '30s', sortOrder: 0,
+    ...defaultMcpTimeouts, sortOrder: 0,
   })
 }
 
@@ -169,6 +174,69 @@ async function saveTools(id: number) {
     toolsError.value = e instanceof Error ? e.message : String(e)
   } finally {
     toolsSaving.value = false
+  }
+}
+
+// 超时：Go duration 写法。改完保存会按新配置重连该服务，不用重启后端。
+const timeoutFields = [
+  { key: 'startupTimeout', labelKey: 'mcp.form.startupTimeout' },
+  { key: 'discoveryTimeout', labelKey: 'mcp.form.discoveryTimeout' },
+  { key: 'callTimeout', labelKey: 'mcp.form.callTimeout' },
+] as const
+
+const timeoutTargetId = ref<number | null>(null)
+const timeoutsSaving = ref(false)
+const timeoutsError = ref('')
+const timeoutsDraft = reactive({ ...defaultMcpTimeouts })
+
+/** 判断是否合法的 Go duration，例如 30s、1m30s、1h。 */
+function isValidDuration(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  return /^(?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?$/.test(trimmed)
+}
+
+function openTimeouts(srv: McpServer) {
+  timeoutTargetId.value = srv.id
+  timeoutsError.value = ''
+  Object.assign(timeoutsDraft, {
+    startupTimeout: srv.startupTimeout || defaultMcpTimeouts.startupTimeout,
+    discoveryTimeout: srv.discoveryTimeout || defaultMcpTimeouts.discoveryTimeout,
+    callTimeout: srv.callTimeout || defaultMcpTimeouts.callTimeout,
+  })
+}
+
+function closeTimeouts() {
+  timeoutTargetId.value = null
+  timeoutsError.value = ''
+}
+
+function toggleTimeouts(srv: McpServer) {
+  if (timeoutTargetId.value === srv.id) closeTimeouts()
+  else openTimeouts(srv)
+}
+
+const timeoutsInvalid = computed(() => (
+  !isValidDuration(timeoutsDraft.startupTimeout)
+  || !isValidDuration(timeoutsDraft.discoveryTimeout)
+  || !isValidDuration(timeoutsDraft.callTimeout)
+))
+
+async function saveTimeouts(id: number) {
+  if (timeoutsInvalid.value) return
+  timeoutsSaving.value = true
+  timeoutsError.value = ''
+  try {
+    await mcpStore.edit(id, {
+      startupTimeout: timeoutsDraft.startupTimeout.trim(),
+      discoveryTimeout: timeoutsDraft.discoveryTimeout.trim(),
+      callTimeout: timeoutsDraft.callTimeout.trim(),
+    })
+    closeTimeouts()
+  } catch (e) {
+    timeoutsError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    timeoutsSaving.value = false
   }
 }
 
@@ -554,6 +622,13 @@ function openEmbedding() {
                 {{ t('mcp.form.apiKey') }}
                 <input v-model="mcpForm.apiKey" type="password" autocomplete="new-password" placeholder="sk-..." class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-200" />
               </label>
+              <div class="grid gap-3 sm:grid-cols-3">
+                <label v-for="field in timeoutFields" :key="field.key" class="block text-sm font-medium">
+                  {{ t(field.labelKey) }}
+                  <input v-model="mcpForm[field.key]" :placeholder="defaultMcpTimeouts[field.key]" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 font-mono text-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-200" />
+                </label>
+              </div>
+              <p class="text-[11px] text-muted-foreground">{{ t('mcp.timeoutHint') }}</p>
               <p v-if="mcpFormError" class="text-sm text-destructive">{{ mcpFormError }}</p>
               <div class="flex justify-end gap-2 border-t border-border pt-3">
                 <button type="button" class="rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted" @click="closeAddForm">
@@ -601,6 +676,19 @@ function openEmbedding() {
                 >
                   <SlidersHorizontal class="size-3" />
                   {{ srv.enabledTools.length ? t('mcp.toolsCount', { n: srv.enabledTools.length }) : t('mcp.tools') }}
+                </button>
+
+                <!-- 超时 -->
+                <button
+                  type="button"
+                  :class="cn(
+                    'inline-flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors hover:bg-muted hover:text-foreground',
+                    timeoutTargetId === srv.id ? 'bg-muted text-foreground' : 'text-muted-foreground'
+                  )"
+                  @click="toggleTimeouts(srv)"
+                >
+                  <Timer class="size-3" />
+                  {{ t('mcp.timeout') }}
                 </button>
 
                 <!-- 测试连接 -->
@@ -686,6 +774,41 @@ function openEmbedding() {
                     @click="saveTools(srv.id)"
                   >
                     {{ toolsSaving ? t('mcp.saving') : t('common.save') }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- 超时：保存后后端按新配置重连该服务 -->
+              <div
+                v-if="timeoutTargetId === srv.id"
+                class="space-y-2 rounded-lg border border-violet-200 bg-violet-50/60 px-4 py-3 dark:border-violet-800 dark:bg-violet-950/30"
+              >
+                <div class="grid gap-3 sm:grid-cols-3">
+                  <label v-for="field in timeoutFields" :key="field.key" class="block text-xs font-medium">
+                    {{ t(field.labelKey) }}
+                    <input
+                      v-model="timeoutsDraft[field.key]"
+                      class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 font-mono text-xs outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-200"
+                    />
+                  </label>
+                </div>
+                <p class="text-[11px] text-muted-foreground">{{ t('mcp.timeoutHint') }}</p>
+                <p v-if="timeoutsError" class="text-xs text-destructive">{{ timeoutsError }}</p>
+                <div class="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    class="rounded border border-border px-2 py-1 text-xs transition-colors hover:bg-muted"
+                    @click="closeTimeouts"
+                  >
+                    {{ t('common.cancel') }}
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="timeoutsSaving || timeoutsInvalid"
+                    class="rounded bg-violet-600 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-violet-700 disabled:opacity-50"
+                    @click="saveTimeouts(srv.id)"
+                  >
+                    {{ timeoutsSaving ? t('mcp.saving') : t('common.save') }}
                   </button>
                 </div>
               </div>

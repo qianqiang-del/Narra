@@ -208,7 +208,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*Completion, error)
 
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return nil, fmt.Errorf("读取服务响应失败")
+		return nil, fmt.Errorf("读取服务响应失败: %w", err)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("服务返回 HTTP %d: %s", response.StatusCode, safeUpstreamMessage(raw))

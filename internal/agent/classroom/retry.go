@@ -101,12 +101,22 @@ func invokeWithRetryIf[T any](ctx context.Context, maxRetry int, retryable func(
 }
 
 // retryableModelError 判断模型调用错误是否属于可重试的临时故障。
+//
+// 光看状态码会漏掉传输层的中断：ctx 到点的原话是 "context deadline exceeded"、
+// 响应体读断的原话是 "unexpected EOF"，都不含 "timeout"，只能各自判。
 func retryableModelError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
 	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "429") || strings.Contains(text, "500") || strings.Contains(text, "502") || strings.Contains(text, "503") || strings.Contains(text, "504") || strings.Contains(text, "timeout") || strings.Contains(text, "temporary") || strings.Contains(text, "connection")
+	return strings.Contains(text, "429") || strings.Contains(text, "500") || strings.Contains(text, "502") ||
+		strings.Contains(text, "503") || strings.Contains(text, "504") || strings.Contains(text, "timeout") ||
+		strings.Contains(text, "temporary") || strings.Contains(text, "connection") ||
+		strings.Contains(text, "deadline") || strings.Contains(text, "eof") ||
+		strings.Contains(text, "读取服务响应失败")
 }
 
 // retryableTTSError 判断语音合成错误是否属于可重试的临时故障。

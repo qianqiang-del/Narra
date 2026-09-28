@@ -35,6 +35,7 @@ func validateBlocks(blocks []contentBlock, sceneType string) ([]contentBlock, er
 		}
 	}
 
+	// 交互页不在这里：它的正文是一份 HTML 文档，由 generateInteractiveContent 单独校验。
 	var err error
 	switch sceneType {
 	case entity.SceneTypeSlide:
@@ -43,8 +44,6 @@ func validateBlocks(blocks []contentBlock, sceneType string) ([]contentBlock, er
 		err = validateQuiz(blocks)
 	case entity.SceneTypePBL:
 		err = validatePBL(blocks)
-	case entity.SceneTypeInteractive:
-		err = validateInteractive(blocks)
 	default:
 		err = fmt.Errorf("场景类型 %q 没有对应的校验规则", sceneType)
 	}

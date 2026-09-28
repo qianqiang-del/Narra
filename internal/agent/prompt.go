@@ -15,13 +15,14 @@ var promptFS embed.FS
 
 // 文件名写错会在包初始化时 panic（走 mustPromptFile），跑一次测试就能发现。
 const (
-	promptDirRoles      = "prompts/roles"
-	promptFileNarration = "prompts/tasks/narration.md"
-	promptFileOutline   = "prompts/tasks/outline.md"
-	promptFilePagePlan  = "prompts/tasks/page_plan.md"
-	promptFileResearch  = "prompts/tasks/research.md"
-	promptFileReview    = "prompts/tasks/review.md"
-	promptFileScene     = "prompts/tasks/scene.md"
+	promptDirRoles        = "prompts/roles"
+	promptFileNarration   = "prompts/tasks/narration.md"
+	promptFileOutline     = "prompts/tasks/outline.md"
+	promptFilePagePlan    = "prompts/tasks/page_plan.md"
+	promptFileResearch    = "prompts/tasks/research.md"
+	promptFileReview      = "prompts/tasks/review.md"
+	promptFileScene       = "prompts/tasks/scene.md"
+	promptFileInteractive = "prompts/tasks/scene_interactive.md"
 )
 
 // PromptTask 这次要干什么活。角色层回答「你是谁」，任务层回答「这次干什么活」。
@@ -44,6 +45,9 @@ const TaskReview PromptTask = "review"
 
 // TaskScene 生成期的单场景内容与讲稿。
 const TaskScene PromptTask = "scene"
+
+// TaskSceneInteractive 生成期的交互页面，产出一份完整 HTML 文档。
+const TaskSceneInteractive PromptTask = "scene_interactive"
 
 // roleHead 全体角色共用的框架。
 var roleHead = mustPromptFile(promptDirRoles + "/head.md")
@@ -76,14 +80,15 @@ var taskLayer = map[PromptTask]struct {
 	TaskNarration: {mustPromptFile(promptFileNarration), entity.PresetAgentRoleTypeTeacher},
 }
 
-// roleFreeTasks 不需要角色层的任务：排课、页计划、调研、审核与出内容都不是任何角色在发言，
+// roleFreeTasks 不需要角色层的任务：排课、页计划、调研、审核、出内容与出交互页面都不是任何角色在发言，
 // 也不该夹带角色池的人设。
 var roleFreeTasks = map[PromptTask]string{
-	TaskOutline:  mustPromptFile(promptFileOutline),
-	TaskPagePlan: mustPromptFile(promptFilePagePlan),
-	TaskResearch: mustPromptFile(promptFileResearch),
-	TaskReview:   mustPromptFile(promptFileReview),
-	TaskScene:    mustPromptFile(promptFileScene),
+	TaskOutline:          mustPromptFile(promptFileOutline),
+	TaskPagePlan:         mustPromptFile(promptFilePagePlan),
+	TaskResearch:         mustPromptFile(promptFileResearch),
+	TaskReview:           mustPromptFile(promptFileReview),
+	TaskScene:            mustPromptFile(promptFileScene),
+	TaskSceneInteractive: mustPromptFile(promptFileInteractive),
 }
 
 // BuildSystemPrompt 装配一个角色在指定任务下的完整系统提示词。

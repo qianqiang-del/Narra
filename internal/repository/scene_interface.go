@@ -13,7 +13,7 @@ type SceneRepository interface {
 	CreateBatch(ctx context.Context, scenes []*entity.Scene) error
 	DeleteByClassroom(ctx context.Context, classroomID uint64) error
 	ListByClassroom(ctx context.Context, classroomID uint64) ([]entity.Scene, error)
-	UpdateContent(ctx context.Context, id uint64, owner string, content, review json.RawMessage) error
+	UpdateContent(ctx context.Context, id uint64, owner string, content, review json.RawMessage, interactiveHTML string) error
 	UpdatePhase(ctx context.Context, id uint64, owner string, phase string) error
 	UpdateStatus(ctx context.Context, id uint64, owner string, status string, errorMessage *string) error
 	AcquireLease(ctx context.Context, id uint64, owner, runID string, ttl time.Duration) (bool, error)

@@ -92,11 +92,18 @@ type Scene struct {
 	// 前端按每个 block 的 type 渲染，与场景的 Type 无关。block 的 type 取值是一份
 	// 前后端契约（heading、paragraph、list-item、callout、code、quiz、browser、columns），
 	// 每种 type 的 JSON schema 由后端领域层校验；同一场景内 block 的 key 不得重复，
-	// 且必须能被 scene_segments.content_key 找到；大模型只生成结构化 JSON，不生成 HTML。
+	// 且必须能被 scene_segments.content_key 找到。交互页的正文不在这里，见 InteractiveHTML。
 	//
 	// block 是最小的可高亮单位：content_key 只指向具体 block，不支持 list.2 这类子路径，
 	// 所以列表的每个要点、分栏里的每个条目都各占一个 block。
 	Content json.RawMessage `gorm:"column:content;type:jsonb;not null;default:'{}';comment:页面内容 JSON，固定是一个 blocks 数组（形如 {“blocks”: [...]}）；前端按每个 block 的 type 渲染，block.key 是讲解段落挂钩子的地方" json:"content"`
+
+	// InteractiveHTML 交互页的完整 HTML 文档，其余场景类型固定为空串。
+	//
+	// 独立成列而不是塞进 blocks：一份自包含的可运行文档放不进结构化块，而 content 的
+	// blocks 结构要留给讲解段落挂钩子（content_key 指向 block.key），交互页因此在 blocks
+	// 里只留一个锚块。前端按这一列是否非空决定是走 iframe 还是旧控件渲染。
+	InteractiveHTML string `gorm:"column:interactive_html;type:text;not null;default:'';comment:交互页可运行的完整 HTML 文档，含内联样式与脚本；其他场景类型固定为空串。前端据此在沙箱 iframe 里渲染这一页" json:"interactive_html"`
 
 	// ErrorMessage 本场景生成失败的错误摘要。一页失败不会中断流程——跳过它、继续生成后面的
 	// 场景，所以这一页为什么没出得来只有这里记。与 classrooms.generation_error 分工不同：
