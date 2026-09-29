@@ -194,9 +194,15 @@ func toResponseMeta(finishReason string, usage *Usage) *schema.ResponseMeta {
 	meta := &schema.ResponseMeta{FinishReason: finishReason}
 	if usage != nil {
 		meta.Usage = &schema.TokenUsage{
-			PromptTokens:     usage.PromptTokens,
+			PromptTokens: usage.PromptTokens,
+			PromptTokenDetails: schema.PromptTokenDetails{
+				CachedTokens: usage.PromptTokensDetails.CachedTokens,
+			},
 			CompletionTokens: usage.CompletionTokens,
-			TotalTokens:      usage.TotalTokens,
+			CompletionTokensDetails: schema.CompletionTokensDetails{
+				ReasoningTokens: usage.CompletionTokensDetails.ReasoningTokens,
+			},
+			TotalTokens: usage.TotalTokens,
 		}
 	}
 	return meta

@@ -40,7 +40,7 @@ func buildContentChain(ctx context.Context, rt *runtime) (compose.Runnable[*cont
 		if !ok {
 			return nil, fmt.Errorf("场景内容提示词未注册")
 		}
-		return []*schema.Message{schema.SystemMessage(system), schema.UserMessage(contentUserPrompt(in))}, nil
+		return contentMessages(system, in), nil
 	})).AppendChatModel(rt.chatModel).AppendLambda(compose.InvokableLambda(func(_ context.Context, msg *schema.Message) ([]contentBlock, error) {
 		var out blocksOutput
 		if err := unmarshalLoose(msg.Content, &out); err != nil {
@@ -102,7 +102,7 @@ func buildInteractiveChain(ctx context.Context, rt *runtime) (compose.Runnable[*
 		if !ok {
 			return nil, fmt.Errorf("交互页面提示词未注册")
 		}
-		return []*schema.Message{schema.SystemMessage(system), schema.UserMessage(contentUserPrompt(in))}, nil
+		return contentMessages(system, in), nil
 	})).AppendLambda(compose.InvokableLambda(func(ctx context.Context, messages []*schema.Message) (string, error) {
 		return rt.streamCompletion(ctx, messages)
 	}))
@@ -182,10 +182,18 @@ func checkContentSize(blocks []contentBlock) error {
 // contentUserPrompt 拼内容专家的用户提示词。
 func contentUserPrompt(in *contentInput) string {
 	var builder strings.Builder
-	in.Page.writePrompt(&builder)
+	builder.WriteString(in.Page.executionPagePrompt())
 	writeEvidence(&builder, in.Evidence)
 	writeRevision(&builder, in.Revision, in.Feedback)
 	return builder.String()
+}
+
+func contentMessages(system string, in *contentInput) []*schema.Message {
+	return []*schema.Message{
+		schema.SystemMessage(system),
+		schema.UserMessage(in.Page.stableClassroomPrompt()),
+		schema.UserMessage(contentUserPrompt(in)),
+	}
 }
 
 // writeEvidence 把证据包写进提示词；没有证据时明确说明，免得模型以为漏发了。

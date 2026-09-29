@@ -114,6 +114,10 @@ type Scene struct {
 	// Review 本页的审核结论快照，形如 {"approved":false,"score":72,"issues":[...]}。
 	// 审核不通过但仍通过代码校验时页面照常 ready，问题记在这里而不是判失败。
 	Review json.RawMessage `gorm:"column:review;type:jsonb;not null;default:'{}';comment:本页审核结论 JSON（是否通过、得分、问题清单）；审核未通过但代码校验通过时页面照常 ready" json:"review"`
+
+	// GenerationCheckpoint 保存页面 Graph 尚未正式落库时的中间产物，用于进程崩溃或任务重投后续跑。
+	// 它不提供给前端；最终内容成功落库后立即清空。
+	GenerationCheckpoint json.RawMessage `gorm:"column:generation_checkpoint;type:jsonb;not null;default:'{}';comment:页面生成阶段断点；最终内容落库后清空" json:"-"`
 }
 
 // TableName 返回表名。

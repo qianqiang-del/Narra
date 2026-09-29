@@ -44,6 +44,45 @@ type PageContext struct {
 
 // writePrompt 把课堂、页目录、邻页与当前页写进提示词，供内容与讲稿两处复用。
 func (p PageContext) writePrompt(builder *strings.Builder) {
+	p.writeClassroom(builder)
+	p.writeOutline(builder)
+	p.writeNeighbors(builder)
+	p.writeCurrent(builder)
+}
+
+func (p PageContext) writeExecutionPrompt(builder *strings.Builder) {
+	p.writeClassroom(builder)
+	p.writeNeighbors(builder)
+	p.writeCurrent(builder)
+}
+
+func (p PageContext) writeFocusedPrompt(builder *strings.Builder) {
+	p.writeClassroom(builder)
+	p.writeCurrent(builder)
+}
+
+// stableClassroomPrompt 是同一课堂所有页面共享的消息前缀。独立成一条消息后，页面差异不会
+// 改变它的字节内容，支持前缀缓存的模型服务可以跨页复用 system prompt + 这段课堂信息。
+func (p PageContext) stableClassroomPrompt() string {
+	var builder strings.Builder
+	p.writeClassroom(&builder)
+	return builder.String()
+}
+
+func (p PageContext) executionPagePrompt() string {
+	var builder strings.Builder
+	p.writeNeighbors(&builder)
+	p.writeCurrent(&builder)
+	return builder.String()
+}
+
+func (p PageContext) focusedPagePrompt() string {
+	var builder strings.Builder
+	p.writeCurrent(&builder)
+	return builder.String()
+}
+
+func (p PageContext) writeClassroom(builder *strings.Builder) {
 	builder.WriteString("## 课堂\n")
 	fmt.Fprintf(builder, "需求：%s\n模式：%s\n", p.Classroom.Requirement, p.Classroom.Mode)
 	if len(p.Classroom.LearningObjectives) > 0 {
@@ -52,12 +91,16 @@ func (p PageContext) writePrompt(builder *strings.Builder) {
 	if p.Classroom.Audience != "" {
 		fmt.Fprintf(builder, "学员情况：%s\n", p.Classroom.Audience)
 	}
+}
 
+func (p PageContext) writeOutline(builder *strings.Builder) {
 	builder.WriteString("\n## 课程页目录\n")
 	for _, entry := range p.Outline {
 		fmt.Fprintf(builder, "%d. [%s] %s：%s\n", entry.Order+1, entry.Type, entry.Title, entry.Summary)
 	}
+}
 
+func (p PageContext) writeNeighbors(builder *strings.Builder) {
 	if p.Neighbor.Previous != nil {
 		fmt.Fprintf(builder, "\n## 上一页\n[%s] %s：%s\n",
 			p.Neighbor.Previous.Type, p.Neighbor.Previous.Title, p.Neighbor.Previous.Summary)
@@ -66,7 +109,9 @@ func (p PageContext) writePrompt(builder *strings.Builder) {
 		fmt.Fprintf(builder, "\n## 下一页\n[%s] %s：%s\n",
 			p.Neighbor.Next.Type, p.Neighbor.Next.Title, p.Neighbor.Next.Summary)
 	}
+}
 
+func (p PageContext) writeCurrent(builder *strings.Builder) {
 	fmt.Fprintf(builder, "\n## 当前页\n第 %d 页，类型 %s，标题《%s》\n要讲清：%s\n",
 		p.Current.Order+1, p.Current.Type, p.Current.Title, p.Current.Brief)
 	if p.Current.LearningObjective != "" {

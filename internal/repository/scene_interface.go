@@ -24,6 +24,9 @@ type SceneRepository interface {
 	CountSceneStatsByClassrooms(ctx context.Context, classroomIDs []uint64) (map[uint64]ClassroomSceneStat, error)
 	ListFirstByClassrooms(ctx context.Context, classroomIDs []uint64) (map[uint64]entity.Scene, error)
 	UpdateContent(ctx context.Context, id uint64, owner string, content, review json.RawMessage, interactiveHTML string) error
+	UpdateCheckpoint(ctx context.Context, id uint64, owner string, checkpoint json.RawMessage) error
+	ClearCheckpoint(ctx context.Context, id uint64, owner string) error
+	CompleteGeneration(ctx context.Context, id uint64, owner string) error
 	UpdatePhase(ctx context.Context, id uint64, owner string, phase string) error
 	UpdateStatus(ctx context.Context, id uint64, owner string, status string, errorMessage *string) error
 	AcquireLease(ctx context.Context, id uint64, owner, runID string, ttl time.Duration) (bool, error)

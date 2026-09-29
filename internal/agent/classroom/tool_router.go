@@ -36,7 +36,8 @@ func planPage(ctx context.Context, rt *runtime, page PageContext) (*PageExecutio
 	if !ok {
 		return nil, fmt.Errorf("页规划提示词未注册")
 	}
-	messages := []*schema.Message{schema.SystemMessage(system), schema.UserMessage(pagePlanPrompt(page, rt.toolNames(ctx)))}
+	availableTools := rt.toolNames(ctx)
+	messages := pagePlanMessages(system, page, availableTools)
 
 	var lastErr error
 	for attempt := 0; attempt <= maxValidateRetry; attempt++ {
@@ -45,6 +46,9 @@ func planPage(ctx context.Context, rt *runtime, page PageContext) (*PageExecutio
 			return nil, fmt.Errorf("规划这一页失败: %w", err)
 		}
 		plan, parseErr := parsePagePlan(arguments)
+		if parseErr == nil {
+			parseErr = validatePagePlanTools(plan, availableTools)
+		}
 		if parseErr == nil {
 			return plan, nil
 		}
@@ -81,22 +85,61 @@ func parsePagePlan(arguments string) (*PageExecutionPlan, error) {
 	return &plan, nil
 }
 
+func validatePagePlanTools(plan *PageExecutionPlan, available []string) error {
+	if !plan.RequiresTools {
+		plan.ToolSteps = nil
+		return nil
+	}
+	if len(plan.ToolSteps) == 0 {
+		return fmt.Errorf("requires_tools 为 true 时至少要规划一个工具步骤")
+	}
+	if len(plan.ToolSteps) > maxPlannedToolSteps {
+		return fmt.Errorf("工具步骤最多 %d 个，实际 %d 个", maxPlannedToolSteps, len(plan.ToolSteps))
+	}
+	allowed := make(map[string]struct{}, len(available))
+	for _, name := range available {
+		allowed[name] = struct{}{}
+	}
+	for _, step := range plan.ToolSteps {
+		if _, ok := allowed[step.Tool]; !ok {
+			return fmt.Errorf("工具 %q 当前不可用", step.Tool)
+		}
+	}
+	return nil
+}
+
 // pagePlanPrompt 拼页规划专家的用户提示词。
 func pagePlanPrompt(page PageContext, tools []string) string {
 	var builder strings.Builder
-	page.writePrompt(&builder)
-	builder.WriteString("\n## 本页可用的工具\n")
+	builder.WriteString(page.executionPagePrompt())
+	builder.WriteString("\n## 本页工具决策\n")
+	if len(page.Current.SuggestedTools) > 0 {
+		fmt.Fprintf(&builder, "规划阶段对这类页面的建议：%s（只是建议，最终由你判断）\n",
+			strings.Join(page.Current.SuggestedTools, "、"))
+	}
+	builder.WriteString("内容完全可以依据课堂上下文写出来时，requires_tools 填 false、tool_steps 填空数组。\n")
+	return builder.String()
+}
+
+func pagePlanStablePrompt(page PageContext, tools []string) string {
+	var builder strings.Builder
+	page.writeClassroom(&builder)
+	page.writeOutline(&builder)
+	builder.WriteString("\n## 本课堂可用的工具\n")
 	if len(tools) == 0 {
 		builder.WriteString("本次没有可用工具，requires_tools 只能是 false。\n")
 	} else {
 		fmt.Fprintf(&builder, "%s\n", strings.Join(tools, "、"))
 	}
-	if len(page.Current.SuggestedTools) > 0 {
-		fmt.Fprintf(&builder, "规划阶段对这类页面的建议：%s（只是建议，最终由你判断）\n",
-			strings.Join(page.Current.SuggestedTools, "、"))
-	}
-	builder.WriteString("\n内容完全可以依据课堂上下文写出来时，requires_tools 填 false、tool_steps 填空数组。\n")
 	return builder.String()
+}
+
+func pagePlanMessages(system string, page PageContext, tools []string) []*schema.Message {
+	return []*schema.Message{
+		schema.SystemMessage(system),
+		schema.UserMessage(pagePlanStablePrompt(page, tools)),
+		schema.UserMessage(pagePlanPrompt(page, tools)),
+	}
 }
 
 // pagePlanToolInfo 返回页执行计划的交卷工具声明。

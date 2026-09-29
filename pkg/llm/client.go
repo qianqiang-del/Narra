@@ -115,9 +115,19 @@ type Completion struct {
 
 // Usage 是 token 用量，部分上游不返回。
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int                     `json:"prompt_tokens"`
+	PromptTokensDetails     PromptTokensDetails     `json:"prompt_tokens_details"`
+	CompletionTokens        int                     `json:"completion_tokens"`
+	CompletionTokensDetails CompletionTokensDetails `json:"completion_tokens_details"`
+	TotalTokens             int                     `json:"total_tokens"`
+}
+
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 type chatWireRequest struct {

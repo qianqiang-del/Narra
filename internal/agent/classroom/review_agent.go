@@ -39,7 +39,7 @@ func reviewPage(ctx context.Context, rt *runtime, in *reviewInput) (*ReviewResul
 	if !ok {
 		return nil, fmt.Errorf("审核提示词未注册")
 	}
-	messages := []*schema.Message{schema.SystemMessage(system), schema.UserMessage(reviewPrompt(in))}
+	messages := reviewMessages(system, in)
 
 	var lastErr error
 	for attempt := 0; attempt <= maxValidateRetry; attempt++ {
@@ -74,7 +74,7 @@ func parseReview(arguments string) (*ReviewResult, error) {
 // reviewPrompt 拼审核专家的用户提示词。
 func reviewPrompt(in *reviewInput) string {
 	var builder strings.Builder
-	in.Page.writePrompt(&builder)
+	builder.WriteString(in.Page.focusedPagePrompt())
 	if in.Plan != nil && len(in.Plan.AcceptanceCriteria) > 0 {
 		builder.WriteString("\n## 本页验收条件\n")
 		for _, item := range in.Plan.AcceptanceCriteria {
@@ -87,6 +87,14 @@ func reviewPrompt(in *reviewInput) string {
 	}
 	fmt.Fprintf(&builder, "\n## 最终讲稿\n%s\n", renderNarrationForReview(in.Narration))
 	return builder.String()
+}
+
+func reviewMessages(system string, in *reviewInput) []*schema.Message {
+	return []*schema.Message{
+		schema.SystemMessage(system),
+		schema.UserMessage(in.Page.stableClassroomPrompt()),
+		schema.UserMessage(reviewPrompt(in)),
+	}
 }
 
 // reviewToolInfo 返回审核结论的交卷工具声明。
