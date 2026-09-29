@@ -114,6 +114,26 @@ func (r *sceneRepository) UpdateContent(ctx context.Context, id uint64, owner st
 	})
 }
 
+// UpdateCheckpoint 保存页面 Graph 的中间产物。写入受页面租约保护，迟到的旧执行者不能覆盖新断点。
+func (r *sceneRepository) UpdateCheckpoint(ctx context.Context, id uint64, owner string, checkpoint json.RawMessage) error {
+	return r.guardedUpdate(ctx, id, owner, map[string]any{"generation_checkpoint": string(checkpoint)})
+}
+
+// ClearCheckpoint 在最终页面内容落库后清空中间产物。
+func (r *sceneRepository) ClearCheckpoint(ctx context.Context, id uint64, owner string) error {
+	return r.guardedUpdate(ctx, id, owner, map[string]any{"generation_checkpoint": "{}"})
+}
+
+// CompleteGeneration 原子地提交页面完成状态并清空断点，避免完成状态与断点清理只成功一半。
+func (r *sceneRepository) CompleteGeneration(ctx context.Context, id uint64, owner string) error {
+	return r.guardedUpdate(ctx, id, owner, map[string]any{
+		"status":                entity.SceneStatusReady,
+		"phase":                 entity.ScenePhaseReady,
+		"error_message":         nil,
+		"generation_checkpoint": "{}",
+	})
+}
+
 // UpdatePhase 只更新进度标记，不碰状态与内容。
 func (r *sceneRepository) UpdatePhase(ctx context.Context, id uint64, owner string, phase string) error {
 	return r.guardedUpdate(ctx, id, owner, map[string]any{"phase": phase})

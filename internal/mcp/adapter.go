@@ -104,6 +104,12 @@ func (t *einoTool) InvokableRun(ctx context.Context, arguments string, _ ...tool
 		toolcall.FromContext(ctx).Fail(err)
 		return string(encoded), nil
 	}
+	encoded, compressed, compactErr := compactToolResult(encoded)
+	if compactErr != nil {
+		logger.Warn("压缩 MCP 工具结果失败，保留原结果", zap.String("tool", t.info.Name), zap.Error(compactErr))
+	} else if compressed {
+		logger.Info("MCP 工具结果已压缩", zap.String("tool", t.info.Name), zap.Int("bytes", len(encoded)))
+	}
 	logger.Info("MCP 工具调用完成",
 		zap.String("tool", t.info.Name), zap.Int("attempts", attempts), zap.Duration("elapsed", elapsed))
 	return string(encoded), nil

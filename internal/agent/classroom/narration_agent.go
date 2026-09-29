@@ -28,7 +28,7 @@ func buildNarrationChain(ctx context.Context, rt *runtime) (compose.Runnable[*na
 		if !ok {
 			return nil, fmt.Errorf("教师讲稿提示词未注册")
 		}
-		return []*schema.Message{schema.SystemMessage(system), schema.UserMessage(narrationUserPrompt(in))}, nil
+		return narrationMessages(system, in), nil
 	})).AppendChatModel(rt.chatModel).AppendLambda(compose.InvokableLambda(func(_ context.Context, msg *schema.Message) ([]narrationSegment, error) {
 		var items []narrationSegment
 		if err := unmarshalArrayLoose(msg.Content, &items); err != nil {
@@ -95,9 +95,17 @@ func narrationBlocks(blocks []contentBlock) []narrationBlockView {
 // narrationUserPrompt 拼讲稿专家的用户提示词；讲稿照着已定稿的内容讲，不带证据包。
 func narrationUserPrompt(in *narrationInput) string {
 	var builder strings.Builder
-	in.Page.writePrompt(&builder)
+	builder.WriteString(in.Page.executionPagePrompt())
 	raw, _ := json.Marshal(narrationBlocks(in.Blocks))
 	fmt.Fprintf(&builder, "\n## 已校验内容块\n%s\n每个块一段讲解，每段不超过 120 字。\n", raw)
 	writeRevision(&builder, in.Revision, in.Feedback)
 	return builder.String()
+}
+
+func narrationMessages(system string, in *narrationInput) []*schema.Message {
+	return []*schema.Message{
+		schema.SystemMessage(system),
+		schema.UserMessage(in.Page.stableClassroomPrompt()),
+		schema.UserMessage(narrationUserPrompt(in)),
+	}
 }

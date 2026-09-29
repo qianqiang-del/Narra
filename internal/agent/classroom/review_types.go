@@ -43,6 +43,7 @@ type pageReviewRecord struct {
 	Rounds       int    `json:"rounds"`
 	Note         string `json:"note,omitempty"`
 	ResearchNote string `json:"research_note,omitempty"`
+	ArtifactHash string `json:"artifact_hash,omitempty"`
 }
 
 // normalizeReview 归一化审核结论并就地丢弃无法定位的空问题。

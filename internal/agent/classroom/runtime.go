@@ -186,14 +186,18 @@ func (r *runtime) generateToolCall(ctx context.Context, messages []*schema.Messa
 // 注入回调，手动调模型不会被登记。这里用 ReuseHandlers 把 RunInfo 换成 ChatModel 身份、
 // 同时保留 ctx 里已注册的 langfuse handler，这次调用才会作为一条 GENERATION 进观测。
 // 注意不能用 EnsureRunInfo——它发现 runInfo 已存在就原样返回，换不掉身份。
-func (r *runtime) streamCompletion(ctx context.Context, messages []*schema.Message) (string, error) {
+func (r *runtime) streamCompletion(ctx context.Context, messages []*schema.Message, maxTokens ...int) (string, error) {
 	runCtx := callbacks.ReuseHandlers(ctx, &callbacks.RunInfo{
 		Type:      "NarraOpenAI",
 		Component: components.ComponentOfChatModel,
 	})
 	runCtx = callbacks.OnStart(runCtx, &model.CallbackInput{Messages: messages})
 
-	stream, err := r.chatModel.Stream(runCtx, messages)
+	options := make([]model.Option, 0, 1)
+	if len(maxTokens) > 0 && maxTokens[0] > 0 {
+		options = append(options, model.WithMaxTokens(maxTokens[0]))
+	}
+	stream, err := r.chatModel.Stream(runCtx, messages, options...)
 	if err != nil {
 		callbacks.OnError(runCtx, err)
 		return "", err
