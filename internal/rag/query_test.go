@@ -109,8 +109,11 @@ func TestBuildQueryPlanPeelsShell(t *testing.T) {
 	if plan.EmbedText != "讲义 令牌桶算法" {
 		t.Fatalf("向量路文本应当是剥壳后的内容，实际 %q", plan.EmbedText)
 	}
-	if got := strings.Join(plan.Terms, ","); got != "讲义,令牌,牌桶,桶算,算法" {
-		t.Fatalf("词法路词项不对: %v", plan.Terms)
+	if got := termTexts(plan.Terms); got != "讲义,令牌,算法" {
+		t.Fatalf("词法路词项不对: %v", got)
+	}
+	if len(plan.Phrases) != 1 || plan.Phrases[0].Text != "令牌桶算法" {
+		t.Fatalf("词法路短语不对: %+v", plan.Phrases)
 	}
 }
 
@@ -122,8 +125,8 @@ func TestBuildQueryPlanFallsBackWhenAllShell(t *testing.T) {
 	if plan.EmbedText != "帮我找下" {
 		t.Fatalf("全壳输入应当回退到归一化原话，实际 %q", plan.EmbedText)
 	}
-	if got := strings.Join(plan.Terms, ","); got != "帮我,我找,找下" {
-		t.Fatalf("回退后的词项应当来自原话: %v", plan.Terms)
+	if got := termTexts(plan.Terms); got != "帮我,我找,找下" {
+		t.Fatalf("回退后的词项应当来自原话: %v", got)
 	}
 }
 
@@ -136,7 +139,7 @@ func TestBuildQueryPlanKeepsCleanQuery(t *testing.T) {
 	if plan.EmbedText != query {
 		t.Fatalf("干净查询不该被改动: %q", plan.EmbedText)
 	}
-	if got := strings.Join(plan.Terms, ","); got != "P99,800ms,knowledge,embeddings,索引" {
-		t.Fatalf("词项与 lexicalTerms 的既有口径不一致: %v", plan.Terms)
+	if got := termTexts(plan.Terms); got != "P99,800ms,knowledge,embeddings,索引" {
+		t.Fatalf("词项口径不对: %v", got)
 	}
 }

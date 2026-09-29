@@ -274,3 +274,40 @@ func TestEmbeddingModelEnsureDefaultRejectsDimensionsChangeWithVectors(t *testin
 		t.Error("被拒绝后默认标记不应丢失")
 	}
 }
+
+// TestCountVectorsByModel 校验体检统计的口径：左连接让没有向量的模型计 0，
+// 有向量的模型逐条计数 —— "默认模型下 0 条、其他模型下有"正是它要暴露的形态。
+func TestCountVectorsByModel(t *testing.T) {
+	tx := testTx(t)
+	repo := NewEmbeddingModelRepository(tx)
+	ctx := context.Background()
+
+	// 两个模型：旧模型下造向量，新模型留空（模拟"换了默认模型还没重新收录"）。
+	withVectors, err := repo.EnsureDefault(ctx, model(uniqueName("census-old"), searchTestDimensions))
+	if err != nil {
+		t.Fatalf("登记旧模型失败: %v", err)
+	}
+	empty, err := repo.EnsureDefault(ctx, model(uniqueName("census-new"), searchTestDimensions))
+	if err != nil {
+		t.Fatalf("登记新模型失败: %v", err)
+	}
+
+	documentID := seedSearchDocument(t, tx, "向量体检", entity.KnowledgeDocumentStatusReady, true)
+	seedSearchChunk(t, tx, documentID, withVectors.ID, 0, "", "第一条", vectorLiteral(searchTestDimensions))
+	seedSearchChunk(t, tx, documentID, withVectors.ID, 1, "", "第二条", vectorLiteral(searchTestDimensions))
+
+	rows, err := repo.CountVectorsByModel(ctx)
+	if err != nil {
+		t.Fatalf("统计各模型向量数失败: %v", err)
+	}
+	counts := make(map[uint64]int64, len(rows))
+	for _, row := range rows {
+		counts[row.ModelID] = row.Vectors
+	}
+	if counts[withVectors.ID] != 2 {
+		t.Fatalf("旧模型的向量数应为 2，实际 %d（%+v）", counts[withVectors.ID], rows)
+	}
+	if counts[empty.ID] != 0 {
+		t.Fatalf("没有向量的模型也应当出现且计 0，实际 %d（%+v）", counts[empty.ID], rows)
+	}
+}

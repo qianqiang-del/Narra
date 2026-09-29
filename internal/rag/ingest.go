@@ -73,7 +73,7 @@ type ImagePublisher interface {
 	Publish(documentID uint64, paths []string) (map[string]string, error)
 }
 
-// ModelRegistry 是收录链路对向量模型登记的最小依赖面。
+// ModelRegistry 是收录与检索两条链路对向量模型登记的最小依赖面。
 type ModelRegistry interface {
 	// GetDefault 取当前默认模型。库里没有默认模型时返回 gorm.ErrRecordNotFound。
 	GetDefault(ctx context.Context) (*entity.EmbeddingModel, error)
@@ -81,6 +81,10 @@ type ModelRegistry interface {
 	// EnsureDefault 把一份模型登记为唯一默认模型；同名且维度一致时复用已有行。
 	// 同名但维度不同、且该模型下已有向量时，实现方会拒绝并返回维度冲突错误。
 	EnsureDefault(ctx context.Context, model entity.EmbeddingModel) (*entity.EmbeddingModel, error)
+
+	// CountVectorsByModel 统计每个模型名下的向量数，给"向量召回静默为零"的体检用
+	// （见 vector_census.go）。收录链路不用它，但两链路共用同一个接口，不另拆一个。
+	CountVectorsByModel(ctx context.Context) ([]entity.ModelVectorCount, error)
 }
 
 // FileInput 是从磁盘收录一份文件所需的输入。

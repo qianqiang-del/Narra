@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -167,6 +168,20 @@ func (a *App) initDatabase() error {
 	}
 	logger.Info("数据库表结构迁移完成")
 
+	// 词法检索的表达式索引要等表建好之后再补（pg_bigm 优先、pg_trgm 兜底，幂等）。
+	// 与向量索引同一种立场：失败只让检索退化为顺序扫描、不影响正确性，所以不上抛；
+	// 但两类别混为一谈 —— 扩展都没装是**环境属性**（提示即可），其余失败（DDL 权限、
+	// 数据库故障）才留告警。
+	if kind, err := repository.EnsureLexicalIndex(context.Background(), a.postgresDB); err != nil {
+		if errors.Is(err, repository.ErrLexicalIndexUnavailable) {
+			logger.Info("数据库没有 pg_bigm / pg_trgm 扩展，词法检索走顺序扫描（结果不受影响，数据量大时会慢）")
+		} else {
+			logger.Warn("建立词法检索索引失败，词法检索将退化为顺序扫描", zap.Error(err))
+		}
+	} else {
+		logger.Info("词法检索索引就绪", zap.String("extension", string(kind)))
+	}
+
 	// 初始化 Redis（可选，失败不影响核心功能）
 	rs, err := database.InitRedis(&a.cfg.Database.Redis)
 	if err != nil {
@@ -306,6 +321,8 @@ func (a *App) initDependencies() error {
 	// 编排在 rag.Retriever，服务层只做 DTO 映射。向量模型的登记与索引维护走
 	// embeddingModelRepo —— 检索只在同一模型下比向量，那个"默认模型"由它说了算。
 	knowledgeRetriever := rag.NewRetriever(knowledgeSearchRepo, embeddingModelRepo, embeddingManager)
+	// 词法路的中文分词器要加载秒级大小的词典：在启动时做掉，不让第一个检索请求承担这笔开销。
+	rag.WarmupLexicalTokenizer()
 	// 多查询门面：单查询直通 rag.Retriever；输入里带 queries 变体时，经 Eino 的
 	// multiquery 流程并发召回、RRF 融合（见 internal/rag/einoretriever）。
 	// 服务层认的是这一个接口，HTTP 与 MCP 工具两条入口同时受益。

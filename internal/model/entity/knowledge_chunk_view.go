@@ -24,7 +24,7 @@ type KnowledgeChunkView struct {
 	SourceURI      *string `gorm:"column:source_uri"`      // 所属文档的来源标识；手工录入时为 NULL
 
 	// RawScore 是这一行在**所属召回路**里的原始得分：向量路是余弦相似度（越近越大），
-	// 词法路是命中的词项数（命中越多越大）。
+	// 词法路是加权命中分（命中精确词 > 词典词 > 兜底二元组，短语另计）。
 	//
 	// 两条路的口径不在一个量纲上，跨路比较没有意义 —— 融合排序由 rag 的 RRF 负责，
 	// 这里只是"这条路自己是按什么排的"。所以它叫 raw：拿它直接对外排序是错的。
@@ -73,13 +73,27 @@ type KnowledgeVectorQuery struct {
 	Filter KnowledgeChunkFilter
 }
 
+// KnowledgeLexicalTerm 是词法路的一个带权词项。
+//
+// 权重由检索侧的分词层给出（精确词 > 词典词 > 兜底二元组，短语最高），决定"命中什么"
+// 比"命中几个"更值钱；它只影响同一条召回路内部的排序，跨路融合仍由 RRF 按名次进行。
+type KnowledgeLexicalTerm struct {
+	Text   string  // 词项文本，非空、已去重
+	Weight float64 // 权重；必须为正，数值大小只有相对意义
+}
+
 // KnowledgeLexicalQuery 是一次词法召回的入参。
 //
 // 与 KnowledgeVectorQuery 分列两个类型（而不是给 SearchLexical 加参数）：
-// 词法路的东西只会越来越多（词项权重、匹配字段），一次一个参数签不住。
+// 词法路的东西只会越来越多（词项权重、匹配字段），一次一个参数签不住 ——
+// 权重与短语就是先落在这里的。
 type KnowledgeLexicalQuery struct {
-	// Terms 是词法匹配的词项，逐项匹配、命中任意一项即入选。空时返回空结果。
-	Terms []string
+	// Terms 参与召回：逐项匹配、命中任意一项即入选。空时返回空结果。
+	Terms []KnowledgeLexicalTerm
+
+	// Phrases 只参与打分：命中词项的前提下，整段原样出现额外加权重。
+	// 它不进召回的准入条件 —— 短语是精度信号，不是召回信号。
+	Phrases []KnowledgeLexicalTerm
 
 	// Limit 是这一路返回的候选上限。
 	Limit int

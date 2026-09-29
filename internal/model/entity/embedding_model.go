@@ -32,3 +32,14 @@ type EmbeddingModel struct {
 }
 
 func (EmbeddingModel) TableName() string { return "embedding_models" }
+
+// ModelVectorCount 是一个模型名下的向量数，统计产物、不落库。
+//
+// 用途是"向量召回静默为零"的体检：默认模型名下没有任何向量、而其他模型下还有，
+// 说明换过默认模型却没重新收录（判定与措辞见 rag.VectorRecallHint）。
+// 没有向量的模型也会出现（计 0）—— "没有"本身就是体检要看的事实。
+type ModelVectorCount struct {
+	ModelID uint64 `gorm:"column:model_id" json:"model_id"` // 模型 ID
+	Name    string `gorm:"column:name" json:"name"`         // 模型名
+	Vectors int64  `gorm:"column:vectors" json:"vectors"`   // 该模型名下的向量数
+}
