@@ -142,6 +142,19 @@ var ErrRecoveryInputMissing = rag.ErrRecoveryInputMissing
 // 哨兵值去 import internal/rag（那是运行时模块，接口层只认服务层的错误口径）。
 var ErrEmptyQuery = errors.New("检索词不能为空")
 
+// ErrInvalidFilter 表示检索的过滤条件非法（来源类型不认识、文档 ID 超量……
+// 具体原因写在错误信息里）。与 ErrEmptyQuery 同属"参数错了"，接口层翻成 400。
+//
+// 选择在服务层拒绝而不是静默丢弃非法值：静默忽略在界面上和"过滤没生效"
+// 长得一模一样，用户会以为库里真的没有符合条件的资料，排查会白绕一圈。
+var ErrInvalidFilter = errors.New("检索过滤条件无效")
+
+// maxFilterDocumentIDs 是 document_ids 过滤的条数上限。
+//
+// 过滤是为了收敛范围；几百个 ID 的 IN 列表既拼不出一句可读的 SQL，
+// 也说明调用方其实在导数据，那不是检索入口该干的事。
+const maxFilterDocumentIDs = 200
+
 // SubmitFile 把一份文件交给后台收录，建好 pending 行就返回。
 //
 // 返回的文档是 pending、chunks 为 0：解析与向量化由 rag.Worker 接着做，
@@ -626,8 +639,17 @@ func (s *knowledgeService) Retrieve(
 	if strings.TrimSpace(input.Query) == "" {
 		return responsedto.KnowledgeRetrieveResult{}, ErrEmptyQuery
 	}
+	filter, err := buildChunkFilter(input.Filters)
+	if err != nil {
+		return responsedto.KnowledgeRetrieveResult{}, err
+	}
 
-	result, err := s.retriever.Retrieve(ctx, rag.RetrieveInput{Text: input.Query, TopK: input.TopK, Variants: input.Queries})
+	result, err := s.retriever.Retrieve(ctx, rag.RetrieveInput{
+		Text:     input.Query,
+		TopK:     input.TopK,
+		Variants: input.Queries,
+		Filter:   filter,
+	})
 	if err != nil {
 		return responsedto.KnowledgeRetrieveResult{}, err
 	}
@@ -641,6 +663,82 @@ func (s *knowledgeService) Retrieve(
 		Terms:   result.Terms,
 		Results: hits,
 	}, nil
+}
+
+// buildChunkFilter 把请求里的过滤条件校验并翻成检索链路的结构。
+//
+// 三条口径在这里定死，接口层与 MCP 面都不必重复：
+//   - 空值/缺省 = 这一项不参与过滤，全空等价于现在的不过滤行为；
+//   - 非法值一律报 ErrInvalidFilter（详见变量注释），不静默丢弃；
+//   - 时间统一按 UTC 比对（列本身按 UTC 存，见 BaseModel 的注释）。
+//
+// 校验放在服务层而不是仓储：仓储的职责是"按条件查"，条件是否讲得通属于业务口径；
+// 而 rag 那边有一道空查询的兜底，过滤条件若也要兜底就会出现第二份合法性判断。
+func buildChunkFilter(input *requestdto.KnowledgeRetrieveFilters) (entity.KnowledgeChunkFilter, error) {
+	filter := entity.KnowledgeChunkFilter{}
+	if input == nil {
+		return filter, nil
+	}
+
+	seenSources := make(map[string]struct{}, len(input.SourceTypes))
+	for _, raw := range input.SourceTypes {
+		sourceType := strings.TrimSpace(raw)
+		if sourceType == "" {
+			continue
+		}
+		if !isDocumentSourceType(sourceType) {
+			return entity.KnowledgeChunkFilter{}, fmt.Errorf(
+				"%w：来源类型 %q 无效，可选值：%s、%s",
+				ErrInvalidFilter, sourceType,
+				entity.KnowledgeDocumentSourceManual, entity.KnowledgeDocumentSourceImport)
+		}
+		if _, duplicated := seenSources[sourceType]; duplicated {
+			continue
+		}
+		seenSources[sourceType] = struct{}{}
+		filter.SourceTypes = append(filter.SourceTypes, sourceType)
+	}
+
+	seenIDs := make(map[uint64]struct{}, len(input.DocumentIDs))
+	for _, id := range input.DocumentIDs {
+		if id == 0 {
+			return entity.KnowledgeChunkFilter{}, fmt.Errorf("%w：文档 ID 不能是 0", ErrInvalidFilter)
+		}
+		if _, duplicated := seenIDs[id]; duplicated {
+			continue
+		}
+		seenIDs[id] = struct{}{}
+		filter.DocumentIDs = append(filter.DocumentIDs, id)
+	}
+	if len(filter.DocumentIDs) > maxFilterDocumentIDs {
+		return entity.KnowledgeChunkFilter{}, fmt.Errorf(
+			"%w：document_ids 最多 %d 个，本次 %d 个",
+			ErrInvalidFilter, maxFilterDocumentIDs, len(filter.DocumentIDs))
+	}
+
+	if input.CreatedFrom != nil {
+		utc := input.CreatedFrom.UTC()
+		filter.CreatedFrom = &utc
+	}
+	if input.CreatedTo != nil {
+		utc := input.CreatedTo.UTC()
+		filter.CreatedTo = &utc
+	}
+	if filter.CreatedFrom != nil && filter.CreatedTo != nil && filter.CreatedFrom.After(*filter.CreatedTo) {
+		return entity.KnowledgeChunkFilter{}, fmt.Errorf(
+			"%w：created_from 不能晚于 created_to", ErrInvalidFilter)
+	}
+	return filter, nil
+}
+
+// isDocumentSourceType 判断一个取值是不是 knowledge_documents.source_type 的合法值。
+// 取值与实体常量同源，改一处要改两处（与 isDocumentStatus 同一条约定）。
+func isDocumentSourceType(value string) bool {
+	switch value {
+	case entity.KnowledgeDocumentSourceManual, entity.KnowledgeDocumentSourceImport:
+		return true
+	}
+	return false
 }
 
 // ListUploadRecords 分页返回上传记录 —— 文件投递的历史流水，含已经收录成功的那些。

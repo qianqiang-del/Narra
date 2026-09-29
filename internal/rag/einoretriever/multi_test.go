@@ -3,12 +3,14 @@ package einoretriever
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"narra/internal/model/entity"
 	"narra/internal/rag"
 )
 
@@ -183,6 +185,73 @@ func TestMultiQueryFallsBackToSingleQueryOnError(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("应当退回并重查原查询一次，实际 %d 次", count)
 	}
+}
+
+// TestMultiQueryForwardsFilter 校验过滤条件在多查询的每条检索路上都不丢 ——
+// 包括多查询失败退回单查询的那条兜底路径：漏了它，用户会看到"重试一次过滤就失效"。
+func TestMultiQueryForwardsFilter(t *testing.T) {
+	filter := entity.KnowledgeChunkFilter{
+		SourceTypes: []string{entity.KnowledgeDocumentSourceManual},
+		DocumentIDs: []uint64{11, 22},
+	}
+
+	t.Run("变体路径", func(t *testing.T) {
+		searcher := &fakeSearcher{results: map[string]rag.RetrieveResult{
+			"q":  {Hits: []rag.Hit{mockHit(11, rag.MethodVector)}},
+			"v1": {Hits: []rag.Hit{mockHit(12, rag.MethodVector)}},
+		}}
+		facade, err := NewMultiQuery(searcher)
+		if err != nil {
+			t.Fatalf("构造多查询门面失败: %v", err)
+		}
+
+		if _, err := facade.Retrieve(context.Background(), rag.RetrieveInput{
+			Text:     "q",
+			TopK:     5,
+			Variants: []string{"v1"},
+			Filter:   filter,
+		}); err != nil {
+			t.Fatalf("检索失败: %v", err)
+		}
+
+		inputs := searcher.recordedInputs()
+		if len(inputs) != 2 {
+			t.Fatalf("应当检索原查询与变体各一次，实际 %d 次", len(inputs))
+		}
+		for _, input := range inputs {
+			if !reflect.DeepEqual(input.Filter, filter) {
+				t.Fatalf("检索 %q 时过滤条件丢了: %+v", input.Text, input.Filter)
+			}
+		}
+	})
+
+	t.Run("降级路径", func(t *testing.T) {
+		searcher := &fakeSearcher{
+			results: map[string]rag.RetrieveResult{
+				"q": {Hits: []rag.Hit{mockHit(11, rag.MethodVector)}},
+			},
+			errs: map[string]error{"坏变体": errors.New("向量服务挂了")},
+		}
+		facade, err := NewMultiQuery(searcher)
+		if err != nil {
+			t.Fatalf("构造多查询门面失败: %v", err)
+		}
+
+		if _, err := facade.Retrieve(context.Background(), rag.RetrieveInput{
+			Text:     "q",
+			TopK:     5,
+			Variants: []string{"坏变体"},
+			Filter:   filter,
+		}); err != nil {
+			t.Fatalf("多查询失败应当退回单查询而不是报错: %v", err)
+		}
+
+		for _, input := range searcher.recordedInputs() {
+			if !reflect.DeepEqual(input.Filter, filter) {
+				t.Fatalf("检索 %q 时过滤条件丢了: %+v", input.Text, input.Filter)
+			}
+		}
+	})
 }
 
 // TestMultiQueryRewritesWithInjectedModel 校验 ctx 注入改写模型后，调用方只给一条

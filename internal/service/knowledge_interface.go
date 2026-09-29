@@ -94,11 +94,11 @@ type KnowledgeService interface {
 	// Retrieve 检索知识库，返回最相关的切片。
 	//
 	// 两路召回（余弦相似度 + 词项命中）经 RRF 融合后取前 top_k 条，编排在 rag.Retriever。
-	// 这里只做 DTO ↔ rag 的映射与检索词校验 —— 它是 MCP 契约 rag_retrieve 的进程内入口
-	// （见 docs/modules/agent-mcp-tools.md）。
+	// 这里只做 DTO ↔ rag 的映射与检索词/过滤条件校验 —— 它是 MCP 契约 rag_retrieve
+	// 的进程内入口（见 docs/modules/agent-mcp-tools.md）。
 	//
-	// 检索词为空时返回可判定的 ErrEmptyQuery，接口层据此翻成 400。
-	// 另有一条降级约定在 rag.Retriever 里：一路召回挂掉不影响另一路，
+	// 检索词为空时返回可判定的 ErrEmptyQuery，过滤条件非法时返回 ErrInvalidFilter，
+	// 接口层据此翻成 400。另有一条降级约定在 rag.Retriever 里：一路召回挂掉不影响另一路，
 	// 但两路都没结果时失败原因会上抛，接口层按 500 处理。
 	Retrieve(ctx context.Context, input requestdto.KnowledgeRetrieve) (responsedto.KnowledgeRetrieveResult, error)
 }

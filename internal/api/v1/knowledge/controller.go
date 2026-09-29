@@ -682,7 +682,7 @@ func (c *Controller) Delete(ctx *gin.Context) {
 // 检索一次跨整库召回一批切片，命中的不是某一篇文档，与 documents / upload-records
 // 是三组并列的资源。
 //
-// 错误分两类：参数类（检索词为空）翻 400，其余是检索链路自身的失败
+// 错误分两类：参数类（检索词为空、过滤条件非法）翻 400，其余是检索链路自身的失败
 // （向量服务没配好、两路召回都查不动）翻 500 —— 降级规则在 rag.Retriever 里，
 // 能走到这里说明两条召回路都没给出结果，失败原因已经带上来了。
 func (c *Controller) Retrieve(ctx *gin.Context) {
@@ -694,7 +694,7 @@ func (c *Controller) Retrieve(ctx *gin.Context) {
 
 	result, err := c.svc.Retrieve(ctx.Request.Context(), input)
 	if err != nil {
-		if errors.Is(err, service.ErrEmptyQuery) {
+		if errors.Is(err, service.ErrEmptyQuery) || errors.Is(err, service.ErrInvalidFilter) {
 			response.BadRequest(ctx, err.Error())
 			return
 		}
