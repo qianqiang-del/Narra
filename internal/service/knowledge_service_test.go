@@ -6,9 +6,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -299,6 +301,77 @@ func TestRetrievePassesQueryVariants(t *testing.T) {
 	}
 	if retrieval.input.Text != "原查询" || !slices.Equal(retrieval.input.Variants, []string{"变体一", "变体二"}) {
 		t.Fatalf("变体没有透传: %+v", retrieval.input)
+	}
+}
+
+// TestRetrievePassesFilters 校验过滤条件的校验与归一化：来源与 ID 去重、
+// 时间统一转 UTC，最后原样进入 rag 层。
+func TestRetrievePassesFilters(t *testing.T) {
+	retrieval := &fakeRetriever{}
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval)
+
+	from := time.Date(2026, 9, 1, 8, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	to := time.Date(2026, 10, 1, 8, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	if _, err := svc.Retrieve(context.Background(), requestdto.KnowledgeRetrieve{
+		Query: "向量检索",
+		Filters: &requestdto.KnowledgeRetrieveFilters{
+			SourceTypes: []string{" import ", "import", "manual"},
+			DocumentIDs: []uint64{11, 11, 22},
+			CreatedFrom: &from,
+			CreatedTo:   &to,
+		},
+	}); err != nil {
+		t.Fatalf("检索失败: %v", err)
+	}
+
+	wantFrom, wantTo := from.UTC(), to.UTC()
+	want := entity.KnowledgeChunkFilter{
+		SourceTypes: []string{entity.KnowledgeDocumentSourceImport, entity.KnowledgeDocumentSourceManual},
+		DocumentIDs: []uint64{11, 22},
+		CreatedFrom: &wantFrom,
+		CreatedTo:   &wantTo,
+	}
+	if !reflect.DeepEqual(retrieval.input.Filter, want) {
+		t.Fatalf("过滤条件映射不对: %+v（期望 %+v）", retrieval.input.Filter, want)
+	}
+}
+
+// TestRetrieveRejectsInvalidFilters 校验非法过滤条件在进 rag 之前就被拦下，
+// 而不是静默丢弃 —— 静默丢弃在界面上与"过滤没生效"长得一模一样。
+func TestRetrieveRejectsInvalidFilters(t *testing.T) {
+	early := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	late := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	tooManyIDs := make([]uint64, maxFilterDocumentIDs+1)
+	for index := range tooManyIDs {
+		tooManyIDs[index] = uint64(index + 1)
+	}
+
+	cases := []struct {
+		name    string
+		filters *requestdto.KnowledgeRetrieveFilters
+	}{
+		{name: "未知来源类型", filters: &requestdto.KnowledgeRetrieveFilters{SourceTypes: []string{"web"}}},
+		{name: "文档 ID 为 0", filters: &requestdto.KnowledgeRetrieveFilters{DocumentIDs: []uint64{0}}},
+		{name: "文档 ID 超量", filters: &requestdto.KnowledgeRetrieveFilters{DocumentIDs: tooManyIDs}},
+		{name: "时间倒挂", filters: &requestdto.KnowledgeRetrieveFilters{CreatedFrom: &late, CreatedTo: &early}},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			retrieval := &fakeRetriever{}
+			svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval)
+
+			_, err := svc.Retrieve(context.Background(), requestdto.KnowledgeRetrieve{
+				Query:   "向量检索",
+				Filters: testCase.filters,
+			})
+			if !errors.Is(err, ErrInvalidFilter) {
+				t.Fatalf("应当返回 ErrInvalidFilter，实际是 %v", err)
+			}
+			if retrieval.input.Text != "" {
+				t.Fatalf("非法过滤条件不该被转发给检索链路: %+v", retrieval.input)
+			}
+		})
 	}
 }
 

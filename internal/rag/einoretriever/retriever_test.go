@@ -2,11 +2,14 @@ package einoretriever
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/components/retriever"
 
+	"narra/internal/model/entity"
 	"narra/internal/rag"
 )
 
@@ -42,6 +45,13 @@ func (f *fakeSearcher) recordedTexts() []string {
 		texts = append(texts, input.Text)
 	}
 	return texts
+}
+
+// recordedInputs 返回所有被检索过的输入快照（顺序按完成先后）。
+func (f *fakeSearcher) recordedInputs() []rag.RetrieveInput {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]rag.RetrieveInput(nil), f.inputs...)
 }
 
 // mockHit 造一条命中；带向量成分的来源（vector / hybrid）同时带上相似度。
@@ -143,6 +153,31 @@ func TestRetrieverFiltersByScoreThreshold(t *testing.T) {
 	}
 	if len(docs) != 1 || docs[0].ID != "11" {
 		t.Fatalf("阈值过滤不对: %+v", docs)
+	}
+}
+
+// TestRetrieverForwardsFilter 校验按请求现建的适配器把过滤条件带进底层检索 ——
+// Eino 的检索接口塞不进项目自己的过滤条件，条件只能挂在适配器实例上，
+// 漏传时过滤会静默失效（结果看起来只是"查得多了几条"）。
+func TestRetrieverForwardsFilter(t *testing.T) {
+	searcher := &fakeSearcher{results: map[string]rag.RetrieveResult{}}
+	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	filter := entity.KnowledgeChunkFilter{
+		SourceTypes: []string{entity.KnowledgeDocumentSourceImport},
+		CreatedFrom: &from,
+	}
+
+	adapter, err := newRetriever(searcher, 5, filter)
+	if err != nil {
+		t.Fatalf("构造适配器失败: %v", err)
+	}
+	if _, err := adapter.Retrieve(context.Background(), "q"); err != nil {
+		t.Fatalf("检索失败: %v", err)
+	}
+
+	inputs := searcher.recordedInputs()
+	if len(inputs) != 1 || !reflect.DeepEqual(inputs[0].Filter, filter) {
+		t.Fatalf("过滤条件没有透传: %+v", inputs)
 	}
 }
 

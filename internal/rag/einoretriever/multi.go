@@ -103,10 +103,11 @@ func (m *MultiQuery) Retrieve(ctx context.Context, input rag.RetrieveInput) (rag
 	topK := rag.ClampTopK(input.TopK)
 	queries := append([]string{input.Text}, variants...)
 
-	// 适配器与 multiquery 按调用现建：变体与 top_k 都是这次请求的参数，而 multiquery
-	// 的改写钩子只能拿到 query 字符串（拿不到变体列表）。构建本身只是小对象的组装，
+	// 适配器与 multiquery 按调用现建：变体、top_k 与过滤条件都是这次请求的参数，
+	// 而 multiquery 的改写钩子只能拿到 query 字符串（拿不到变体列表），
+	// Eino 的检索接口也塞不进过滤条件。构建本身只是小对象的组装，
 	// 相比后面的向量化与两路 SQL 可以忽略。
-	adapter, err := New(m.inner, topK)
+	adapter, err := newRetriever(m.inner, topK, input.Filter)
 	if err != nil {
 		return rag.RetrieveResult{}, err
 	}
@@ -127,13 +128,14 @@ func (m *MultiQuery) Retrieve(ctx context.Context, input rag.RetrieveInput) (rag
 	docs, err := multi.Retrieve(ctx, input.Text)
 	if err != nil {
 		// multiquery 的约定是任一路失败整次失败。退回单查询：原查询通常已经能召回
-		// 大部分内容，后台留一条告警说明这次变体没用上。
+		// 大部分内容，后台留一条告警说明这次变体没用上。过滤条件跟着一起退回 ——
+		// 少了它，降级后的结果会突然变多，看起来就像过滤偶尔失效。
 		logger.Warn("多查询检索失败，退回单查询",
 			zap.String("query", input.Text),
 			zap.Int("variants", len(variants)),
 			zap.Error(err),
 		)
-		return m.inner.Retrieve(ctx, rag.RetrieveInput{Text: input.Text, TopK: input.TopK})
+		return m.inner.Retrieve(ctx, rag.RetrieveInput{Text: input.Text, TopK: input.TopK, Filter: input.Filter})
 	}
 	return fusedToResult(docs, topK), nil
 }

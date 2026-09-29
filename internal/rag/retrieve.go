@@ -35,8 +35,8 @@ type ChunkSearcher interface {
 	// SearchVector 在同一模型下按余弦相似度召回候选，返回按相似度降序。
 	SearchVector(ctx context.Context, query entity.KnowledgeVectorQuery) ([]entity.KnowledgeChunkView, error)
 
-	// SearchLexical 取命中任意词项的候选，返回按命中词项数降序。terms 为空时返回空。
-	SearchLexical(ctx context.Context, terms []string, limit int) ([]entity.KnowledgeChunkView, error)
+	// SearchLexical 取命中任意词项的候选，返回按命中词项数降序。query.Terms 为空时返回空。
+	SearchLexical(ctx context.Context, query entity.KnowledgeLexicalQuery) ([]entity.KnowledgeChunkView, error)
 }
 
 // 命中来源。对外是三个稳定字符串，界面与 MCP 适配层都按它判断这条结果是怎么来的。
@@ -83,7 +83,8 @@ const rrfConstant = 60.0
 // RetrieveInput 是一次检索的输入。
 //
 // 用结构体而不是 (text string, topK int)：与 FileInput / TextInput 同一个路数，
-// 将来加过滤条件（来源类型、只在某几篇文档里找）时不用改签名。
+// 过滤条件（来源类型、只在某几篇文档里找、时间范围）就是从这里进来的，
+// 加它没有改过签名。
 type RetrieveInput struct {
 	Text string // 检索词：一句自然语言、关键词，或两者混着写；检索前会过一遍确定性清洗（见 query.go）
 	TopK int    // 返回条数；0 或越界时按 defaultTopK / maxTopK 钳位
@@ -95,6 +96,11 @@ type RetrieveInput struct {
 	// 留在这个结构体里是因为它属于"一次检索的输入"：换入口（HTTP / MCP 工具）时不用
 	// 改签名，与当初加 TopK 是同一个理由。
 	Variants []string
+
+	// Filter 是文档侧的过滤条件，两条召回路共用；零值 = 不过滤。
+	// 清洗后的检索词与它一起进召回：过滤发生在 SQL 的 ORDER BY / LIMIT 之前，
+	// 候选窗口里不会有"筛掉之后才发现不合格"的行。
+	Filter entity.KnowledgeChunkFilter
 }
 
 // Hit 是一次检索命中的一条切片。
@@ -197,14 +203,18 @@ func (r *Retriever) Retrieve(ctx context.Context, input RetrieveInput) (Retrieve
 		logger.Warn("向量召回不可用，本次检索只走词法路", zap.Error(err))
 	default:
 		result.Model = model.Name
-		vectorHits, err = r.vectorRecall(ctx, model, plan.EmbedText, limit)
+		vectorHits, err = r.vectorRecall(ctx, model, plan.EmbedText, limit, input.Filter)
 		if err != nil {
 			failures = append(failures, err)
 			logger.Warn("向量召回不可用，本次检索只走词法路", zap.Error(err))
 		}
 	}
 
-	lexicalHits, err := r.search.SearchLexical(ctx, result.Terms, limit)
+	lexicalHits, err := r.search.SearchLexical(ctx, entity.KnowledgeLexicalQuery{
+		Terms:  result.Terms,
+		Limit:  limit,
+		Filter: input.Filter,
+	})
 	if err != nil {
 		failures = append(failures, fmt.Errorf("词法召回失败: %w", err))
 		logger.Warn("词法召回不可用，本次检索只走向量路", zap.Error(err))
@@ -229,6 +239,7 @@ func (r *Retriever) vectorRecall(
 	model *entity.EmbeddingModel,
 	query string,
 	limit int,
+	filter entity.KnowledgeChunkFilter,
 ) ([]entity.KnowledgeChunkView, error) {
 	if cfg := r.embedding.Config(); !cfg.Enabled {
 		return nil, fmt.Errorf("%w：请先在设置页配置向量服务", ErrEmbeddingDisabled)
@@ -262,6 +273,7 @@ func (r *Retriever) vectorRecall(
 		Dimensions: int(model.Dimensions),
 		Vector:     literal,
 		Limit:      limit,
+		Filter:     filter,
 	})
 	if err != nil {
 		return nil, err

@@ -3,6 +3,7 @@ package documentparser
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,19 +40,54 @@ func allowImportProbe(t *testing.T) {
 	t.Cleanup(func() { importProbe = original })
 }
 
+// pythonProbeTimeout 是探活单个候选解释器的上限。
+// 正常解释器启动 `-c "import sys"` 是毫秒级；设上限是防某个候选卡死把整个测试挂住。
+const pythonProbeTimeout = 10 * time.Second
+
 // testPython 找一个真实可用的解释器；找不到就跳过，避免没有 Python 的环境整包报红。
+//
+// 不能只信 exec.LookPath：Windows 在 PATH 里预置了商店版 Python 的"应用执行别名"
+// （WindowsApps\python3.exe），文件真实存在、LookPath 会成功，执行起来却只打印
+// "Python was not found" —— 只查存在性的写法会被它截断，永远轮不到后面真正的
+// py 启动器。所以每个候选都要探活一次：能跑通 import sys 才算数，
+// 跑不通就试下一个，全都不行才跳过。
 func testPython(t *testing.T) string {
 	t.Helper()
-	if path := os.Getenv("NARRA_TEST_PYTHON"); path != "" {
+	// 显式指定的解释器也要探活：路径写错或指到占位别名时，在这里直接给出原因，
+	// 比让用例在后面报一个看起来毫不相干的解析错误好查。
+	if configured := os.Getenv("NARRA_TEST_PYTHON"); configured != "" {
+		path, err := resolvePython(configured)
+		if err != nil {
+			t.Fatalf("NARRA_TEST_PYTHON 指向的解释器不可用: %v", err)
+		}
 		return path
 	}
+
 	for _, candidate := range []string{"python3", "python", "py"} {
-		if path, err := exec.LookPath(candidate); err == nil {
+		if path, err := resolvePython(candidate); err == nil {
 			return path
 		}
 	}
-	t.Skip("未找到 Python 解释器，跳过子进程用例（可用 NARRA_TEST_PYTHON 指定）")
+	t.Skip("未找到可用的 Python 解释器，跳过子进程用例（可用 NARRA_TEST_PYTHON 指定）")
 	return ""
+}
+
+// resolvePython 把一个候选（命令名或路径）解析成绝对路径并探活：
+// 能跑通 import sys 才算可用。失败时返回原因，由调用方决定"试下一个"还是报错。
+func resolvePython(candidate string) (string, error) {
+	path, err := exec.LookPath(candidate)
+	if err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), pythonProbeTimeout)
+	defer cancel()
+	if err := exec.CommandContext(ctx, path, "-c", "import sys").Run(); err != nil {
+		// 最典型的失败是 Windows 的商店别名占位：文件在、跑不起来。说明写进错误里，
+		// 不然只有一句含糊的 exit status。
+		return "", fmt.Errorf("%s 不能执行 Python（Windows 上常见于商店应用执行别名占位）: %w", path, err)
+	}
+	return path, nil
 }
 
 // fakeScript 造出"脚本 + 依赖清单"，让 NewPythonParser 能通过配置校验。

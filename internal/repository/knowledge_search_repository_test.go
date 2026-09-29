@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -27,8 +28,23 @@ import (
 //	    go test ./internal/repository/ -run Search -v
 const searchTestDimensions = 4
 
-// seedSearchDocument 造一篇指定状态与启用标记的文档。
+// seedSearchDocument 造一篇指定状态与启用标记的文档（来源固定 import、创建时间为现在）。
 func seedSearchDocument(t *testing.T, tx *gorm.DB, title string, status string, enabled bool) uint64 {
+	t.Helper()
+	return seedSearchDocumentWith(t, tx, title, status, enabled, entity.KnowledgeDocumentSourceImport, time.Now())
+}
+
+// seedSearchDocumentWith 是 seedSearchDocument 的完整形态：过滤用例要造不同的
+// 来源类型与创建时间，普通用例不必关心这两个参数。
+func seedSearchDocumentWith(
+	t *testing.T,
+	tx *gorm.DB,
+	title string,
+	status string,
+	enabled bool,
+	sourceType string,
+	createdAt time.Time,
+) uint64 {
 	t.Helper()
 
 	var document struct {
@@ -36,9 +52,9 @@ func seedSearchDocument(t *testing.T, tx *gorm.DB, title string, status string, 
 	}
 	err := tx.Raw(`
 		INSERT INTO knowledge_documents (created_at, updated_at, title, content, source_type, enabled, status, metadata)
-		VALUES (now(), now(), ?, ?, 'import', ?, ?, '{}'::jsonb)
+		VALUES (?, ?, ?, ?, ?, ?, ?, '{}'::jsonb)
 		RETURNING id`,
-		title, "原文正文", enabled, status).Scan(&document).Error
+		createdAt, createdAt, title, "原文正文", sourceType, enabled, status).Scan(&document).Error
 	if err != nil {
 		t.Fatalf("插入测试文档失败: %v", err)
 	}
@@ -155,6 +171,11 @@ func TestSearchVectorHidesUnsearchableChunks(t *testing.T) {
 	}
 }
 
+// lexicalQuery 是词法召回用例的简写：这些用例都不带过滤条件。
+func lexicalQuery(terms []string, limit int) entity.KnowledgeLexicalQuery {
+	return entity.KnowledgeLexicalQuery{Terms: terms, Limit: limit}
+}
+
 // searchTokenSequence 让同一时刻的两次取号也不重复。
 // 光靠时间戳不够：Windows 的时钟粒度下连续两次 Now() 可能拿到同一个值，
 // 于是两个"唯一"词项变成同一个，命中数的断言就跟着错位。
@@ -189,7 +210,7 @@ func TestSearchLexicalRanksByMatchedTerms(t *testing.T) {
 		"只提到 "+secondToken+" 的那一篇", vectorLiteral(searchTestDimensions))
 
 	repo := NewKnowledgeSearchRepository(tx)
-	rows, err := repo.SearchLexical(context.Background(), []string{firstToken, secondToken}, 10)
+	rows, err := repo.SearchLexical(context.Background(), lexicalQuery([]string{firstToken, secondToken}, 10))
 	if err != nil {
 		t.Fatalf("词法召回失败: %v", err)
 	}
@@ -204,7 +225,7 @@ func TestSearchLexicalRanksByMatchedTerms(t *testing.T) {
 	}
 
 	// 标题也算命中面：把词项换成小写，顺带验一次大小写不敏感。
-	byTitle, err := repo.SearchLexical(context.Background(), []string{strings.ToLower(titleToken)}, 10)
+	byTitle, err := repo.SearchLexical(context.Background(), lexicalQuery([]string{strings.ToLower(titleToken)}, 10))
 	if err != nil {
 		t.Fatalf("词法召回失败: %v", err)
 	}
@@ -228,7 +249,7 @@ func TestSearchLexicalTreatsWildcardsAsLiterals(t *testing.T) {
 		token+" 没有百分号的那一篇", vectorLiteral(searchTestDimensions))
 
 	repo := NewKnowledgeSearchRepository(tx)
-	rows, err := repo.SearchLexical(context.Background(), []string{token + "%"}, 10)
+	rows, err := repo.SearchLexical(context.Background(), lexicalQuery([]string{token + "%"}, 10))
 	if err != nil {
 		t.Fatalf("词法召回失败: %v", err)
 	}
@@ -237,7 +258,7 @@ func TestSearchLexicalTreatsWildcardsAsLiterals(t *testing.T) {
 	}
 
 	// 下划线同理：它是 LIKE 的单字符通配符，漏掉转义就会少一堵墙。
-	rows, err = repo.SearchLexical(context.Background(), []string{token + "_"}, 10)
+	rows, err = repo.SearchLexical(context.Background(), lexicalQuery([]string{token + "_"}, 10))
 	if err != nil {
 		t.Fatalf("词法召回失败: %v", err)
 	}
@@ -264,12 +285,116 @@ func TestSearchLexicalSkipsUnsearchableChunks(t *testing.T) {
 	seedSearchChunk(t, tx, pending, modelID, 0, "", "命中词项 "+token, vectorLiteral(searchTestDimensions))
 
 	repo := NewKnowledgeSearchRepository(tx)
-	rows, err := repo.SearchLexical(context.Background(), []string{token}, 10)
+	rows, err := repo.SearchLexical(context.Background(), lexicalQuery([]string{token}, 10))
 	if err != nil {
 		t.Fatalf("词法召回失败: %v", err)
 	}
 	if len(rows) != 1 || rows[0].ChunkID != visible {
 		t.Fatalf("只有已启用且 ready 的切片能被召回，实际 %+v", rows)
+	}
+}
+
+// TestSearchAppliesChunkFilter 校验文档侧的过滤条件在两条召回路都生效：
+// 来源类型、文档集合、创建时间范围，以及它们的组合；空条件等价于不过滤。
+//
+// 两条路都要断言，是因为只加在一路时词法路会把被筛掉的切片带回来 ——
+// RRF 融合之后，用户看到的过滤就像没生效一样。
+func TestSearchAppliesChunkFilter(t *testing.T) {
+	tx := testTx(t)
+	modelID := knowledgeTestModelID(t, tx)
+	token := searchTestToken()
+
+	cutoff := time.Now().Add(-24 * time.Hour)
+	oldDocument := seedSearchDocumentWith(t, tx, "旧导入", entity.KnowledgeDocumentStatusReady, true,
+		entity.KnowledgeDocumentSourceImport, cutoff.Add(-48*time.Hour))
+	imported := seedSearchDocumentWith(t, tx, "新导入", entity.KnowledgeDocumentStatusReady, true,
+		entity.KnowledgeDocumentSourceImport, cutoff.Add(time.Hour))
+	manual := seedSearchDocumentWith(t, tx, "新手录", entity.KnowledgeDocumentStatusReady, true,
+		entity.KnowledgeDocumentSourceManual, cutoff.Add(2*time.Hour))
+
+	keyword := "命中词 " + token
+	oldChunk := seedSearchChunk(t, tx, oldDocument, modelID, 0, "", keyword, "[1,0,0,0]")
+	importedChunk := seedSearchChunk(t, tx, imported, modelID, 0, "", keyword, "[1,0,0,0]")
+	manualChunk := seedSearchChunk(t, tx, manual, modelID, 0, "", keyword, "[1,0,0,0]")
+
+	repo := NewKnowledgeSearchRepository(tx)
+	vectorRows := func(filter entity.KnowledgeChunkFilter) []entity.KnowledgeChunkView {
+		t.Helper()
+		rows, err := repo.SearchVector(context.Background(), entity.KnowledgeVectorQuery{
+			ModelID:    modelID,
+			Dimensions: searchTestDimensions,
+			Vector:     "[1,0,0,0]",
+			Limit:      10,
+			Filter:     filter,
+		})
+		if err != nil {
+			t.Fatalf("向量召回失败: %v", err)
+		}
+		return rows
+	}
+	lexicalRows := func(filter entity.KnowledgeChunkFilter) []entity.KnowledgeChunkView {
+		t.Helper()
+		rows, err := repo.SearchLexical(context.Background(), entity.KnowledgeLexicalQuery{
+			Terms:  []string{token},
+			Limit:  10,
+			Filter: filter,
+		})
+		if err != nil {
+			t.Fatalf("词法召回失败: %v", err)
+		}
+		return rows
+	}
+
+	all := []uint64{oldChunk, importedChunk, manualChunk}
+	from := cutoff
+	cases := []struct {
+		name   string
+		filter entity.KnowledgeChunkFilter
+		want   []uint64
+	}{
+		{name: "不过滤", filter: entity.KnowledgeChunkFilter{}, want: all},
+		{
+			name:   "按来源类型",
+			filter: entity.KnowledgeChunkFilter{SourceTypes: []string{entity.KnowledgeDocumentSourceManual}},
+			want:   []uint64{manualChunk},
+		},
+		{
+			name:   "按文档集合",
+			filter: entity.KnowledgeChunkFilter{DocumentIDs: []uint64{imported, manual}},
+			want:   []uint64{importedChunk, manualChunk},
+		},
+		{
+			name:   "按创建时间",
+			filter: entity.KnowledgeChunkFilter{CreatedFrom: &from},
+			want:   []uint64{importedChunk, manualChunk},
+		},
+		{
+			name: "组合条件",
+			filter: entity.KnowledgeChunkFilter{
+				SourceTypes: []string{entity.KnowledgeDocumentSourceImport},
+				CreatedFrom: &from,
+			},
+			want: []uint64{importedChunk},
+		},
+	}
+
+	chunkIDs := func(rows []entity.KnowledgeChunkView) []uint64 {
+		ids := make([]uint64, len(rows))
+		for index, row := range rows {
+			ids[index] = row.ChunkID
+		}
+		return ids
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := chunkIDs(vectorRows(testCase.filter)); !slices.Equal(got, testCase.want) {
+				t.Fatalf("向量路的过滤结果不对: %v（期望 %v）", got, testCase.want)
+			}
+			if got := chunkIDs(lexicalRows(testCase.filter)); !slices.Equal(got, testCase.want) {
+				t.Fatalf("词法路的过滤结果不对: %v（期望 %v）", got, testCase.want)
+			}
+		})
 	}
 }
 
@@ -279,7 +404,7 @@ func TestSearchLexicalWithoutTermsSkipsDatabase(t *testing.T) {
 	tx := testTx(t)
 	repo := NewKnowledgeSearchRepository(tx)
 
-	rows, err := repo.SearchLexical(context.Background(), nil, 10)
+	rows, err := repo.SearchLexical(context.Background(), lexicalQuery(nil, 10))
 	if err != nil {
 		t.Fatalf("词法召回失败: %v", err)
 	}
@@ -319,7 +444,7 @@ func TestSearchVectorCanUseHNSWIndex(t *testing.T) {
 		Limit:      5,
 	}
 	args := []any{query.Vector, entity.KnowledgeDocumentStatusReady, query.Vector}
-	rows, err := tx.Raw("EXPLAIN "+vectorSearchStatement(query.Dimensions, query.ModelID, query.Limit, vectorIndexTypeVector), args...).Rows()
+	rows, err := tx.Raw("EXPLAIN "+vectorSearchStatement(query.Dimensions, query.ModelID, query.Limit, vectorIndexTypeVector, ""), args...).Rows()
 	if err != nil {
 		t.Fatalf("EXPLAIN 失败: %v", err)
 	}
@@ -375,7 +500,7 @@ func TestSearchVectorCanUseHalfvecIndex(t *testing.T) {
 		Limit:      5,
 	}
 	args := []any{query.Vector, entity.KnowledgeDocumentStatusReady, query.Vector}
-	rows, err := tx.Raw("EXPLAIN "+vectorSearchStatement(query.Dimensions, query.ModelID, query.Limit, vectorIndexTypeHalfvec), args...).Rows()
+	rows, err := tx.Raw("EXPLAIN "+vectorSearchStatement(query.Dimensions, query.ModelID, query.Limit, vectorIndexTypeHalfvec, ""), args...).Rows()
 	if err != nil {
 		t.Fatalf("EXPLAIN 失败: %v", err)
 	}

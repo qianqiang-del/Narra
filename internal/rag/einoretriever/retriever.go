@@ -21,6 +21,7 @@ import (
 	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
 
+	"narra/internal/model/entity"
 	"narra/internal/rag"
 )
 
@@ -50,6 +51,13 @@ const (
 type Retriever struct {
 	inner       Searcher
 	defaultTopK int
+
+	// filter 是这次适配器实例携带的文档侧过滤条件。
+	//
+	// Eino 的 retriever.Retriever 接口只有 query 与通用选项，塞不进项目自己的过滤条件；
+	// 而过滤又是每次请求的参数，所以多查询门面按调用现建适配器、把条件放进这个字段 ——
+	// 与"按调用现建 multiquery"是同一个做法（见 multi.go）。
+	filter entity.KnowledgeChunkFilter
 }
 
 var (
@@ -59,11 +67,18 @@ var (
 )
 
 // New 创建适配器。defaultTopK 是调用方没通过 WithTopK 指定时的条数，按 rag 的口径钳位。
+// 不带过滤条件；需要过滤的调用方走 newRetriever。
 func New(inner Searcher, defaultTopK int) (*Retriever, error) {
+	return newRetriever(inner, defaultTopK, entity.KnowledgeChunkFilter{})
+}
+
+// newRetriever 是带过滤条件的内部构造：每次请求现建一个适配器实例，
+// 把这次检索的过滤条件固定在实例上。
+func newRetriever(inner Searcher, defaultTopK int, filter entity.KnowledgeChunkFilter) (*Retriever, error) {
 	if inner == nil {
 		return nil, fmt.Errorf("检索器不能为空")
 	}
-	return &Retriever{inner: inner, defaultTopK: rag.ClampTopK(defaultTopK)}, nil
+	return &Retriever{inner: inner, defaultTopK: rag.ClampTopK(defaultTopK), filter: filter}, nil
 }
 
 // GetType 是组件显示名（DevOps 工具里显示为 NarraHybridRetriever）。
@@ -91,7 +106,7 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, opts ...retrieve
 		}
 	}()
 
-	result, err := r.inner.Retrieve(ctx, rag.RetrieveInput{Text: query, TopK: topK})
+	result, err := r.inner.Retrieve(ctx, rag.RetrieveInput{Text: query, TopK: topK, Filter: r.filter})
 	if err != nil {
 		return nil, err
 	}

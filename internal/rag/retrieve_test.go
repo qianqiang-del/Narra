@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -26,10 +28,9 @@ type fakeChunkSearcher struct {
 	lexicalRows []entity.KnowledgeChunkView
 	lexicalErr  error
 
-	// 下面三列记录最近一次收到的参数，供断言两路的召回口径。
+	// 下面两列记录最近一次收到的参数，供断言两路的召回口径。
 	vectorQuery  entity.KnowledgeVectorQuery
-	lexicalTerms []string
-	lexicalLimit int
+	lexicalQuery entity.KnowledgeLexicalQuery
 }
 
 var _ ChunkSearcher = (*fakeChunkSearcher)(nil)
@@ -39,9 +40,8 @@ func (s *fakeChunkSearcher) SearchVector(ctx context.Context, query entity.Knowl
 	return s.vectorRows, s.vectorErr
 }
 
-func (s *fakeChunkSearcher) SearchLexical(ctx context.Context, terms []string, limit int) ([]entity.KnowledgeChunkView, error) {
-	s.lexicalTerms = append([]string(nil), terms...)
-	s.lexicalLimit = limit
+func (s *fakeChunkSearcher) SearchLexical(ctx context.Context, query entity.KnowledgeLexicalQuery) ([]entity.KnowledgeChunkView, error) {
+	s.lexicalQuery = query
 	return s.lexicalRows, s.lexicalErr
 }
 
@@ -233,12 +233,12 @@ func TestRetrieveFusesBothRoutes(t *testing.T) {
 	}
 
 	// 向量路按 topK × 过采样倍数取候选；词法路收到的词项就是拆出来的那几个。
-	if want := recallLimit(3); search.vectorQuery.Limit != want || search.lexicalLimit != want {
+	if want := recallLimit(3); search.vectorQuery.Limit != want || search.lexicalQuery.Limit != want {
 		t.Fatalf("两路的候选上限应当一致且为过采样值: %d / %d（期望 %d）",
-			search.vectorQuery.Limit, search.lexicalLimit, want)
+			search.vectorQuery.Limit, search.lexicalQuery.Limit, want)
 	}
-	if strings.Join(search.lexicalTerms, ",") != "向量,量检,检索" {
-		t.Fatalf("词法路收到的词项不对: %v", search.lexicalTerms)
+	if strings.Join(search.lexicalQuery.Terms, ",") != "向量,量检,检索" {
+		t.Fatalf("词法路收到的词项不对: %v", search.lexicalQuery.Terms)
 	}
 }
 
@@ -290,6 +290,31 @@ func TestRetrieveEmbedsQueryWithDefaultModel(t *testing.T) {
 	}
 }
 
+// TestRetrievePassesFilterToBothRoutes 校验过滤条件原样进入两条召回路 ——
+// 只加在一路时，融合的两份名单搜的范围不一致，"两路都召回"就不再是同一个前提，
+// 结果会以很难解释的方式偏移，所以这个功能最容易犯的错要拿用例钉住。
+func TestRetrievePassesFilterToBothRoutes(t *testing.T) {
+	search := &fakeChunkSearcher{}
+	retriever := newTestRetriever(search, &stubEmbedder{dimension: testVectorDims})
+
+	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	filter := entity.KnowledgeChunkFilter{
+		SourceTypes: []string{entity.KnowledgeDocumentSourceImport},
+		DocumentIDs: []uint64{11, 22},
+		CreatedFrom: &from,
+	}
+	if _, err := retriever.Retrieve(context.Background(), RetrieveInput{Text: "向量检索", Filter: filter}); err != nil {
+		t.Fatalf("检索失败: %v", err)
+	}
+
+	if !reflect.DeepEqual(search.vectorQuery.Filter, filter) {
+		t.Fatalf("向量路没有收到过滤条件: %+v", search.vectorQuery.Filter)
+	}
+	if !reflect.DeepEqual(search.lexicalQuery.Filter, filter) {
+		t.Fatalf("词法路没有收到过滤条件: %+v", search.lexicalQuery.Filter)
+	}
+}
+
 // TestRetrieveCleansQueryBeforeRecall 校验清洗层真的接进了两路：
 // 向量路用剥壳后的文本向量化，词法路用剥壳后的词项召回，响应里的 terms 回显的也是它。
 func TestRetrieveCleansQueryBeforeRecall(t *testing.T) {
@@ -307,8 +332,8 @@ func TestRetrieveCleansQueryBeforeRecall(t *testing.T) {
 		t.Fatalf("向量路应当拿到剥壳后的文本，实际批次: %v", embedder.batches)
 	}
 	const wantTerms = "讲义,令牌,牌桶,桶算,算法"
-	if got := strings.Join(search.lexicalTerms, ","); got != wantTerms {
-		t.Fatalf("词法路应当拿到剥壳后的词项，实际: %v", search.lexicalTerms)
+	if got := strings.Join(search.lexicalQuery.Terms, ","); got != wantTerms {
+		t.Fatalf("词法路应当拿到剥壳后的词项，实际: %v", search.lexicalQuery.Terms)
 	}
 	if got := strings.Join(result.Terms, ","); got != wantTerms {
 		t.Fatalf("响应里的 terms 应当回显清洗后的词项，实际: %v", result.Terms)
@@ -406,7 +431,7 @@ func TestRetrieveRejectsEmptyQuery(t *testing.T) {
 	if _, err := retriever.Retrieve(context.Background(), RetrieveInput{Text: "   "}); !errors.Is(err, ErrEmptyQuery) {
 		t.Fatalf("空检索词应当返回 ErrEmptyQuery，实际是 %v", err)
 	}
-	if search.vectorQuery.Limit != 0 || len(search.lexicalTerms) != 0 {
+	if search.vectorQuery.Limit != 0 || len(search.lexicalQuery.Terms) != 0 {
 		t.Fatal("空检索词不该发起召回")
 	}
 }

@@ -1,6 +1,8 @@
 package entity
 
-// 这里的两个类型都不落库、不建表：它们是检索链路（internal/rag）与检索仓储
+import "time"
+
+// 这里的几个类型都不落库、不建表：它们是检索链路（internal/rag）与检索仓储
 // （internal/repository）之间共享的形状。放在 entity 的理由与 ChunkReplacement、
 // KnowledgeDocumentQuery 相同 —— 两层都要引用，家就不能偏向任何一层。
 // 与 KnowledgeUploadRecordView 同一个路数：JOIN 查询的产物，不是表结构。
@@ -29,6 +31,28 @@ type KnowledgeChunkView struct {
 	RawScore float64 `gorm:"column:raw_score"`
 }
 
+// KnowledgeChunkFilter 是召回阶段两条路共用的过滤条件。
+//
+// 它过滤的对象是"这片切片来自哪篇文档"（条件都落在 knowledge_documents 上），
+// 不是切片自身的正文；两条 SQL 本来就 JOIN 文档表，条件天然可以共享。
+//
+// 零值表示"这一项不参与过滤"，全零值等价于当前的不过滤行为 —— 调用方不必
+// 自己判断"有没有条件"。条件之间是 AND，列表条件内部是 OR（IN）。
+type KnowledgeChunkFilter struct {
+	// SourceTypes 只看这些来源类型的文档（manual / import）。空 = 不限。
+	SourceTypes []string
+
+	// DocumentIDs 只看这些文档下的切片。空 = 不限。
+	DocumentIDs []uint64
+
+	// CreatedFrom 是文档创建时间的下界，含。nil = 不限。
+	CreatedFrom *time.Time
+
+	// CreatedTo 是文档创建时间的上界，不含。nil = 不限。
+	// 用半开区间是为了避开"23:59:59.999"这种边界补丁：上界写成下一天零点即可。
+	CreatedTo *time.Time
+}
+
 // KnowledgeVectorQuery 是一次向量召回的入参。
 type KnowledgeVectorQuery struct {
 	// ModelID 只在该模型生成的向量里比。不同模型的向量处在不同的语义空间，
@@ -44,4 +68,22 @@ type KnowledgeVectorQuery struct {
 
 	// Limit 是这一路返回的候选上限。调用方一般过采样几倍，再由融合排序收敛到 top_k。
 	Limit int
+
+	// Filter 是文档侧的过滤条件，两条召回路必须带同一份（零值 = 不过滤）。
+	Filter KnowledgeChunkFilter
+}
+
+// KnowledgeLexicalQuery 是一次词法召回的入参。
+//
+// 与 KnowledgeVectorQuery 分列两个类型（而不是给 SearchLexical 加参数）：
+// 词法路的东西只会越来越多（词项权重、匹配字段），一次一个参数签不住。
+type KnowledgeLexicalQuery struct {
+	// Terms 是词法匹配的词项，逐项匹配、命中任意一项即入选。空时返回空结果。
+	Terms []string
+
+	// Limit 是这一路返回的候选上限。
+	Limit int
+
+	// Filter 与向量路共用同一份过滤条件（零值 = 不过滤）。
+	Filter KnowledgeChunkFilter
 }
