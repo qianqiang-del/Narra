@@ -128,6 +128,14 @@ type chatWireRequest struct {
 	ToolChoice  string           `json:"tool_choice,omitempty"`
 	Temperature *float32         `json:"temperature,omitempty"`
 	MaxTokens   *int             `json:"max_tokens,omitempty"`
+	// StreamOptions 只在流式请求里带上：不显式要 include_usage，多数上游末尾不回用量，
+	// 观测里的 token 数就只能空着。
+	StreamOptions *chatWireStreamOptions `json:"stream_options,omitempty"`
+}
+
+// chatWireStreamOptions 控制流式返回的附加内容。
+type chatWireStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type chatWireResponse struct {
@@ -262,13 +270,14 @@ func (c *Client) ChatStream(ctx context.Context, req ChatRequest) (<-chan Stream
 	}
 
 	payload, err := json.Marshal(chatWireRequest{
-		Model:       c.model,
-		Messages:    req.Messages,
-		Stream:      true,
-		Tools:       req.Tools,
-		ToolChoice:  req.ToolChoice,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
+		Model:         c.model,
+		Messages:      req.Messages,
+		Stream:        true,
+		Tools:         req.Tools,
+		ToolChoice:    req.ToolChoice,
+		Temperature:   req.Temperature,
+		MaxTokens:     req.MaxTokens,
+		StreamOptions: &chatWireStreamOptions{IncludeUsage: true},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("编码对话请求失败: %w", err)

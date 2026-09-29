@@ -31,11 +31,12 @@ const deleteConfirmId = ref<number | null>(null)
 const testingId = ref<number | null>(null)
 const testResult = ref<{ id: number; success: boolean; message: string; tools?: string[] } | null>(null)
 
-/** 新建服务的超时默认值：调用超时要容得下单次联网搜索的抖动。 */
+/** 新建服务的超时默认值：单次联网搜索正常在 1-3s 内回来，15s 已足够判定"这次卡住了"；
+ *  给到 60s 只会让一次卡死白等一分钟才轮到重试。 */
 const defaultMcpTimeouts = {
   startupTimeout: '30s',
   discoveryTimeout: '30s',
-  callTimeout: '60s',
+  callTimeout: '15s',
 }
 
 const mcpFormOpen = ref(false)

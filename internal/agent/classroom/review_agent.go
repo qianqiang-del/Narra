@@ -24,11 +24,10 @@ type reviewInput struct {
 	HTML      string
 }
 
-// maxReviewHTMLBytes 是送进审核的交互 HTML 上限。
+// maxReviewHTMLBytes 是退回原文时送进审核的交互 HTML 上限。
 //
-// 页面本身可以到 maxInteractiveHTMLBytes，整份塞进审核提示词会显著推高一次调用的成本与延迟。
-// 截断而不是换成摘要：判断「确实可交互、不是静态文字」看原样开头最可靠；
-// 截断时在提示词里如实说明，免得审核凭残缺的文档下结论。
+// 正常路径走 summarizeHTMLForReview，抽可见文本与交互清单，不走这里；
+// 只有 HTML 解析失败、退回"截断原文"时才用得上，兜住一次调用的体积。
 const maxReviewHTMLBytes = 48 * 1024
 
 // reviewPage 审核一页内容与讲稿的质量：一次调用加强制结构化输出，不挂工具。
@@ -82,20 +81,11 @@ func reviewPrompt(in *reviewInput) string {
 			fmt.Fprintf(&builder, "- %s\n", item)
 		}
 	}
-	blocks, _ := json.Marshal(in.Blocks)
-	fmt.Fprintf(&builder, "\n## 最终内容块\n%s\n", blocks)
+	fmt.Fprintf(&builder, "\n## 最终内容块\n%s\n", renderBlocksForReview(in.Blocks))
 	if document := strings.TrimSpace(in.HTML); document != "" {
-		if len(document) > maxReviewHTMLBytes {
-			// 截断只在字节层面做，回退到合法字符，别把一个汉字切成两半。
-			document = strings.ToValidUTF8(document[:maxReviewHTMLBytes], "")
-			fmt.Fprintf(&builder, "\n## 最终交互页面（HTML 文档，共 %d 字节，这里只给前 %d 字节）\n%s\n",
-				len(in.HTML), maxReviewHTMLBytes, document)
-		} else {
-			fmt.Fprintf(&builder, "\n## 最终交互页面（HTML 文档）\n%s\n", document)
-		}
+		fmt.Fprintf(&builder, "\n## 最终交互页面\n%s\n", summarizeHTMLForReview(document))
 	}
-	narration, _ := json.Marshal(in.Narration)
-	fmt.Fprintf(&builder, "\n## 最终讲稿\n%s\n", narration)
+	fmt.Fprintf(&builder, "\n## 最终讲稿\n%s\n", renderNarrationForReview(in.Narration))
 	return builder.String()
 }
 

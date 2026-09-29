@@ -90,7 +90,11 @@ func generateContent(ctx context.Context, rt *runtime, budget *pageBudget, in *c
 	return pageContent{}, lastErr
 }
 
-// buildInteractiveChain 建交互页的执行单元：拼提示词 → 模型 → 原样取回完整 HTML 文档。
+// buildInteractiveChain 建交互页的执行单元：拼提示词 → 流式生成 → 原样取回完整 HTML 文档。
+//
+// 走流式而不是 AppendChatModel：交互页输出是一份完整 HTML，属长回答，非流式会把
+// "发请求 + 读完整个响应体"一起框进 Provider 超时（默认 60s），长文档常在读 body 时被掐断
+// （"读取服务响应失败: context deadline exceeded"）。流式没有那个固定死线，时限只由 ctx 决定。
 func buildInteractiveChain(ctx context.Context, rt *runtime) (compose.Runnable[*contentInput, string], error) {
 	chain := compose.NewChain[*contentInput, string]()
 	chain.AppendLambda(compose.InvokableLambda(func(_ context.Context, in *contentInput) ([]*schema.Message, error) {
@@ -99,8 +103,8 @@ func buildInteractiveChain(ctx context.Context, rt *runtime) (compose.Runnable[*
 			return nil, fmt.Errorf("交互页面提示词未注册")
 		}
 		return []*schema.Message{schema.SystemMessage(system), schema.UserMessage(contentUserPrompt(in))}, nil
-	})).AppendChatModel(rt.chatModel).AppendLambda(compose.InvokableLambda(func(_ context.Context, msg *schema.Message) (string, error) {
-		return msg.Content, nil
+	})).AppendLambda(compose.InvokableLambda(func(ctx context.Context, messages []*schema.Message) (string, error) {
+		return rt.streamCompletion(ctx, messages)
 	}))
 	return chain.Compile(ctx)
 }

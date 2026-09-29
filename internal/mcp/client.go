@@ -36,9 +36,13 @@ func Connect(ctx context.Context, server config.MCPServerConfig, app config.AppC
 	}
 	httpClient := &http.Client{Transport: authTransport{base: http.DefaultTransport, token: token}}
 	transport := &sdk.StreamableClientTransport{
-		Endpoint:             server.Endpoint,
-		HTTPClient:           httpClient,
-		MaxRetries:           -1,
+		Endpoint:   server.Endpoint,
+		HTTPClient: httpClient,
+		// 不能给负数：SDK 把负数当"禁用重试"（streamable.go 里 maxRetries<0 直接归 0）。
+		// 一次 tools/call 的响应流被中断时，0 次重试会让 SDK 直接把整条会话标记为
+		// 永久失败，之后同一连接上的每次调用都立刻报错，而调用方不会重建连接——
+		// 表现就是"越用越坏，重启前好不了"。给一个小额度，让 SDK 自己接得回来。
+		MaxRetries:           2,
 		DisableStandaloneSSE: true,
 	}
 	client := sdk.NewClient(&sdk.Implementation{Name: app.Name, Version: app.Version}, nil)
