@@ -46,6 +46,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("document_parser.ocr_engine", "rapidocr")
 	v.SetDefault("storage.upload_dir", "data/uploads")
 	v.SetDefault("storage.audio_dir", "data/audio")
+	// 知识库图片是持久资产：解析产出的图片发布在这里，收录成功也不能删（见 documentimage）。
+	v.SetDefault("storage.knowledge_dir", "data/knowledge")
 	// 知识库批量导入：一批最多 10 份、单份 16MB、整批 100MB；后台最多同时解析 2 篇，
 	// 向量化全局串行（默认 1）。队列上限 100 同时是暂存盘的占用上限。
 	v.SetDefault("knowledge_ingest.max_files", DefaultKnowledgeMaxFiles)

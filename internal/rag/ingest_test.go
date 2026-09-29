@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1349,5 +1350,176 @@ func TestFormatPageNumbersFoldsLongLists(t *testing.T) {
 	}
 	if strings.Contains(got, "11、") {
 		t.Errorf("超过上限的页码不该逐一列出，实际 %q", got)
+	}
+}
+
+// fakeImagePublisher 是 ImagePublisher 的内存替身：记录调用参数，按预设映射返回 URL。
+type fakeImagePublisher struct {
+	calls     int
+	lastID    uint64
+	lastPaths []string
+	urls      map[string]string
+	err       error
+}
+
+var _ ImagePublisher = (*fakeImagePublisher)(nil)
+
+func (p *fakeImagePublisher) Publish(documentID uint64, paths []string) (map[string]string, error) {
+	p.calls++
+	p.lastID = documentID
+	p.lastPaths = append([]string(nil), paths...)
+	if p.err != nil {
+		return nil, p.err
+	}
+	out := make(map[string]string, len(paths))
+	for _, path := range paths {
+		out[path] = p.urls[path]
+	}
+	return out, nil
+}
+
+// 同步链路：解析产出的图片必须先发布、把 URL 回填进正文，再落库 ——
+// 落库的正文里不能再出现临时目录的路径（那个目录在收录结束时会被 Cleanup 删掉）。
+func TestIngestFilePublishesImagesAndBackfillsMarkdown(t *testing.T) {
+	store := &fakeDocumentStore{}
+	first := "/tmp/narra-parse/images/img_1.png"
+	second := "/tmp/narra-parse/images/img_2.png"
+	parser := &stubParser{result: &documentparser.Result{
+		Markdown:     "# 图文档\n\n![截图](" + first + ")\n\n![另一张](" + second + ")",
+		PicturePaths: []string{first, second},
+	}}
+	ingester := newIngesterWithParser(store, parser)
+	publisher := &fakeImagePublisher{urls: map[string]string{
+		first:  "/knowledge/images/7/aaa.png",
+		second: "/knowledge/images/7/bbb.png",
+	}}
+	ingester.images = publisher
+
+	path := writeTempFile(t, "图文档.docx", "内容由桩决定")
+	if _, err := ingester.IngestFile(context.Background(), FileInput{Path: path}); err != nil {
+		t.Fatalf("收录失败: %v", err)
+	}
+
+	if publisher.calls != 1 {
+		t.Fatalf("发布调用次数 = %d，期望 1", publisher.calls)
+	}
+	if publisher.lastID != testDocumentID {
+		t.Errorf("发布时的文档 ID = %d，期望 %d", publisher.lastID, testDocumentID)
+	}
+	if !slices.Equal(publisher.lastPaths, []string{first, second}) {
+		t.Errorf("发布路径 = %v，期望 %v", publisher.lastPaths, []string{first, second})
+	}
+
+	if store.replaced == nil {
+		t.Fatal("没有写入切片与向量")
+	}
+	content := store.replaced.Content
+	if strings.Contains(content, first) || strings.Contains(content, second) {
+		t.Errorf("落库正文里不该再有本地图片路径: %q", content)
+	}
+	for _, url := range []string{"/knowledge/images/7/aaa.png", "/knowledge/images/7/bbb.png"} {
+		if !strings.Contains(content, url) {
+			t.Errorf("落库正文里应当出现回填后的 URL %q，实际 %q", url, content)
+		}
+	}
+}
+
+// 异步链路：回填必须发生在 SaveParsedContent 之前 —— chunk / embed 阶段是从库里
+// 读正文恢复的，正文里留着本地路径的话，崩溃恢复出来的切片就全是死链。
+func TestProcessExistingFileBackfillsImagesBeforeSavingContent(t *testing.T) {
+	staged := stageParserFile(t, t.TempDir(), "1", "内容由桩决定")
+	local := "/tmp/narra-parse/images/img_1.png"
+	document := stageTestDocument(t, entity.KnowledgeDocumentStageParse, map[string]any{"upload_path": staged})
+	store := newStageStore(&document)
+	parser := &stubParser{result: &documentparser.Result{
+		Markdown:     "# 图文档\n\n![截图](" + local + ")",
+		PicturePaths: []string{local},
+	}}
+	ingester := newIngesterWithParser(store, parser)
+	ingester.images = &fakeImagePublisher{urls: map[string]string{
+		local: "/knowledge/images/7/aaa.png",
+	}}
+
+	if _, err := ingester.processExistingFile(context.Background(), store.created, FileInput{Path: staged}, 1, entity.KnowledgeDocumentStageParse); err != nil {
+		t.Fatalf("处理失败: %v", err)
+	}
+	if strings.Contains(store.content, local) {
+		t.Errorf("落库正文里不该再有本地图片路径: %q", store.content)
+	}
+	if !strings.Contains(store.content, "/knowledge/images/7/aaa.png") {
+		t.Errorf("落库正文里应当出现回填后的 URL，实际 %q", store.content)
+	}
+}
+
+// 发布失败必须整篇失败（阶段算 parse，重试会重新解析原文件）：把本地路径静默写进库，
+// 等临时目录一删就是永远查不出来的死链。
+func TestIngestFileFailsWhenImagePublishFails(t *testing.T) {
+	store := &fakeDocumentStore{}
+	local := "/tmp/narra-parse/images/img_1.png"
+	parser := &stubParser{result: &documentparser.Result{
+		Markdown:     "![截图](" + local + ")",
+		PicturePaths: []string{local},
+	}}
+	ingester := newIngesterWithParser(store, parser)
+	ingester.images = &fakeImagePublisher{err: errors.New("磁盘已满")}
+
+	path := writeTempFile(t, "图文档.docx", "内容由桩决定")
+	if _, err := ingester.IngestFile(context.Background(), FileInput{Path: path}); err == nil {
+		t.Fatal("图片发布失败时收录必须报错")
+	}
+	if store.status() != entity.KnowledgeDocumentStatusFailed {
+		t.Errorf("状态 = %q，期望 failed", store.status())
+	}
+	if store.replaced != nil {
+		t.Error("失败时不该写入任何切片")
+	}
+
+	var payload struct {
+		Stage string `json:"stage"`
+	}
+	if err := json.Unmarshal(store.failMeta, &payload); err != nil {
+		t.Fatalf("失败现场不是合法 JSON: %v", err)
+	}
+	if payload.Stage != "parse" {
+		t.Errorf("失败阶段 = %q，期望 parse", payload.Stage)
+	}
+}
+
+// 解析出了图片却没接发布器时同样整篇失败：这通常意味着装配漏了，
+// 不能把本地路径写进库、让它随临时目录一起失效。
+func TestIngestFileFailsWhenImagesHaveNoPublisher(t *testing.T) {
+	store := &fakeDocumentStore{}
+	parser := &stubParser{result: &documentparser.Result{
+		Markdown:     "![截图](/tmp/narra-parse/images/img_1.png)",
+		PicturePaths: []string{"/tmp/narra-parse/images/img_1.png"},
+	}}
+	ingester := newIngesterWithParser(store, parser)
+
+	path := writeTempFile(t, "图文档.docx", "内容由桩决定")
+	if _, err := ingester.IngestFile(context.Background(), FileInput{Path: path}); err == nil {
+		t.Fatal("没接图片发布器时收录必须报错")
+	}
+	if store.replaced != nil {
+		t.Error("失败时不该写入任何切片")
+	}
+}
+
+// 一张图的路径是另一张的前缀时，必须先替换长的：否则短的替换会把长的切坏，
+// 长路径此后再也匹配不上，留下一个半截的死链。
+func TestBackfillImagesReplacesLongestPathFirst(t *testing.T) {
+	short := "/tmp/images/a.png"
+	long := "/tmp/images/a.png.bak"
+	ingester := &Ingester{images: &fakeImagePublisher{urls: map[string]string{
+		short: "/knowledge/images/7/short.png",
+		long:  "/knowledge/images/7/long.png",
+	}}}
+
+	got, err := ingester.backfillImages(7, "![a]("+long+") 与 ![b]("+short+")", []string{short, long})
+	if err != nil {
+		t.Fatalf("回填失败: %v", err)
+	}
+	want := "![a](/knowledge/images/7/long.png) 与 ![b](/knowledge/images/7/short.png)"
+	if got != want {
+		t.Errorf("回填结果 = %q，期望 %q", got, want)
 	}
 }

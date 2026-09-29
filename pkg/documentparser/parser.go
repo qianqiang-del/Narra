@@ -188,7 +188,8 @@ type Result struct {
 	Metadata     map[string]any `json:"metadata"`
 
 	// WorkDir 本次解析产物的根目录（导出图片在里面）。
-	// 由调用方负责清理：图片要先上传到对象存储，再删掉整个目录。
+	// 由调用方负责清理：图片要先发布到持久存储、把 Markdown 里的本地路径回填成
+	// URL，再删掉整个目录（见 internal/rag 的 backfillImages）。
 	WorkDir string `json:"-"`
 }
 
@@ -243,8 +244,9 @@ func (r *Result) OCRFailedPages() []int {
 
 // Cleanup 删除本次解析的产物目录（导出的图片在里面）。
 //
-// 成功路径的临时目录归调用方所有：先把 picture_paths 上传到对象存储、把 Markdown
-// 里的本地路径回填成 URL，再调这里。失败路径由 Parse 自己清理，那时 Result 是 nil，
+// 成功路径的临时目录归调用方所有：先把 picture_paths 发布到持久存储（第一版是
+// 本地目录，见 internal/rag/documentimage）、把 Markdown 里的本地路径回填成 URL，
+// 再调这里。失败路径由 Parse 自己清理，那时 Result 是 nil，
 // 所以调用方用 defer 兜底也不必判空（nil 接收者安全）。
 func (r *Result) Cleanup() error {
 	if r == nil || strings.TrimSpace(r.WorkDir) == "" {

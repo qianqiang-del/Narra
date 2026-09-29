@@ -9,20 +9,20 @@ import (
 
 // Config 应用配置结构体
 type Config struct {
-	App            AppConfig            `mapstructure:"app"`
-	Database       DatabaseConfig       `mapstructure:"database"`
-	Embedding      EmbeddingConfig      `mapstructure:"embedding"`
-	TTS            TTSConfig            `mapstructure:"tts"`
-	DocumentParser DocumentParserConfig `mapstructure:"document_parser"`
-	Storage        StorageConfig        `mapstructure:"storage"`
-	JWT            JWTConfig            `mapstructure:"jwt"`
-	Log            LogConfig            `mapstructure:"log"`
-	Langfuse       LangfuseConfig       `mapstructure:"langfuse"`
-	CORS           CORSConfig           `mapstructure:"cors"`
-	Worker         WorkerConfig         `mapstructure:"worker"`
-	Classroom      ClassroomConfig      `mapstructure:"classroom"`
+	App             AppConfig             `mapstructure:"app"`
+	Database        DatabaseConfig        `mapstructure:"database"`
+	Embedding       EmbeddingConfig       `mapstructure:"embedding"`
+	TTS             TTSConfig             `mapstructure:"tts"`
+	DocumentParser  DocumentParserConfig  `mapstructure:"document_parser"`
+	Storage         StorageConfig         `mapstructure:"storage"`
+	JWT             JWTConfig             `mapstructure:"jwt"`
+	Log             LogConfig             `mapstructure:"log"`
+	Langfuse        LangfuseConfig        `mapstructure:"langfuse"`
+	CORS            CORSConfig            `mapstructure:"cors"`
+	Worker          WorkerConfig          `mapstructure:"worker"`
+	Classroom       ClassroomConfig       `mapstructure:"classroom"`
 	KnowledgeIngest KnowledgeIngestConfig `mapstructure:"knowledge_ingest"`
-	ConfigPath     string               `mapstructure:"-"`
+	ConfigPath      string                `mapstructure:"-"`
 }
 
 // KnowledgeIngestConfig 是知识库文件收录的批量限制、队列容量与并发约束。
@@ -120,6 +120,9 @@ func (c KnowledgeIngestConfig) Validate() error {
 type StorageConfig struct {
 	UploadDir string `mapstructure:"upload_dir"`
 	AudioDir  string `mapstructure:"audio_dir"`
+	// KnowledgeDir 是知识库资产的持久目录：解析产出的图片发布在这里（见 internal/rag/documentimage），
+	// 与 upload_dir 的暂存定位不同 —— 暂存文件收录成功即删，这里的内容要活到文档删除为止。
+	KnowledgeDir string `mapstructure:"knowledge_dir"`
 }
 
 // WorkerConfig 是后台生成任务的执行配置。

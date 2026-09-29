@@ -899,3 +899,52 @@ func TestRemovableStagingDir(t *testing.T) {
 		t.Error("uploadDir 为空时不该放行任何清理")
 	}
 }
+
+// deletableDocumentQuerier 在 fakeDocumentQuerier 基础上补上删除能力，
+// 让用例能走通 Delete 的完整路径（真仓储靠类型断言提供这个方法）。
+type deletableDocumentQuerier struct {
+	fakeDocumentQuerier
+	deleted []uint64
+}
+
+func (q *deletableDocumentQuerier) Delete(_ context.Context, id uint64) error {
+	q.deleted = append(q.deleted, id)
+	return nil
+}
+
+// 删除文档要连带清掉它发布出去的图片，而且只清自己那一份 ——
+// 图片目录按文档 ID 拼出，不存在 upload_path 那种"metadata 写什么就删什么"的风险。
+func TestDeleteRemovesDocumentImages(t *testing.T) {
+	knowledgeDir := t.TempDir()
+	for _, name := range []string{"7", "8"} {
+		dir := filepath.Join(knowledgeDir, "images", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("创建图片目录失败: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "img.png"), []byte("bytes"), 0o600); err != nil {
+			t.Fatalf("写入图片失败: %v", err)
+		}
+	}
+
+	querier := &deletableDocumentQuerier{}
+	querier.document = &entity.KnowledgeDocument{
+		BaseModel: entity.BaseModel{ID: testDocumentID},
+		Title:     "图文档",
+		Metadata:  json.RawMessage(`{}`),
+	}
+	// 第一个位置参数是上传暂存目录，这里为空（本用例不涉及）；第二个是知识资产目录。
+	svc := NewKnowledgeService(querier, &fakeUploadRecordStore{}, &fakeIngester{}, &fakeRetriever{}, "", knowledgeDir)
+
+	if err := svc.Delete(context.Background(), testDocumentID); err != nil {
+		t.Fatalf("删除失败: %v", err)
+	}
+	if !slices.Equal(querier.deleted, []uint64{testDocumentID}) {
+		t.Errorf("删除调用 = %v，期望只删 %d", querier.deleted, testDocumentID)
+	}
+	if _, err := os.Stat(filepath.Join(knowledgeDir, "images", "7")); !os.IsNotExist(err) {
+		t.Errorf("被删文档的图片目录应当已被清理，实际: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(knowledgeDir, "images", "8")); err != nil {
+		t.Errorf("其他文档的图片目录不该受影响: %v", err)
+	}
+}

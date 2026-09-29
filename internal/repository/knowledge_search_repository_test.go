@@ -319,7 +319,7 @@ func TestSearchVectorCanUseHNSWIndex(t *testing.T) {
 		Limit:      5,
 	}
 	args := []any{query.Vector, entity.KnowledgeDocumentStatusReady, query.Vector}
-	rows, err := tx.Raw("EXPLAIN "+vectorSearchStatement(query.Dimensions, query.ModelID, query.Limit), args...).Rows()
+	rows, err := tx.Raw("EXPLAIN "+vectorSearchStatement(query.Dimensions, query.ModelID, query.Limit, vectorIndexTypeVector), args...).Rows()
 	if err != nil {
 		t.Fatalf("EXPLAIN 失败: %v", err)
 	}
@@ -343,22 +343,92 @@ func TestSearchVectorCanUseHNSWIndex(t *testing.T) {
 	}
 }
 
-// TestEnsureVectorIndexExplainsDimensionCeiling 校验超过 pgvector HNSW 维度上限时
+// TestSearchVectorCanUseHalfvecIndex 是上一条用例的半精度版本：>2000 维的索引建在
+// (embedding::halfvec(N)) 上，检索 SQL 的 cast 必须与它逐字一致，否则同样静默退回
+// 顺序扫描。用 4 维探针（而不是真造 3072 维数据）验证的是"表达式形状对得上"，
+// 维度分段的判定由 TestVectorSearchCastType 钉住。
+//
+// halfvec 需要 pgvector ≥ 0.7：老环境跳过这条，而不是把"环境太老"报成失败。
+func TestSearchVectorCanUseHalfvecIndex(t *testing.T) {
+	tx := testTx(t)
+	skipWithoutHalfvec(t, tx)
+
+	modelID := knowledgeTestModelID(t, tx)
+	documentID := seedSearchDocument(t, tx, "半精度索引探针", entity.KnowledgeDocumentStatusReady, true)
+	seedSearchChunk(t, tx, documentID, modelID, 0, "", "探针切片", "[1,0,0,0]")
+
+	name := "narra_test_halfvec_probe_idx"
+	statement := fmt.Sprintf(
+		"CREATE INDEX %s ON knowledge_embeddings USING hnsw ((embedding::halfvec(%d)) halfvec_cosine_ops) WHERE model_id = %d",
+		name, searchTestDimensions, modelID)
+	if err := tx.Exec(statement).Error; err != nil {
+		t.Fatalf("建半精度探针索引失败: %v", err)
+	}
+	if err := tx.Exec("SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off").Error; err != nil {
+		t.Fatalf("调整执行计划开关失败: %v", err)
+	}
+
+	query := entity.KnowledgeVectorQuery{
+		ModelID:    modelID,
+		Dimensions: searchTestDimensions,
+		Vector:     "[1,0,0,0]",
+		Limit:      5,
+	}
+	args := []any{query.Vector, entity.KnowledgeDocumentStatusReady, query.Vector}
+	rows, err := tx.Raw("EXPLAIN "+vectorSearchStatement(query.Dimensions, query.ModelID, query.Limit, vectorIndexTypeHalfvec), args...).Rows()
+	if err != nil {
+		t.Fatalf("EXPLAIN 失败: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatalf("读取执行计划失败: %v", err)
+		}
+		plan.WriteString(line)
+		plan.WriteString("\n")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("读取执行计划失败: %v", err)
+	}
+
+	if !strings.Contains(plan.String(), name) {
+		t.Fatalf("半精度检索用不上向量索引，会退化成顺序扫描。执行计划:\n%s", plan.String())
+	}
+}
+
+// skipWithoutHalfvec 在数据库的 pgvector 没有 halfvec 类型（< 0.7）时跳过用例。
+func skipWithoutHalfvec(t *testing.T, db *gorm.DB) {
+	t.Helper()
+
+	var ok bool
+	if err := db.Raw("SELECT to_regtype('halfvec') IS NOT NULL").Scan(&ok).Error; err != nil {
+		t.Fatalf("探测 halfvec 支持失败: %v", err)
+	}
+	if !ok {
+		t.Skip("当前数据库的 pgvector 没有 halfvec（需 0.7+），跳过半精度用例")
+	}
+}
+
+// TestEnsureVectorIndexExplainsDimensionCeiling 校验超过 halfvec 上限（4000 维）时
 // 给的是一句人话（结果不受影响、只是会慢），而不是数据库那句 "column cannot have
 // more than 2000 dimensions for hnsw index" —— 后者看上去像哪条 SQL 写错了。
+// 2001–4000 这段是能建的（半精度），所以天花板取 4001 而不是 2001。
 func TestEnsureVectorIndexExplainsDimensionCeiling(t *testing.T) {
 	db := openTestDB(t)
 	model := &entity.EmbeddingModel{
 		BaseModel:  entity.BaseModel{ID: uint64(time.Now().UnixNano())},
 		Name:       uniqueName("dims"),
-		Dimensions: maxHNSWDimensions + 1,
+		Dimensions: maxHalfvecIndexDimensions + 1,
 	}
 
 	err := NewEmbeddingModelRepository(db).EnsureVectorIndex(context.Background(), model)
 	if err == nil {
-		t.Fatalf("超过 %d 维时不该建出索引", maxHNSWDimensions)
+		t.Fatalf("超过 %d 维时不该建出索引", maxHalfvecIndexDimensions)
 	}
-	for _, want := range []string{"HNSW", "顺序扫描"} {
+	for _, want := range []string{"halfvec", "HNSW", "顺序扫描"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("错误说明里应当提到 %q，实际是 %v", want, err)
 		}
@@ -370,29 +440,89 @@ func TestEnsureVectorIndexExplainsDimensionCeiling(t *testing.T) {
 	}
 }
 
+// TestEnsureVectorIndexUsesHalfvecAboveVectorCeiling 校验 2001–4000 维走半精度：
+// 单精度在这个区间建不出来（pgvector 的硬限制），halfvec 是唯一能建出 HNSW 的路。
+// 断言索引定义里的表达式与算子类，而不是"建出来了就算"—— 表达式与检索 SQL
+// 对不上时索引等于不存在，而这没有任何报错。
+func TestEnsureVectorIndexUsesHalfvecAboveVectorCeiling(t *testing.T) {
+	db := openTestDB(t)
+	skipWithoutHalfvec(t, db)
+
+	const dimensions = int32(3072) // 主流高维模型所在的区间（OpenAI text-embedding-3-large 等）
+	model := &entity.EmbeddingModel{
+		BaseModel:  entity.BaseModel{ID: uint64(time.Now().UnixNano())},
+		Dimensions: dimensions,
+	}
+	name := vectorIndexName(model.ID)
+	t.Cleanup(func() {
+		_ = db.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + name).Error
+	})
+
+	repo := NewEmbeddingModelRepository(db).(*embeddingModelRepository)
+	if err := repo.EnsureVectorIndex(context.Background(), model); err != nil {
+		t.Fatalf("3072 维应当能建半精度索引: %v", err)
+	}
+
+	definition, valid, err := repo.currentVectorIndex(context.Background(), name)
+	if err != nil {
+		t.Fatalf("查询索引定义失败: %v", err)
+	}
+	if !valid {
+		t.Fatalf("刚建好的半精度索引应当是有效的: %q", definition)
+	}
+	if !strings.Contains(definition, "hnsw") || !strings.Contains(definition, "halfvec_cosine_ops") {
+		t.Fatalf("超过 2000 维应当是 HNSW 半精度余弦索引: %q", definition)
+	}
+	if !strings.Contains(definition, "halfvec(3072)") {
+		t.Fatalf("索引表达式应当用 halfvec 且维度与模型登记值一致: %q", definition)
+	}
+
+	// 重复建必须幂等：处置规则要认得 halfvec(3072) 这个表达式并原样保留，
+	// 不能因为"只比 vector(N)"而每次启动都删了重建。
+	if err := repo.EnsureVectorIndex(context.Background(), model); err != nil {
+		t.Fatalf("重复建半精度索引应当是幂等的: %v", err)
+	}
+	after, _, err := repo.currentVectorIndex(context.Background(), name)
+	if err != nil {
+		t.Fatalf("查询索引定义失败: %v", err)
+	}
+	if after != definition {
+		t.Fatalf("幂等重建不该改索引定义: %q vs %q", after, definition)
+	}
+}
+
 // TestVectorIndexDisposition 校验同名索引的处置规则 —— 尤其是**无效索引必须重建**：
 // 一次建索引失败留下的空壳会占着名字，让之后的 `IF NOT EXISTS` 永远跳过，
 // 索引再也建不出来且没有任何报错。真库里造这种索引很麻烦，所以规则被提成了纯函数。
+//
+// 比对的是**表达式片段**（含精度类型与维度）：halfvec(3072) 不包含子串 vector(3072)，
+// 只比维度不比类型的话，"在 2000 维边界两边换精度"会被误判成"定义没变"，
+// 自愈变成每次启动删了重建。
 func TestVectorIndexDisposition(t *testing.T) {
-	const dimensions = int32(1536)
 	example := "CREATE INDEX x ON public.knowledge_embeddings USING hnsw (((embedding)::vector(1536)) vector_cosine_ops) WHERE (model_id = 6)"
 	outdated := "CREATE INDEX x ON public.knowledge_embeddings USING hnsw (((embedding)::vector(3072)) vector_cosine_ops) WHERE (model_id = 6)"
+	halfvec := "CREATE INDEX x ON public.knowledge_embeddings USING hnsw (((embedding)::halfvec(3072)) halfvec_cosine_ops) WHERE (model_id = 6)"
 
 	cases := []struct {
 		name       string
 		definition string
 		valid      bool
+		expression string
 		want       vectorIndexAction
 	}{
-		{"没有索引时新建", "", false, indexActionCreate},
-		{"有效且维度一致的索引保留", example, true, indexActionKeep},
-		{"维度过期的索引要重建", outdated, true, indexActionRebuild},
-		{"无效索引即使维度一致也要重建", example, false, indexActionRebuild},
-		{"无效且维度过期同样重建", outdated, false, indexActionRebuild},
+		{"没有索引时新建", "", false, "vector(1536)", indexActionCreate},
+		{"有效且精度维度一致的索引保留", example, true, "vector(1536)", indexActionKeep},
+		{"维度过期的索引要重建", outdated, true, "vector(1536)", indexActionRebuild},
+		{"无效索引即使维度一致也要重建", example, false, "vector(1536)", indexActionRebuild},
+		{"无效且维度过期同样重建", outdated, false, "vector(1536)", indexActionRebuild},
+		{"半精度索引按 halfvec 表达式保留", halfvec, true, "halfvec(3072)", indexActionKeep},
+		{"精度类型对不上的要重建", halfvec, true, "vector(3072)", indexActionRebuild},
+		{"半精度维度过期要重建", halfvec, true, "halfvec(4096)", indexActionRebuild},
+		{"单精度索引在改用半精度后要重建", example, true, "halfvec(1536)", indexActionRebuild},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := vectorIndexDisposition(testCase.definition, testCase.valid, dimensions); got != testCase.want {
+			if got := vectorIndexDisposition(testCase.definition, testCase.valid, testCase.expression); got != testCase.want {
 				t.Fatalf("处置判断不对: got=%d want=%d", got, testCase.want)
 			}
 		})
