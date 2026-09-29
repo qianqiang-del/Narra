@@ -1,8 +1,10 @@
 package repository
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"gorm.io/gorm"
@@ -13,7 +15,7 @@ import (
 // knowledgeSearchRepository 基于 GORM（含少量手写 SQL）的检索仓储。
 //
 // 手写 SQL 的地方只有两条召回路：pgvector 的距离算子、表达式索引的匹配写法，
-// 以及"命中词项数"这种逐项打分，用查询构造器拼出来反而更难读。
+// 以及"加权命中分"这种逐项打分，用查询构造器拼出来反而更难读。
 type knowledgeSearchRepository struct {
 	db *gorm.DB
 
@@ -41,11 +43,15 @@ const chunkViewColumns = `c.id AS chunk_id,
 	d.source_type,
 	d.source_uri`
 
-// chunkHaystack 是词法匹配的对象：切片正文 + 章节标题 + 文档标题。
+// chunkTextHaystack 是词法匹配与词法索引的匹配面：切片正文 + 章节标题。
 //
-// 三者拼成一段再匹配，而不是各写一个 LIKE 再 OR 起来：一个词项命中任意一处都算命中，
-// 打分时只加 1 分（同一词项重复出现不加分），语义上就是"这个词项有没有出现在这条切片周围"。
-const chunkHaystack = `(c.content || ' ' || coalesce(c.heading, '') || ' ' || d.title)`
+// 文档标题**不在**其中：它在另一张表，跨表表达式建不了索引（见 lexical_index.go）。
+// 标题由 titleHaystack 的独立小查询覆盖，两边各自打分、合并时取较高分，
+// 保持改造前"一个词项在正文与标题各出现也只算命中一次"的语义。
+const chunkTextHaystack = `(c.content || ' ' || coalesce(c.heading, ''))`
+
+// titleHaystack 是标题查询的匹配面。
+const titleHaystack = `d.title`
 
 // SearchVector 按余弦相似度召回候选，见 KnowledgeSearchRepository 的说明。
 //
@@ -141,15 +147,30 @@ LIMIT %d`,
 
 // SearchLexical 按词项命中召回候选，见 KnowledgeSearchRepository 的说明。
 //
-// 命中数在 SQL 里算（而不是把候选拉回来在 Go 里数）：词法匹配是 OR 拼起来的顺序扫描，
-// 命中的行可能远多于 limit，先按命中数排序再截断，才不会把"只蹭到一个噪声词项"的行
-// 占满候选窗口。同一词项命中多处只算 1 分，所以在 SQL 里是"每个词项一个 CASE"求和，
-// 而不是"每出现一次加 1 分" —— 后者会让长切片永远排在前面（它更容易重复出现某个词）。
+// 两条候选查询 + 一次合并，是"索引能用得上"逼出来的形状：
 //
-// 排序带 id 兜底：命中数相同的行很多（尤其是全是 1 分的时候），不给定顺序的话
+//   - 正文查询：匹配面是切片正文 + 章节标题，与词法表达式索引的定义一致，
+//     两字以上的词项都能走索引（见 lexical_index.go）；
+//   - 标题查询：文档标题在另一张表，拼进同一个匹配面会让表达式索引永远匹配不上，
+//     所以它单独查一遍，命中的文档下所有切片照常进入候选；
+//   - 合并时取两条路的**较高分**：一个词项在正文与标题各出现一次也只算命中一次，
+//     保持改造前"拼成一段再匹配"的语义（见 mergeLexicalRows）。
+//
+// 打分在 SQL 里算（而不是把候选拉回来在 Go 里算）：命中的行可能远多于 limit，
+// 先按分数排序再截断，才不会把"只蹭到一个噪声词项"的行占满候选窗口。每个词项一个
+// CASE：命中得权重分、不命中 0 分，同一词项命中多处只算一次 —— 按出现次数加分会让
+// 长切片永远排在前面（它更容易重复出现某个词）。
+//
+// 权重是**参数**而不是写死的数字：档位口径在检索侧的分词层（internal/rag/tokenize），
+// 这里只是执行者，改权重不用改 SQL。
+//
+// 短语只加分、不参与准入：能进入 WHERE 的仍是"命中至少一个词项"的行，短语在这些行上
+// 额外加一笔权重。
+//
+// 排序带 id 兜底：命中分相同的行很多（尤其是全是 1 分的时候），不给定顺序的话
 // 两次检索会返回不同的候选，融合出来的结果也就跟着抖。
 //
-// 过滤条件来自 query.Filter，与向量路共用同一个构造函数，口径只有一份。
+// 过滤条件来自 query.Filter，两条候选查询共用同一个构造函数，口径只有一份。
 func (r *knowledgeSearchRepository) SearchLexical(
 	ctx context.Context,
 	query entity.KnowledgeLexicalQuery,
@@ -158,47 +179,59 @@ func (r *knowledgeSearchRepository) SearchLexical(
 		return nil, fmt.Errorf("词法召回的条数上限非法: %d", query.Limit)
 	}
 
-	patterns := make([]string, 0, len(query.Terms))
-	for _, term := range query.Terms {
-		term = strings.TrimSpace(term)
-		if term == "" {
-			continue
-		}
-		// 转义交给 likePattern：% 与 _ 是用户的正文，不是通配符。
-		patterns = append(patterns, likePattern(term))
+	terms, err := cleanLexicalTerms(query.Terms)
+	if err != nil {
+		return nil, err
 	}
-	if len(patterns) == 0 {
+	if len(terms) == 0 {
 		return nil, nil
 	}
-
-	cases := make([]string, len(patterns))
-	for index := range patterns {
-		cases[index] = fmt.Sprintf("CASE WHEN %s ILIKE ? THEN 1 ELSE 0 END", chunkHaystack)
+	phrases, err := cleanLexicalTerms(query.Phrases)
+	if err != nil {
+		return nil, err
 	}
-	hits := "(" + strings.Join(cases, " + ") + ")"
+
+	pairs := make([]lexicalPair, 0, len(terms)+len(phrases))
+	match := make([]string, 0, len(terms))
+	for _, term := range terms {
+		// 转义交给 likePattern：% 与 _ 是用户的正文，不是通配符。
+		pattern := likePattern(term.Text)
+		pairs = append(pairs, lexicalPair{pattern: pattern, weight: term.Weight})
+		match = append(match, pattern)
+	}
+	for _, phrase := range phrases {
+		pairs = append(pairs, lexicalPair{pattern: likePattern(phrase.Text), weight: phrase.Weight})
+	}
 
 	filterClause, filterArgs := chunkFilterClause(query.Filter)
-	statement := fmt.Sprintf(`
-SELECT %s,
-	%s AS raw_score
-FROM knowledge_chunks c
-JOIN knowledge_documents d ON d.id = c.document_id
-WHERE d.enabled
-	AND d.status = ?
-	AND %s > 0%s
-ORDER BY raw_score DESC, c.id ASC
-LIMIT %d`,
-		chunkViewColumns, hits, hits, filterClause, query.Limit)
+	contentRows, err := r.runLexicalCandidate(ctx, chunkTextHaystack, pairs, match, query.Limit, filterClause, filterArgs)
+	if err != nil {
+		return nil, err
+	}
+	titleRows, err := r.runLexicalCandidate(ctx, titleHaystack, pairs, match, query.Limit, filterClause, filterArgs)
+	if err != nil {
+		return nil, err
+	}
+	return mergeLexicalRows(contentRows, titleRows, query.Limit), nil
+}
 
-	// 占位符顺序：SELECT 里的命中数（每词项一个）→ WHERE 里的状态 →
-	// WHERE 里的命中数（同一批模式）→ 过滤参数。过滤条件拼在 WHERE 末尾，
-	// 参数也必须跟着排在最后。
-	args := make([]any, 0, len(patterns)*2+1+len(filterArgs))
-	args = append(args, patternsToArgs(patterns)...)
-	args = append(args, entity.KnowledgeDocumentStatusReady)
-	args = append(args, patternsToArgs(patterns)...)
-	args = append(args, filterArgs...)
+// lexicalPair 是一个匹配模式（已经过 likePattern 转义）与它的权重。
+type lexicalPair struct {
+	pattern string
+	weight  float64
+}
 
+// runLexicalCandidate 执行一条词法候选查询。
+func (r *knowledgeSearchRepository) runLexicalCandidate(
+	ctx context.Context,
+	haystack string,
+	scoring []lexicalPair,
+	match []string,
+	limit int,
+	filterClause string,
+	filterArgs []any,
+) ([]entity.KnowledgeChunkView, error) {
+	statement, args := lexicalStatement(haystack, scoring, match, limit, filterClause, filterArgs)
 	var rows []entity.KnowledgeChunkView
 	if err := r.db.WithContext(ctx).Raw(statement, args...).Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("词法召回查询失败: %w", err)
@@ -206,16 +239,120 @@ LIMIT %d`,
 	return rows, nil
 }
 
-// patternsToArgs 把字符串参数表复制成 any 切片。
+// lexicalStatement 拼一条词法候选查询：命中任意词项的行按加权分降序返回。
 //
-// 同一批模式要在 SELECT 与 WHERE 各出现一次，占位符不能复用同一个参数，
-// 所以参数也要备两份。复制而不是共享底层数组：append 到共享数组上会让两段参数互相踩。
-func patternsToArgs(patterns []string) []any {
-	args := make([]any, len(patterns))
-	for index, pattern := range patterns {
-		args[index] = pattern
+// haystack 决定匹配面（切片正文+章节标题，或文档标题），两条查询共用同一套 CASE
+// 打分与参数顺序。单独成函数是为了让用例能 EXPLAIN **真实的**语句 —— 索引用不用
+// 得上全靠它，抄一份到测试里就成安慰剂了（见 TestSearchLexicalCanUseIndex）。
+//
+// 两处必须分开写，不能图省事共用一份表达式：**WHERE 里必须是普通的 ILIKE 之 OR**，
+// 把打分的 CASE 复制进 WHERE（写成 `CASE ... > 0`）规划器就识别不出可以走索引的
+// 条件，表达式索引静默失效 —— 这条是 EXPLAIN 用例抓出来的。
+//
+// scoring 与 match 也是因此分开的：scoring 含短语（只加分），match 只放词项
+// （准入条件）。短语命中必然蕴含词项命中（短语由词项所在的片段拼成），
+// 所以准入只看词项与"短语只加分"的语义完全一致。
+//
+// 占位符顺序：SELECT 里的 (模式, 权重) 对 → WHERE 里的状态 →
+// WHERE 里的准入模式 → 过滤参数。过滤条件拼在 WHERE 末尾，参数也必须跟着排在最后。
+func lexicalStatement(
+	haystack string,
+	scoring []lexicalPair,
+	match []string,
+	limit int,
+	filterClause string,
+	filterArgs []any,
+) (string, []any) {
+	cases := make([]string, 0, len(scoring))
+	selectArgs := make([]any, 0, len(scoring)*2)
+	for _, pair := range scoring {
+		cases = append(cases, fmt.Sprintf("CASE WHEN %s ILIKE ? THEN ?::float8 ELSE 0 END", haystack))
+		selectArgs = append(selectArgs, pair.pattern, pair.weight)
 	}
-	return args
+	hits := "(" + strings.Join(cases, " + ") + ")"
+
+	matchClauses := make([]string, 0, len(match))
+	for range match {
+		matchClauses = append(matchClauses, haystack+" ILIKE ?")
+	}
+	matchClause := "(" + strings.Join(matchClauses, " OR ") + ")"
+
+	statement := fmt.Sprintf(`
+SELECT %s,
+	%s AS raw_score
+FROM knowledge_chunks c
+JOIN knowledge_documents d ON d.id = c.document_id
+WHERE d.enabled
+	AND d.status = ?
+	AND %s%s
+ORDER BY raw_score DESC, c.id ASC
+LIMIT %d`,
+		chunkViewColumns, hits, matchClause, filterClause, limit)
+
+	args := make([]any, 0, len(selectArgs)+1+len(match)+len(filterArgs))
+	args = append(args, selectArgs...)
+	args = append(args, entity.KnowledgeDocumentStatusReady)
+	for _, pattern := range match {
+		args = append(args, pattern)
+	}
+	args = append(args, filterArgs...)
+	return statement, args
+}
+
+// mergeLexicalRows 合并正文/标题两条候选：同一个切片取较高分。
+//
+// 取最大值而不是相加，是为了保持改造前"拼成一段再匹配"的语义：一个词项在正文与
+// 标题各出现一次，也只算命中一次。再按分数降序、切片 ID 升序截断 —— 与单条 SQL 里
+// ORDER BY raw_score DESC, c.id ASC 同序，同一句检索词的结果可复算。
+func mergeLexicalRows(content, title []entity.KnowledgeChunkView, limit int) []entity.KnowledgeChunkView {
+	if len(title) == 0 {
+		return content
+	}
+
+	merged := make(map[uint64]entity.KnowledgeChunkView, len(content)+len(title))
+	for _, row := range content {
+		merged[row.ChunkID] = row
+	}
+	for _, row := range title {
+		if existing, ok := merged[row.ChunkID]; !ok || row.RawScore > existing.RawScore {
+			merged[row.ChunkID] = row
+		}
+	}
+
+	rows := make([]entity.KnowledgeChunkView, 0, len(merged))
+	for _, row := range merged {
+		rows = append(rows, row)
+	}
+	slices.SortFunc(rows, func(left, right entity.KnowledgeChunkView) int {
+		if difference := cmp.Compare(right.RawScore, left.RawScore); difference != 0 {
+			return difference
+		}
+		return cmp.Compare(left.ChunkID, right.ChunkID)
+	})
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows
+}
+
+// cleanLexicalTerms 去掉空词项并校验权重。
+//
+// 权重非正是本层的硬约定（见 entity.KnowledgeLexicalTerm）：0 会让词项只贡献
+// "入选资格"而不贡献分数，负权重更是会把命中往下压，都是调用方没想清楚，
+// 与其静默修正不如当场报错。
+func cleanLexicalTerms(terms []entity.KnowledgeLexicalTerm) ([]entity.KnowledgeLexicalTerm, error) {
+	out := make([]entity.KnowledgeLexicalTerm, 0, len(terms))
+	for _, term := range terms {
+		text := strings.TrimSpace(term.Text)
+		if text == "" {
+			continue
+		}
+		if term.Weight <= 0 {
+			return nil, fmt.Errorf("词法词项权重非法: %q → %v（必须为正）", text, term.Weight)
+		}
+		out = append(out, entity.KnowledgeLexicalTerm{Text: text, Weight: term.Weight})
+	}
+	return out, nil
 }
 
 // chunkFilterClause 把文档侧的过滤条件拼成两条召回路共用的 SQL 片段与参数。

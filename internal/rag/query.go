@@ -6,6 +6,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"narra/internal/model/entity"
 )
 
 // query.go 检索前的确定性清洗：把调用方送来的检索词统一成"好检索"的形态。
@@ -27,8 +29,10 @@ type queryPlan struct {
 	// 查询扩展（同义变体、多路召回），变体由调用方传入，也不在这层混进来。
 	EmbedText string
 
-	// Terms 给词法路：从 EmbedText 切出的词项，切分规则见 retrieve.go 的 lexicalTerms。
-	Terms []string
+	// Terms / Phrases 给词法路：从 EmbedText 切出的带权词项与短语，
+	// 切分规则见 internal/rag/tokenize（词典分词 + OOV 二元组兜底）。
+	Terms   []entity.KnowledgeLexicalTerm
+	Phrases []entity.KnowledgeLexicalTerm
 }
 
 // buildQueryPlan 把原始检索词加工成两条路各自的输入。
@@ -41,7 +45,8 @@ func buildQueryPlan(raw string) queryPlan {
 	if strings.TrimSpace(content) == "" {
 		content = normalized
 	}
-	return queryPlan{EmbedText: content, Terms: lexicalTerms(content)}
+	lexical := buildLexicalPlan(content)
+	return queryPlan{EmbedText: content, Terms: lexical.Terms, Phrases: lexical.Phrases}
 }
 
 // normalizeQuery 统一字符宽度与空白：

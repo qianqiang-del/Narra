@@ -47,6 +47,12 @@ type EmbeddingModelRepository interface {
 	//
 	// ⚠️ 必须在事务外调用：CREATE INDEX CONCURRENTLY 不能跑在事务块里。
 	EnsureVectorIndex(ctx context.Context, model *entity.EmbeddingModel) error
+
+	// CountVectorsByModel 统计每个已登记模型名下的向量数（没有向量的模型计 0）。
+	//
+	// 它给"向量召回静默为零"的体检提供事实：默认模型下 0 条、其他模型下有，
+	// 是换过默认模型却未重新收录的典型形态（见 rag.VectorRecallHint）。
+	CountVectorsByModel(ctx context.Context) ([]entity.ModelVectorCount, error)
 }
 
 // DimensionsMismatchError 表示同名模型请求的维度与已登记值不一致。

@@ -7,11 +7,13 @@ require (
 	github.com/cloudwego/eino-ext/callbacks/langfuse v0.1.3
 	github.com/eino-contrib/jsonschema v1.0.3
 	github.com/gin-gonic/gin v1.11.0
+	github.com/go-ego/gse v1.1.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hibiken/asynq v0.26.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/spf13/viper v1.21.0
+	github.com/wk8/go-ordered-map/v2 v2.1.8
 	go.uber.org/zap v1.28.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/driver/postgres v1.6.0
@@ -72,7 +74,7 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
-	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
+	github.com/vcaesar/cedar v0.50.0 // indirect
 	github.com/yargevad/filepathx v1.0.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.uber.org/atomic v1.11.0 // indirect

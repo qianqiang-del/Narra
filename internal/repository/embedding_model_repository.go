@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -175,4 +176,22 @@ func countVectors(tx *gorm.DB, modelID uint64) (int64, error) {
 		Where("model_id = ?", modelID).
 		Count(&count).Error
 	return count, err
+}
+
+// CountVectorsByModel 统计每个已登记模型名下的向量数（左连接，没有向量的模型计 0）。
+//
+// 不限定默认模型：体检要同时看到"当前模型下有没有"和"别的模型下还有多少"，
+// 只看默认模型那一行的话，就把"换过模型"与"全库都还没有向量"混成同一种形态了。
+func (r *embeddingModelRepository) CountVectorsByModel(ctx context.Context) ([]entity.ModelVectorCount, error) {
+	var rows []entity.ModelVectorCount
+	err := r.db.WithContext(ctx).Raw(`
+SELECT m.id AS model_id, m.name AS name, count(e.id) AS vectors
+FROM embedding_models m
+LEFT JOIN knowledge_embeddings e ON e.model_id = m.id
+GROUP BY m.id, m.name
+ORDER BY m.id`).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("统计各模型向量数失败: %w", err)
+	}
+	return rows, nil
 }

@@ -453,9 +453,19 @@ type fakeModelRegistry struct {
 	model      *entity.EmbeddingModel
 	ensureCall int
 	findErr    error
+
+	// census 是"各模型向量数"体检的返回值；censusCalls 记录它被问了几次，
+	// 供"零命中体检只做一次"的去重断言使用。
+	census      []entity.ModelVectorCount
+	censusCalls int
 }
 
 var _ ModelRegistry = (*fakeModelRegistry)(nil)
+
+func (r *fakeModelRegistry) CountVectorsByModel(ctx context.Context) ([]entity.ModelVectorCount, error) {
+	r.censusCalls++
+	return r.census, nil
+}
 
 func (r *fakeModelRegistry) EnsureDefault(ctx context.Context, model entity.EmbeddingModel) (*entity.EmbeddingModel, error) {
 	r.ensureCall++

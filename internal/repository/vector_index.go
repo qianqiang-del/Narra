@@ -133,12 +133,12 @@ func (s *halfvecSupport) available(ctx context.Context, db *gorm.DB) bool {
 	return ok
 }
 
-// vectorIndexAction 是 EnsureVectorIndex 对"同名索引"要采取的处置。
-type vectorIndexAction int
+// indexAction 是索引维护对"同名索引"要采取的处置（向量索引与词法索引共用这三态）。
+type indexAction int
 
 const (
 	// indexActionCreate 没有同名索引，正常建。
-	indexActionCreate vectorIndexAction = iota
+	indexActionCreate indexAction = iota
 	// indexActionKeep 已有同名且**有效**的索引，精度与维度也对得上，什么都不用做。
 	indexActionKeep
 	// indexActionRebuild 同名索引在，但不能用，必须删掉重建。
@@ -155,7 +155,7 @@ const (
 // CREATE INDEX CONCURRENTLY 中途失败），而这正是最该被测到的边界 —— 见过一次真实事故：
 // 一次建索引失败留下 indisvalid = false 的空壳占着名字，之后每次 IF NOT EXISTS 都直接跳过，
 // 索引再也建不出来，而且没有任何报错，表现为"检索就是慢，说不出为什么"。
-func vectorIndexDisposition(definition string, valid bool, expression string) vectorIndexAction {
+func vectorIndexDisposition(definition string, valid bool, expression string) indexAction {
 	if strings.TrimSpace(definition) == "" {
 		return indexActionCreate
 	}
