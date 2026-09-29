@@ -112,8 +112,10 @@ func newIntegrationFixture(t *testing.T) (*Controller, repository.TransactionMan
 
 	eventRepo := repository.NewConversationEventRepository(db)
 	conversationRepo := repository.NewConversationRepository(db)
+	classroomRepo := repository.NewClassroomRepository(db)
+	messagesRepo := repository.NewMessageRepository(db)
 	txManager := repository.NewTransactionManager(db)
-	svc := service.NewConversationService(conversationRepo, eventRepo)
+	svc := service.NewConversationService(conversationRepo, classroomRepo, messagesRepo, eventRepo)
 
 	controller := NewController(svc)
 	controller.pollInterval = 20 * time.Millisecond
