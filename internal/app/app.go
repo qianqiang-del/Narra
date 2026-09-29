@@ -369,7 +369,7 @@ func (a *App) initDependencies() error {
 
 	// 对话事件流（SSE）：执行过程与最终结果从 conversation_events 里增量读、推给前端。
 	// 事件的写入不经过服务层 —— 它属于产生内容的那条链路（编排 / 工作台）的事务。
-	conversationSvc := service.NewConversationService(conversationRepo, conversationEventRepo)
+	conversationSvc := service.NewConversationService(conversationRepo, classroomRepo, messageRepo, conversationEventRepo)
 
 	// 多 Agent 讨论（成员 C）：用户发一句话 → 跑一趟讨论，过程写进事件表，
 	// 由上面那条 SSE 流带给前端。

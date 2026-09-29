@@ -2,12 +2,14 @@ package conversation
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	requestdto "narra/internal/model/dto/request"
 	"narra/internal/service"
 	"narra/pkg/response"
 	"narra/pkg/sse"
@@ -60,6 +62,82 @@ func NewController(svc service.ConversationService) *Controller {
 		pollInterval:      defaultEventsPollInterval,
 		heartbeatInterval: defaultEventsHeartbeatInterval,
 	}
+}
+
+func (c *Controller) List(ctx *gin.Context) {
+	id, ok := parseRouteID(ctx, "id")
+	if !ok {
+		return
+	}
+	items, err := c.svc.List(ctx.Request.Context(), id)
+	if err != nil {
+		response.BizError(ctx, err)
+		return
+	}
+	response.Success(ctx, items)
+}
+
+func (c *Controller) Create(ctx *gin.Context) {
+	id, ok := parseRouteID(ctx, "id")
+	if !ok {
+		return
+	}
+	var input requestdto.CreateConversation
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		response.BadRequest(ctx, "请求体格式错误")
+		return
+	}
+	item, err := c.svc.Create(ctx.Request.Context(), id, input)
+	if err != nil {
+		response.BizError(ctx, err)
+		return
+	}
+	response.Success(ctx, item)
+}
+
+func (c *Controller) ListMessages(ctx *gin.Context) {
+	id, ok := parseRouteID(ctx, "id")
+	if !ok {
+		return
+	}
+	after, err := parseNonNegativeQuery(ctx, "after")
+	if err != nil {
+		response.BadRequest(ctx, "after 参数无效")
+		return
+	}
+	limit, err := parseNonNegativeQuery(ctx, "limit")
+	if err != nil {
+		response.BadRequest(ctx, "limit 参数无效")
+		return
+	}
+	items, err := c.svc.ListMessages(ctx.Request.Context(), id, int64(after), limit)
+	if err != nil {
+		response.BizError(ctx, err)
+		return
+	}
+	response.Success(ctx, items)
+}
+
+func parseRouteID(ctx *gin.Context, name string) (uint64, bool) {
+	raw := ctx.Param(name)
+	id, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || id == 0 {
+		response.BadRequest(ctx, "ID 无效")
+		return 0, false
+	}
+	return id, true
+}
+
+func parseNonNegativeQuery(ctx *gin.Context, name string) (int, error) {
+	raw := strings.TrimSpace(ctx.Query(name))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("invalid %s", name)
+	}
+	return value, nil
 }
 
 // Events 用 SSE 推送一条对话的事件流 —— 也就是 Agent 的执行过程与最终结果。
