@@ -140,6 +140,98 @@ func TestNewOpenAIModelsRejectsNilClient(t *testing.T) {
 	}
 }
 
+func TestOpenAIModelsGenerateStreamParsesSplitProtocolAndUsage(t *testing.T) {
+	var gotStream bool
+	var systemPrompt string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body chatStubBody
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotStream = body.Stream
+		if len(body.Messages) > 0 {
+			systemPrompt = body.Messages[0].Content
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		chunks := []string{"<con", "tent>第一", "段", "</content><next_", "action>switch_agent</next_action>"}
+		for _, content := range chunks {
+			payload, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]string{"content": content}}}})
+			fmt.Fprintf(w, "data: %s\n\n", payload)
+			flusher.Flush()
+		}
+		usage, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]string{}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": 13, "completion_tokens": 5}})
+		fmt.Fprintf(w, "data: %s\n\n", usage)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(server.Close)
+	client, err := llm.NewClient(llm.Config{BaseURL: server.URL, Model: "stream-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := NewOpenAIModels(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := models.GenerateStream(context.Background(), GenerationRequest{Participant: testParticipant(), Topic: "主题"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var content strings.Builder
+	var final GenerationChunk
+	for chunk := range stream {
+		if chunk.Err != nil {
+			t.Fatal(chunk.Err)
+		}
+		content.WriteString(chunk.Delta)
+		if chunk.Done {
+			final = chunk
+		}
+	}
+	if !gotStream {
+		t.Error("请求必须启用 stream")
+	}
+	if strings.Contains(systemPrompt, "只返回一个 JSON 对象") || !strings.Contains(systemPrompt, "switch_agent：切换到另一位角色发言") || !strings.Contains(systemPrompt, "<content>发言正文</content>") {
+		t.Errorf("流式提示词应只有标签协议并保留动作语义：%q", systemPrompt)
+	}
+	if content.String() != "第一段" {
+		t.Errorf("content = %q, want 第一段", content.String())
+	}
+	if !final.Done || final.NextAction != "switch_agent" || final.InputTokens != 13 || final.OutputTokens != 5 {
+		t.Errorf("final = %#v, want action and usage", final)
+	}
+}
+
+func TestOpenAIModelsGenerateStreamRejectsIncompleteProtocol(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		payload, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]string{"content": "<content>只有正文"}}}})
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", payload)
+	}))
+	t.Cleanup(server.Close)
+	client, err := llm.NewClient(llm.Config{BaseURL: server.URL, Model: "stream-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := NewOpenAIModels(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := models.GenerateStream(context.Background(), GenerationRequest{Participant: testParticipant(), Topic: "主题"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamErr error
+	for chunk := range stream {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr == nil || !strings.Contains(streamErr.Error(), "生成讨论发言失败") {
+		t.Fatalf("stream error = %v, want wrapped protocol error", streamErr)
+	}
+}
+
 // ---- Generate ----
 
 // TestOpenAIModelsGenerateSendsRequest 验证发言请求：地址、鉴权、模型、两条消息的内容。

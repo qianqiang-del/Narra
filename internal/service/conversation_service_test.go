@@ -87,6 +87,7 @@ func (r *conversationTestMessages) ListByConversation(_ context.Context, _ uint6
 func (r *conversationTestMessages) CountByConversation(context.Context, uint64) (int64, error) {
 	return 0, nil
 }
+func (r *conversationTestMessages) FailStreamingByRun(context.Context, uint64) error { return nil }
 
 type conversationTestEvents struct{}
 

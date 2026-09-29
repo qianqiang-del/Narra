@@ -43,7 +43,7 @@ func (r *conversationRepository) ListByClassroom(ctx context.Context, classroomI
 	var conversations []entity.ClassroomConversation
 	err := conn(ctx, r.db).
 		Where("classroom_id = ?", classroomID).
-		Order("id DESC").
+		Order("last_message_at DESC NULLS LAST, id DESC").
 		Limit(normalizeLimit(limit)).
 		Find(&conversations).Error
 	return conversations, err

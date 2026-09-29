@@ -26,6 +26,8 @@ const props = defineProps<{
   /** null = 空态（尚未选择对话） */
   title: string | null
   messages: ChatMessage[]
+  error?: string | null
+  sending?: boolean
   /** 折叠按钮只有存在其他面板时才给 */
   collapsible?: boolean
 }>()
@@ -34,6 +36,7 @@ const emit = defineEmits<{
   (e: 'collapse'): void
   (e: 'open-course', courseId: string): void
   (e: 'send', text: string): void
+  (e: 'retry'): void
 }>()
 
 const { t } = useI18n()
@@ -89,7 +92,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
 
 function send() {
   const text = draft.value.trim()
-  if (!text) return
+  if (!text || props.sending) return
   emit('send', text)
   draft.value = ''
 }
@@ -120,6 +123,11 @@ watch(
         <PanelLeftClose class="size-4" />
       </button>
     </header>
+
+    <div v-if="error" class="flex items-center gap-2 border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+      <span class="min-w-0 flex-1 break-words">{{ error }}</span>
+      <button type="button" class="shrink-0 underline" @click="emit('retry')">重试</button>
+    </div>
 
     <!-- 消息流 -->
     <div ref="scrollRef" class="min-h-0 flex-1 overflow-y-auto">
@@ -194,6 +202,7 @@ watch(
         <textarea
           v-model="draft"
           rows="2"
+          :disabled="sending"
           :placeholder="t('workspace.composerPlaceholder')"
           class="max-h-32 min-h-11 w-full resize-none bg-transparent px-3.5 pt-3 text-[13px] leading-5 outline-none placeholder:text-muted-foreground/70"
           @keydown.enter.exact.prevent="send"
@@ -231,7 +240,7 @@ watch(
           <div class="flex-1" />
           <button
             type="button"
-            :disabled="!draft.trim()"
+            :disabled="!draft.trim() || sending"
             :title="t('workspace.send')"
             class="flex size-7 items-center justify-center rounded-full bg-violet-600 text-white transition-all hover:bg-violet-700 disabled:opacity-30"
             @click="send"

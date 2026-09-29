@@ -299,6 +299,105 @@ func (f *fixture) newOrchestrator(t *testing.T, model Model) *Orchestrator {
 	return f.newOrchestratorWith(t, model, RoundRobinDirector{})
 }
 
+type integrationStreamingModel struct {
+	mu    sync.Mutex
+	calls int
+	fail  bool
+}
+
+func (m *integrationStreamingModel) Generate(context.Context, GenerationRequest) (GenerationResponse, error) {
+	return GenerationResponse{}, fmt.Errorf("非预期地走了非流式路径")
+}
+
+func (m *integrationStreamingModel) GenerateStream(context.Context, GenerationRequest) (<-chan GenerationChunk, error) {
+	m.mu.Lock()
+	m.calls++
+	call := m.calls
+	m.mu.Unlock()
+	chunks := make(chan GenerationChunk, 3)
+	chunks <- GenerationChunk{Delta: fmt.Sprintf("第%d段", call)}
+	if m.fail {
+		chunks <- GenerationChunk{Err: fmt.Errorf("模拟流中断")}
+	} else {
+		action := entity.AgentTurnActionEnd
+		if call == 1 {
+			action = entity.AgentTurnActionSwitchAgent
+		}
+		chunks <- GenerationChunk{Delta: "正文", Done: true, NextAction: action, InputTokens: 3, OutputTokens: 4}
+	}
+	close(chunks)
+	return chunks, nil
+}
+
+func TestOrchestratorStreamsDeltasAndCompletesMessage(t *testing.T) {
+	f := newFixture(t)
+	defer f.cleanup()
+	model := &integrationStreamingModel{}
+	orchestrator := f.newOrchestrator(t, model)
+	result, err := orchestrator.Run(context.Background(), Request{ConversationID: f.conversation.ID, TriggerMessageID: f.trigger.ID, Participants: f.participants[:2], MaxTurns: 2})
+	if err != nil {
+		t.Fatalf("流式讨论失败: %v", err)
+	}
+	messages, err := f.messages.ListByConversation(context.Background(), f.conversation.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 3 || messages[1].Status != entity.MessageStatusCompleted || messages[1].Content != "第1段正文" {
+		t.Fatalf("messages = %#v, want completed streamed content", messages)
+	}
+	events, err := f.events.ListAfter(context.Background(), f.conversation.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types []string
+	for _, event := range events {
+		if event.RunID != nil && *event.RunID == result.RunID {
+			types = append(types, event.EventType)
+		}
+	}
+	if countEvent(types, entity.ConversationEventMessageDelta) != 4 {
+		t.Errorf("message.delta count = %d, want 4", countEvent(types, entity.ConversationEventMessageDelta))
+	}
+	if countEvent(types, entity.ConversationEventMessageCompleted) != 2 || countEvent(types, entity.ConversationEventAgentCompleted) != 2 {
+		t.Errorf("completion events = %#v, want two each", types)
+	}
+}
+
+func TestOrchestratorMarksInterruptedStreamFailedWithoutCompletion(t *testing.T) {
+	f := newFixture(t)
+	defer f.cleanup()
+	orchestrator := f.newOrchestrator(t, &integrationStreamingModel{fail: true})
+	if _, err := orchestrator.Run(context.Background(), Request{ConversationID: f.conversation.ID, TriggerMessageID: f.trigger.ID, Participants: f.participants[:1], MaxTurns: 1}); err == nil {
+		t.Fatal("流中断时应返回错误")
+	}
+	messages, err := f.messages.ListByConversation(context.Background(), f.conversation.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[1].Status != entity.MessageStatusFailed || messages[1].Content != "第1段" {
+		t.Fatalf("messages = %#v, want failed message retaining first delta", messages)
+	}
+	events, err := f.events.ListAfter(context.Background(), f.conversation.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.EventType == entity.ConversationEventMessageCompleted || event.EventType == entity.ConversationEventAgentCompleted {
+			t.Fatalf("流中断不应写完成事件：%s", event.EventType)
+		}
+	}
+}
+
+func countEvent(types []string, want string) int {
+	count := 0
+	for _, item := range types {
+		if item == want {
+			count++
+		}
+	}
+	return count
+}
+
 // TestOrchestratorRunsFullDiscussion 验证整条链路：全员说完 → 自然收尾。
 func TestOrchestratorRunsFullDiscussion(t *testing.T) {
 	f := newFixture(t)
@@ -629,6 +728,18 @@ func (failingModel) Generate(_ context.Context, _ GenerationRequest) (Generation
 	return GenerationResponse{}, fmt.Errorf("模拟模型故障")
 }
 
+type panicModel struct{}
+
+func (panicModel) Generate(context.Context, GenerationRequest) (GenerationResponse, error) {
+	panic("模型替身 panic")
+}
+
+type panicExtractor struct{}
+
+func (panicExtractor) Extract(context.Context, []HistoryMessage) ([]MemoryCandidate, error) {
+	panic("记忆提炼 panic")
+}
+
 // TestOrchestratorMarksFailure 验证失败时留下可查的痕迹。
 //
 // 这一条比"跑通"更重要：真实环境里模型超时、网络抖动都会走到这里，
@@ -696,6 +807,78 @@ func TestOrchestratorMarksFailure(t *testing.T) {
 	}
 	if len(messages) != 1 {
 		t.Errorf("消息数 = %d，期望 1（只有用户那条）", len(messages))
+	}
+}
+
+// TestOrchestratorRecoversAfterRunStarted verifies a panic cannot leave a run
+// stuck in running without a terminal event for the SSE consumer.
+func TestOrchestratorRecoversAfterRunStarted(t *testing.T) {
+	f := newFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	orchestrator := f.newOrchestrator(t, panicModel{})
+	result, err := orchestrator.Run(ctx, Request{
+		ConversationID:   f.conversation.ID,
+		TriggerMessageID: f.trigger.ID,
+		Participants:     f.participants[:1],
+	})
+	if err == nil {
+		t.Fatal("模型 panic 时应返回错误")
+	}
+	if result.RunID == 0 {
+		t.Fatal("模型 panic 后应返回已创建的运行 ID")
+	}
+
+	run, err := f.runs.FindByID(ctx, result.RunID)
+	if err != nil {
+		t.Fatalf("查询运行失败: %v", err)
+	}
+	if run.Status != entity.RunStatusFailed {
+		t.Fatalf("运行状态 = %q，期望 failed", run.Status)
+	}
+	turns, err := f.turns.ListByRun(ctx, result.RunID)
+	if err != nil {
+		t.Fatalf("查询回合失败: %v", err)
+	}
+	if len(turns) != 1 || turns[0].Status != entity.AgentTurnStatusFailed {
+		t.Fatalf("panic 后回合应标为 failed，实际 %+v", turns)
+	}
+
+	events, err := f.events.ListAfter(ctx, f.conversation.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if got := len(onlyOf(events, entity.ConversationEventRunFailed)); got != 1 {
+		t.Fatalf("run.failed 事件数 = %d，期望 1", got)
+	}
+}
+
+func TestOrchestratorKeepsCompletedRunWhenMemoryExtractionPanics(t *testing.T) {
+	f := newFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+	orchestrator := f.newOrchestrator(t, FakeModel{})
+	orchestrator.deps.Extractor = panicExtractor{}
+
+	result, _ := orchestrator.Run(ctx, Request{
+		ConversationID:   f.conversation.ID,
+		TriggerMessageID: f.trigger.ID,
+		Participants:     f.participants[:1],
+	})
+	run, err := f.runs.FindByID(ctx, result.RunID)
+	if err != nil {
+		t.Fatalf("查询运行失败: %v", err)
+	}
+	if run.Status != entity.RunStatusCompleted {
+		t.Fatalf("已完成的讨论不能被记忆提炼 panic 覆盖为 %q", run.Status)
+	}
+	events, err := f.events.ListAfter(ctx, f.conversation.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("查询事件失败: %v", err)
+	}
+	if got := len(onlyOf(events, entity.ConversationEventRunFailed)); got != 0 {
+		t.Fatalf("已完成运行不应补 run.failed，实际 %d 条", got)
 	}
 }
 

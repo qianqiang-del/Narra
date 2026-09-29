@@ -107,3 +107,21 @@ func (r *runRepository) ListByConversation(ctx context.Context, conversationID u
 		Find(&runs).Error
 	return runs, err
 }
+
+func (r *runRepository) ListUnfinished(ctx context.Context) ([]entity.OrchestrationRun, error) {
+	var runs []entity.OrchestrationRun
+	err := conn(ctx, r.db).
+		Where("status IN ?", []string{entity.RunStatusQueued, entity.RunStatusRunning}).
+		Order("id ASC").Find(&runs).Error
+	return runs, err
+}
+
+func (r *runRepository) FailUnfinished(ctx context.Context, id uint64, message string, finishedAt time.Time) (bool, error) {
+	result := conn(ctx, r.db).Model(&entity.OrchestrationRun{}).
+		Where("id = ? AND status IN ?", id, []string{entity.RunStatusQueued, entity.RunStatusRunning}).
+		Updates(map[string]any{
+			"status": entity.RunStatusFailed, "stop_reason": entity.RunStopError,
+			"error_message": message, "finished_at": finishedAt,
+		})
+	return result.RowsAffected != 0, result.Error
+}

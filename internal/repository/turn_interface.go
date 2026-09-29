@@ -45,4 +45,7 @@ type TurnRepository interface {
 
 	// CountByRun 统计运行内已产生的回合数，供最大回合数判断使用。
 	CountByRun(ctx context.Context, runID uint64) (int64, error)
+
+	// FailUnfinishedByRun 收尾异常重启前尚未完成的回合，不覆盖已完成的回合。
+	FailUnfinishedByRun(ctx context.Context, runID uint64, message string, finishedAt time.Time) error
 }

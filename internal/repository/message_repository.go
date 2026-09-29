@@ -88,6 +88,14 @@ func (r *messageRepository) Finish(ctx context.Context, id uint64, status string
 		}).Error
 }
 
+func (r *messageRepository) FailStreamingByRun(ctx context.Context, runID uint64) error {
+	outputIDs := conn(ctx, r.db).Model(&entity.AgentTurn{}).
+		Select("output_message_id").Where("run_id = ? AND output_message_id IS NOT NULL", runID)
+	return conn(ctx, r.db).Model(&entity.ConversationMessage{}).
+		Where("id IN (?) AND status = ?", outputIDs, entity.MessageStatusStreaming).
+		Update("status", entity.MessageStatusFailed).Error
+}
+
 func (r *messageRepository) FindByID(ctx context.Context, id uint64) (*entity.ConversationMessage, error) {
 	var message entity.ConversationMessage
 	if err := conn(ctx, r.db).First(&message, id).Error; err != nil {

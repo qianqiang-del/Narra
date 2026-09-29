@@ -32,6 +32,7 @@ const props = defineProps<{
   bubbles: Bubble[]
   speaking: 'teacher' | 'agent' | null
   thinking: boolean
+  busy?: boolean
   yourTurn: boolean
   recording: boolean
   /** 学员参与者（教师另行在左列展示） */
@@ -79,7 +80,7 @@ const resolvedUserAvatar = computed(() => props.userAvatar || profileStore.profi
 
 function submit() {
   const text = draft.value.trim()
-  if (!text) return
+  if (!text || props.busy) return
   emit('send', text)
   draft.value = ''
   nextTick(() => inputRef.value?.focus())
@@ -315,7 +316,7 @@ onBeforeUnmount(stopRecognition)
               <button
                 type="button"
                 class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-purple-600 text-white transition-colors hover:bg-purple-700 disabled:opacity-40"
-                :disabled="!draft.trim()"
+                :disabled="!draft.trim() || busy"
                 @click="submit"
               >
                 <Send class="size-4" />

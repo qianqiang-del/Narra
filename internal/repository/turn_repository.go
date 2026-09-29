@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -117,4 +118,12 @@ func (r *turnRepository) CountByRun(ctx context.Context, runID uint64) (int64, e
 		Where("run_id = ?", runID).
 		Count(&count).Error
 	return count, err
+}
+
+func (r *turnRepository) FailUnfinishedByRun(ctx context.Context, runID uint64, message string, finishedAt time.Time) error {
+	return conn(ctx, r.db).Model(&entity.AgentTurn{}).
+		Where("run_id = ? AND status IN ?", runID, []string{entity.AgentTurnStatusScheduled, entity.AgentTurnStatusRunning}).
+		Updates(map[string]any{
+			"status": entity.AgentTurnStatusFailed, "error_message": message, "finished_at": finishedAt,
+		}).Error
 }

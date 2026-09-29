@@ -4,7 +4,7 @@
  * Tabs：笔记（lecture）/ 对话（chat）。空态 + 会话卡。
  */
 import { useI18n } from 'vue-i18n'
-import { BookOpen, MessageSquare, PanelRightClose, PanelRightOpen } from 'lucide-vue-next'
+import { BookOpen, MessageSquare, PanelRightClose, PanelRightOpen, Plus } from 'lucide-vue-next'
 
 import { cn } from '@/lib/utils'
 import { registerAudio } from '@/lib/audioPlayback'
@@ -25,6 +25,7 @@ const emit = defineEmits<{
   (e: 'toggle-collapse'): void
   (e: 'resize-start', ev: MouseEvent): void
   (e: 'open-session', id: string): void
+  (e: 'new-session'): void
   (e: 'audio-state', playing: boolean): void
   (e: 'audio-caption', payload: { id: string; text: string }): void
 }>()
@@ -95,6 +96,16 @@ const TYPE_BADGE: Record<ChatSession['type'], string> = {
           />
         </button>
       </div>
+
+      <button
+        type="button"
+        :title="t('workspace.newSession')"
+        :aria-label="t('workspace.newSession')"
+        class="shrink-0 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800"
+        @click="emit('new-session')"
+      >
+        <Plus class="size-4" />
+      </button>
 
       <button
         type="button"

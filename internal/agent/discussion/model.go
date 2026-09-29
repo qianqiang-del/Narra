@@ -18,6 +18,26 @@ type Model interface {
 	Generate(ctx context.Context, request GenerationRequest) (GenerationResponse, error)
 }
 
+// StreamingModel 是 Model 的可选流式能力。
+//
+// 编排器通过类型断言启用它，因此旧模型（包括 FakeModel）无需改变即可继续工作。
+type StreamingModel interface {
+	GenerateStream(ctx context.Context, request GenerationRequest) (<-chan GenerationChunk, error)
+}
+
+// GenerationChunk 是一次发言的流式增量。
+//
+// Delta 只包含可展示的正文；Done=true 的最后一块携带动作和 token 用量。
+// Err 表示上游中断或协议解析失败，此时调用方不得把本轮标记为完成。
+type GenerationChunk struct {
+	Delta        string
+	NextAction   string
+	InputTokens  int32
+	OutputTokens int32
+	Done         bool
+	Err          error
+}
+
 // Summarizer 是"把一段老对话压成一段短话"的能力。
 //
 // 单独开一个接口，而不是复用 Model：Generate 的返回里带着"下一步动作"，
