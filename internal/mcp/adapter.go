@@ -133,6 +133,10 @@ func callTool(ctx context.Context, manager *Manager, name string, arguments json
 }
 
 // retryableToolError 判断工具调用错误是否属于值得重试一次的临时故障。
+//
+// 判定的结果有两个去处：调用方要不要再试一次，以及 Manager 要不要把这条连接作废
+// （见 Manager.CallTool）。所以只认连接级的故障，工具自己报的错（结果过大、工具返回
+// isError）不算——那些换一条连接也没用。
 func retryableToolError(err error) bool {
 	if err == nil {
 		return false
@@ -140,7 +144,12 @@ func retryableToolError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	// 会话在服务端已经不存在，重连一次就能拿到新会话，属于该重试的临时故障。
+	if errors.Is(err, sdk.ErrSessionMissing) {
+		return true
+	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "deadline") || strings.Contains(text, "timeout") ||
-		strings.Contains(text, "connection") || strings.Contains(text, "eof")
+		strings.Contains(text, "connection") || strings.Contains(text, "eof") ||
+		strings.Contains(text, "session not found")
 }

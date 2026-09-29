@@ -223,6 +223,10 @@ func (m *Manager) ListTools() []ToolDescriptor {
 }
 
 // CallTool 根据命名空间 ID 找到对应 server 并发起工具调用。
+//
+// 连接级失败（超时、连接断了、会话在服务端没了）之后把这条连接作废：它可能已经半死，
+// 或者已经被 SDK 标记为永久失败，留着只会让后续每一次调用都赔上同一个超时。
+// 作废后下一次调用会重新建连并重新初始化会话，恢复不再靠运气。
 func (m *Manager) CallTool(ctx context.Context, id string, arguments json.RawMessage) (*sdk.CallToolResult, error) {
 	m.mu.RLock()
 	registry := m.registry
@@ -235,7 +239,41 @@ func (m *Manager) CallTool(ctx context.Context, id string, arguments json.RawMes
 	if err != nil {
 		return nil, err
 	}
-	return client.CallTool(ctx, descriptor.RemoteName, arguments)
+	result, err := client.CallTool(ctx, descriptor.RemoteName, arguments)
+	if err != nil && retryableToolError(err) {
+		m.invalidate(descriptor.ServerID)
+	}
+	return result, err
+}
+
+// invalidate 忘掉指定 server 的连接，下一次调用会重新建连。
+//
+// 关闭旧连接放到后台：SDK 的 Close 会尽力发一次 DELETE 终止会话，最长可能等
+// closeDeleteTimeout（5s），不该让调用路径陪它等。关不掉也只是服务端多留一个
+// 空闲会话，不影响本进程继续重连。
+func (m *Manager) invalidate(id string) {
+	m.mu.Lock()
+	state, ok := m.servers[id]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	client := state.client
+	state.client = nil
+	state.status = StatusUnknown
+	state.lastError = nil
+	state.retryAfter = time.Time{}
+	m.mu.Unlock()
+
+	if client == nil {
+		return
+	}
+	logger.Warn("MCP 连接已作废，下次调用重新建连", zap.String("server", id))
+	go func() {
+		if err := client.Close(); err != nil {
+			logger.Warn("关闭失效的 MCP 连接失败", zap.String("server", id), zap.Error(err))
+		}
+	}()
 }
 
 // Status 查询指定 server 的连接状态。

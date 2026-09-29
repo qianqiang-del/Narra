@@ -3,11 +3,15 @@ package classroom
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/cloudwego/eino/callbacks"
+	"github.com/cloudwego/eino/components"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
@@ -169,6 +173,61 @@ func (r *runtime) generateToolCall(ctx context.Context, messages []*schema.Messa
 		return "", fmt.Errorf("模型没有调用 %s 交卷", info.Name)
 	}
 	return arguments, nil
+}
+
+// streamCompletion 调一次流式生成，把整段增量拼成完整文本。
+//
+// 交互页要输出一份完整 HTML，属于长回答；非流式的 Chat 会把"发请求 + 读完整个响应体"
+// 一起框进 Provider 的超时（默认 60s），长文档常在读 body 时被掐断，报
+// "读取服务响应失败: context deadline exceeded"。流式没有那个固定死线，时限只由 ctx 决定，
+// 长文档因此不再被 60s 卡死。流中途出错按原样返回错误，半截文本由调用方丢弃。
+//
+// 本函数跑在图节点（Lambda）内部，节点自带的 RunInfo 是 Lambda；框架只在图节点上自动
+// 注入回调，手动调模型不会被登记。这里用 ReuseHandlers 把 RunInfo 换成 ChatModel 身份、
+// 同时保留 ctx 里已注册的 langfuse handler，这次调用才会作为一条 GENERATION 进观测。
+// 注意不能用 EnsureRunInfo——它发现 runInfo 已存在就原样返回，换不掉身份。
+func (r *runtime) streamCompletion(ctx context.Context, messages []*schema.Message) (string, error) {
+	runCtx := callbacks.ReuseHandlers(ctx, &callbacks.RunInfo{
+		Type:      "NarraOpenAI",
+		Component: components.ComponentOfChatModel,
+	})
+	runCtx = callbacks.OnStart(runCtx, &model.CallbackInput{Messages: messages})
+
+	stream, err := r.chatModel.Stream(runCtx, messages)
+	if err != nil {
+		callbacks.OnError(runCtx, err)
+		return "", err
+	}
+	defer stream.Close()
+
+	var builder strings.Builder
+	var usage *schema.TokenUsage
+	for {
+		chunk, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			callbacks.OnError(runCtx, err)
+			return "", err
+		}
+		if chunk != nil {
+			builder.WriteString(chunk.Content)
+			if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
+				usage = chunk.ResponseMeta.Usage
+			}
+		}
+	}
+
+	result := builder.String()
+	callbacks.OnEnd(runCtx, &model.CallbackOutput{
+		Message: &schema.Message{
+			Role:         schema.Assistant,
+			Content:      result,
+			ResponseMeta: &schema.ResponseMeta{Usage: usage},
+		},
+	})
+	return result, nil
 }
 
 // allowForcedToolChoice 报告本 Provider 是否还能用强制工具调用。
