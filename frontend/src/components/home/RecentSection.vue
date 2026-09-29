@@ -1,19 +1,18 @@
 <script setup lang="ts">
 /**
- * RecentSection —— 文档 §5.7「最近学习」折叠区。
+ * RecentSection —— 文档 §5.7「我的课堂」。
  *
- * 收起时是一条居中的分隔线触发条；展开后渲染面包屑 + 卡片网格。
- * 支持：文件夹下钻、搜索、新建文件夹、导入（课堂 / PPTX 占位）。
+ * 常驻首页、不折叠；卡片网格每页 10 门课，翻页在本地做（列表一次拉全）。
+ * 支持：文件夹下钻、搜索、新建文件夹。
  */
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronDown, ChevronRight, Clock, FolderPlus, Search, X } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Clock, FolderPlus, Search, X } from 'lucide-vue-next'
 
 import ClassroomCard from '@/components/home/ClassroomCard.vue'
 import FolderCard from '@/components/home/FolderCard.vue'
 import NewFolderDialog from '@/components/home/NewFolderDialog.vue'
 import { useLibraryStore } from '@/stores/library'
-import { cn } from '@/lib/utils'
 
 const emit = defineEmits<{
   (e: 'open-classroom', id: string): void
@@ -23,18 +22,21 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const library = useLibraryStore()
 
-const expanded = ref(false)
+/** 每页课堂数 */
+const PAGE_SIZE = 10
+
 const currentFolderId = ref<string | null>(null)
 const searchOpen = ref(false)
 const keyword = ref('')
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const newFolderOpen = ref(false)
+const page = ref(1)
 
 const currentFolder = computed(() =>
   currentFolderId.value ? library.folders.find((f) => f.id === currentFolderId.value) : null,
 )
 
-/** 折叠区标题旁的数量 */
+/** 标题旁的数量 */
 const totalCount = computed(() => library.classrooms.length)
 
 const searching = computed(() => keyword.value.trim().length > 0)
@@ -59,10 +61,21 @@ const searchResults = computed(() => {
   return library.classrooms.filter((c) => c.name.toLowerCase().includes(kw))
 })
 
+/** 参与分页的那一列：搜索时是全部命中，否则是当前目录下的课堂 */
+const listedClassrooms = computed(() => (searching.value ? searchResults.value : visibleClassrooms.value))
+
+const pageCount = computed(() => Math.max(1, Math.ceil(listedClassrooms.value.length / PAGE_SIZE)))
+
+/** 本页要渲染的课堂。文件夹不参与分页 —— 它们数量少，且属于列表上方另一层结构 */
+const pagedClassrooms = computed(() => {
+  const start = (page.value - 1) * PAGE_SIZE
+  return listedClassrooms.value.slice(start, start + PAGE_SIZE)
+})
+
 const gridsEmpty = computed(() =>
   searching.value
-    ? searchResults.value.length === 0 && visibleClassrooms.value.length === 0
-    : visibleClassrooms.value.length === 0 && visibleFolders.value.length === 0,
+    ? listedClassrooms.value.length === 0
+    : listedClassrooms.value.length === 0 && visibleFolders.value.length === 0,
 )
 
 const emptyText = computed(() => {
@@ -71,18 +84,18 @@ const emptyText = computed(() => {
   return t('home.noCourses')
 })
 
-function toggleExpand() {
-  expanded.value = !expanded.value
-  if (!expanded.value) {
-    currentFolderId.value = null
-    keyword.value = ''
-    searchOpen.value = false
-  }
+// 换目录或换搜索词就回到第一页：留在旧页码上会落在一个已经不存在的页
+watch([currentFolderId, keyword], () => { page.value = 1 })
+
+// 删到当前页空了（最后一页被删空）时向前收一页，别停在空白页
+watch(pageCount, (count) => { if (page.value > count) page.value = count })
+
+function goToPage(next: number) {
+  page.value = Math.min(Math.max(next, 1), pageCount.value)
 }
 
 function openFolder(id: string) {
   currentFolderId.value = id
-  if (!expanded.value) expanded.value = true
 }
 
 function backToRoot() {
@@ -112,17 +125,13 @@ function onCopied() {
 
 <template>
   <div class="relative z-10 mt-10 flex w-full max-w-6xl flex-col items-center">
-    <!-- 分隔线触发条 -->
-    <div class="group flex h-9 w-full items-center gap-4">
-      <div class="h-px flex-1 bg-border/40 transition-colors group-hover:bg-border/70" />
+    <!-- 分隔线标题条：常驻展示，不再折叠 -->
+    <div class="flex h-9 w-full items-center gap-4">
+      <div class="h-px flex-1 bg-border/40" />
 
       <div class="flex shrink-0 items-center gap-3 text-[13px] text-muted-foreground/60 select-none">
         <!-- 标题 / 面包屑 -->
-        <button
-          type="button"
-          class="flex items-center gap-1.5 transition-colors hover:text-foreground/80"
-          @click="toggleExpand"
-        >
+        <div class="flex items-center gap-1.5">
           <Clock class="size-3.5" />
           <span>{{ t('home.recentClassrooms') }}</span>
           <ChevronRight v-if="currentFolder" class="size-3 opacity-50" />
@@ -130,8 +139,7 @@ function onCopied() {
           <span class="text-[11px] tabular-nums opacity-60">
             {{ searching ? searchResults.length : totalCount }}
           </span>
-          <ChevronDown :class="cn('size-3.5 transition-transform duration-200', expanded && 'rotate-180')" />
-        </button>
+        </div>
 
         <!-- 搜索切换 -->
         <div class="flex items-center">
@@ -175,82 +183,88 @@ function onCopied() {
         </button>
       </div>
 
-      <div class="h-px flex-1 bg-border/40 transition-colors group-hover:bg-border/70" />
+      <div class="h-px flex-1 bg-border/40" />
     </div>
 
-    <!-- 展开内容 -->
-    <Transition
-      enter-active-class="transition-[height,opacity] duration-[400ms] ease-out overflow-hidden"
-      enter-from-class="h-0 opacity-0"
-      enter-to-class="h-auto opacity-100"
-      leave-active-class="transition-[height,opacity] duration-300 ease-in overflow-hidden"
-      leave-from-class="h-auto opacity-100"
-      leave-to-class="h-0 opacity-0"
-    >
-      <div v-if="expanded" class="w-full overflow-hidden">
-        <!-- 空态 -->
-        <div v-if="gridsEmpty" class="pt-8 pb-2 text-center text-[13px] text-muted-foreground/60">
-          {{ emptyText }}
+    <!-- 列表 -->
+    <div class="w-full">
+      <!-- 空态 -->
+      <div v-if="gridsEmpty" class="pt-8 pb-2 text-center text-[13px] text-muted-foreground/60">
+        {{ emptyText }}
+      </div>
+
+      <div v-else class="pt-8">
+        <!-- 面包屑（搜索时） -->
+        <div v-if="searching" class="-mt-3 mb-4 text-center text-[12px] text-muted-foreground/50">
+          {{ t('home.searchResultTitle') }}
+        </div>
+        <div v-else-if="currentFolder" class="-mt-3 mb-4 flex items-center justify-center gap-1.5 text-[12px] text-muted-foreground/50">
+          <button type="button" class="transition-colors hover:text-foreground/80" @click="backToRoot">
+            {{ t('home.recentClassrooms') }}
+          </button>
+          <ChevronRight class="size-3 opacity-50" />
+          <span class="text-foreground/70">{{ currentFolder.name }}</span>
         </div>
 
-        <div v-else class="pt-8">
-          <!-- 面包屑（搜索时） -->
-          <div v-if="searching" class="-mt-3 mb-4 text-center text-[12px] text-muted-foreground/50">
-            {{ t('home.searchResultTitle') }}
-          </div>
-          <div v-else-if="currentFolder" class="-mt-3 mb-4 flex items-center justify-center gap-1.5 text-[12px] text-muted-foreground/50">
-            <button type="button" class="transition-colors hover:text-foreground/80" @click="backToRoot">
-              {{ t('home.recentClassrooms') }}
-            </button>
-            <ChevronRight class="size-3 opacity-50" />
-            <span class="text-foreground/70">{{ currentFolder.name }}</span>
-          </div>
+        <!-- 网格 -->
+        <div class="grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-3 lg:grid-cols-4">
+          <template v-if="!searching">
+            <FolderCard
+              v-for="f in visibleFolders"
+              :key="f.id"
+              :folder="f"
+              :courses="library.inFolder(f.id)"
+              @open="openFolder"
+              @rename="library.renameFolder"
+              @delete-only="library.deleteFolderOnly"
+              @delete-with-courses="library.deleteFolderWithCourses"
+              @drop-course="(classroomId, folderId) => library.moveClassroom(classroomId, folderId)"
+            />
+          </template>
+          <ClassroomCard
+            v-for="c in pagedClassrooms"
+            :key="c.id"
+            :classroom="c"
+            :folders="library.folders"
+            @open="emit('open-classroom', $event)"
+            @rename="library.renameClassroom"
+            @delete="library.deleteClassroom"
+            @move="library.moveClassroom"
+            @copied="onCopied"
+          />
+        </div>
 
-          <!-- 网格 -->
-          <div class="grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-3 lg:grid-cols-4">
-            <!-- 搜索模式：平铺结果 -->
-            <template v-if="searching">
-              <ClassroomCard
-                v-for="c in searchResults"
-                :key="c.id"
-                :classroom="c"
-                :folders="library.folders"
-                @open="emit('open-classroom', $event)"
-                @rename="library.renameClassroom"
-                @delete="library.deleteClassroom"
-                @move="library.moveClassroom"
-                @copied="onCopied"
-              />
-            </template>
+        <!-- 翻页：只有一页时不出现，别给一个点不动的控件 -->
+        <div
+          v-if="pageCount > 1"
+          class="mt-9 flex items-center justify-center gap-4 text-[12px] text-muted-foreground/70"
+        >
+          <button
+            type="button"
+            class="inline-flex h-7 items-center gap-1 rounded-full border border-border/50 px-3 transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/70"
+            :disabled="page <= 1"
+            @click="goToPage(page - 1)"
+          >
+            <ChevronLeft class="size-3.5" />
+            {{ t('home.prevPage') }}
+          </button>
 
-            <template v-else>
-              <FolderCard
-                v-for="f in visibleFolders"
-                :key="f.id"
-                :folder="f"
-                :courses="library.inFolder(f.id)"
-                @open="openFolder"
-                @rename="library.renameFolder"
-                @delete-only="library.deleteFolderOnly"
-                @delete-with-courses="library.deleteFolderWithCourses"
-                @drop-course="(classroomId, folderId) => library.moveClassroom(classroomId, folderId)"
-              />
-              <ClassroomCard
-                v-for="c in visibleClassrooms"
-                :key="c.id"
-                :classroom="c"
-                :folders="library.folders"
-                @open="emit('open-classroom', $event)"
-                @rename="library.renameClassroom"
-                @delete="library.deleteClassroom"
-                @move="library.moveClassroom"
-                @copied="onCopied"
-              />
-            </template>
-          </div>
+          <span class="tabular-nums">
+            {{ t('home.pageIndicator', { page: page, total: pageCount }) }}
+          </span>
+
+          <button
+            type="button"
+            class="inline-flex h-7 items-center gap-1 rounded-full border border-border/50 px-3 transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/70"
+            :disabled="page >= pageCount"
+            @click="goToPage(page + 1)"
+          >
+            {{ t('home.nextPage') }}
+            <ChevronRight class="size-3.5" />
+          </button>
         </div>
       </div>
-    </Transition>
+    </div>
 
     <NewFolderDialog v-model:open="newFolderOpen" @create="onCreateFolder" />
   </div>

@@ -22,12 +22,20 @@ const form = reactive({
   name: '', baseUrl: '', apiKey: '', clearApiKey: false, timeoutSeconds: 60, models: [''],
 })
 
+/** 把后端返回的 Go 时长串（如 "2m0s"）解析成秒数，parseInt 会把它读成 2。 */
+function durationToSeconds(duration: string): number {
+  const matched = duration.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/)
+  if (!matched) return 60
+
+  return Number(matched[1] ?? 0) * 3600 + Number(matched[2] ?? 0) * 60 + Number(matched[3] ?? 0)
+}
+
 function resetForm(provider?: LlmProvider) {
   editingId.value = provider?.id ?? null
   Object.assign(form, {
     name: provider?.name ?? '', baseUrl: provider?.baseUrl ?? '',
     apiKey: '', clearApiKey: false,
-    timeoutSeconds: Number.parseInt(provider?.timeout ?? '60', 10) || 60,
+    timeoutSeconds: durationToSeconds(provider?.timeout ?? '60s'),
     models: provider ? [...provider.models] : [''],
   })
   error.value = ''
