@@ -128,6 +128,7 @@ export default {
     typeInteractive: '互动',
     typeComplete: '完成',
     statusGenerating: '生成中',
+    statusGeneratingNow: '正在生成中',
     statusFailed: '生成失败',
     statusComplete: '已完成',
     retry: '重试',

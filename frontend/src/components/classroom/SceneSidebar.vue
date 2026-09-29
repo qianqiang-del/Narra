@@ -1,7 +1,9 @@
 <script setup lang="ts">
 /**
  * SceneSidebar —— 文档 §6.4（左侧场景栏，默认 220 / 170~400，可折叠）。
- * 缩略图按场景类型（slide/quiz/interactive）用不同配色与示意图。
+ *
+ * 列表来自大纲：每一页都在，包括还没生成完的。生成完的页画真实缩略图且可点；没生成完的
+ * 页盖一层「正在生成中」、不可点，等它那一页就绪后由父组件重建列表，这里自然变成可点。
  */
 import { useI18n } from 'vue-i18n'
 import {
@@ -49,6 +51,21 @@ const TYPE_LABEL_KEY: Record<SceneType, string> = {
   interactive: 'scene.typeInteractive',
   complete: 'scene.typeComplete',
 }
+
+/** 只有生成完的页进得去；没生成完的页点不动。 */
+function viewable(scene: Scene): boolean {
+  return scene.status === 'ready' || scene.type === 'complete'
+}
+
+function onSelect(scene: Scene) {
+  if (!viewable(scene)) return
+  emit('select', scene.id)
+}
+
+/** 还没生成完：pending / generating 都算。 */
+function generating(scene: Scene): boolean {
+  return scene.status === 'generating' || scene.status === 'pending'
+}
 </script>
 
 <template>
@@ -78,19 +95,24 @@ const TYPE_LABEL_KEY: Record<SceneType, string> = {
         v-for="(scene, i) in scenes"
         :key="scene.id"
         type="button"
+        :disabled="!viewable(scene)"
+        :title="viewable(scene) ? undefined : t('scene.statusGeneratingNow')"
         :class="
           cn(
-            'group relative flex w-full cursor-pointer flex-col gap-1 rounded-lg p-1.5 text-left transition-all duration-200',
+            'group relative flex w-full flex-col gap-1 rounded-lg p-1.5 text-left transition-all duration-200',
+            viewable(scene) ? 'cursor-pointer' : 'cursor-not-allowed',
             scene.status === 'failed'
               ? 'bg-red-50/30 ring-1 ring-red-100 dark:bg-red-950/20'
               : scene.status === 'complete'
                 ? 'bg-amber-50 ring-1 ring-amber-200 dark:bg-amber-950/20'
                 : scene.id === activeId
                   ? 'bg-purple-50 ring-1 ring-purple-200 dark:bg-purple-900/20'
-                  : 'hover:bg-gray-50/80 dark:hover:bg-gray-800/50',
+                  : viewable(scene)
+                    ? 'hover:bg-gray-50/80 dark:hover:bg-gray-800/50'
+                    : 'opacity-80',
           )
         "
-        @click="emit('select', scene.id)"
+        @click="onSelect(scene)"
       >
         <!-- 序号 + 标题 -->
         <div class="flex items-center gap-1.5">
@@ -135,8 +157,9 @@ const TYPE_LABEL_KEY: Record<SceneType, string> = {
             )
           "
         >
+          <!-- 正文层：生成完的页画真实内容（与主画布同源），未就绪的页留空，由状态层盖住 -->
           <div class="absolute inset-0 z-10 overflow-hidden bg-white dark:bg-gray-800">
-            <!-- 交互页：同样是沙箱 iframe，缩略图模式禁鼠标事件、进视口才挂载 -->
+            <!-- 交互页：同样是沙箱 iframe，缩略图模式禁鼠标事件 -->
             <InteractiveIframeRenderer
               v-if="interactiveHTML(scene)"
               :html="interactiveHTML(scene)"
@@ -146,72 +169,42 @@ const TYPE_LABEL_KEY: Record<SceneType, string> = {
               <SceneRenderer :scene="scene" />
             </div>
           </div>
-          <!-- 生成中：骨架 + shimmer -->
-          <template v-if="scene.status === 'generating' || scene.status === 'pending'">
-            <div class="flex size-full flex-col justify-center gap-1.5 p-2">
-              <div class="h-1.5 w-3/4 animate-pulse rounded-full bg-white/70" />
-              <div class="h-1.5 w-1/2 animate-pulse rounded-full bg-white/60" />
-              <div class="h-1.5 w-2/3 animate-pulse rounded-full bg-white/50" />
+
+          <!-- 生成中：骨架 + shimmer + 文案，盖在正文层上（未就绪时下面那层是空的） -->
+          <div
+            v-if="generating(scene)"
+            class="absolute inset-0 z-20 flex flex-col items-center justify-center gap-1.5 bg-white/90 dark:bg-gray-800/90"
+          >
+            <div class="flex w-3/4 flex-col gap-1">
+              <div class="h-1.5 w-full animate-pulse rounded-full bg-gray-200 dark:bg-gray-600" />
+              <div class="h-1.5 w-2/3 animate-pulse rounded-full bg-gray-200 dark:bg-gray-600" />
+              <div class="h-1.5 w-5/6 animate-pulse rounded-full bg-gray-200 dark:bg-gray-600" />
             </div>
+            <span class="text-[9px] font-medium text-gray-500 dark:text-gray-400">
+              {{ t('scene.statusGeneratingNow') }}
+            </span>
             <div
-              class="absolute inset-0 animate-[shimmer_2s_infinite] bg-gradient-to-r from-transparent via-white/40 to-transparent"
+              class="pointer-events-none absolute inset-0 animate-[shimmer_2s_infinite] bg-gradient-to-r from-transparent via-white/40 to-transparent"
             />
-          </template>
+          </div>
 
           <!-- 失败 -->
-          <template v-else-if="scene.status === 'failed'">
-            <div class="flex size-full flex-col items-center justify-center gap-1">
-              <RefreshCw
-                :class="cn('size-4 text-red-400', scene.status === 'failed' && '')"
-              />
-              <span class="text-[9px] font-medium text-red-500">{{ t('scene.statusFailed') }}</span>
-            </div>
-          </template>
+          <div
+            v-else-if="scene.status === 'failed'"
+            class="absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 bg-red-50/90 dark:bg-red-950/60"
+          >
+            <RefreshCw class="size-4 text-red-400" />
+            <span class="text-[9px] font-medium text-red-500">{{ t('scene.statusFailed') }}</span>
+          </div>
 
           <!-- 完成 -->
-          <template v-else-if="scene.status === 'complete' || scene.type === 'complete'">
-            <div class="relative flex size-full items-center justify-center">
-              <span class="absolute size-8 animate-pulse rounded-full bg-amber-300/40" />
-              <Trophy class="relative size-8 text-amber-500" />
-            </div>
-          </template>
-
-          <!-- 正常：按类型画示意图 -->
-          <template v-else>
-            <!-- slide -->
-            <div v-if="scene.type === 'slide'" class="flex size-full flex-col gap-1 overflow-hidden bg-white p-2">
-              <div class="truncate text-[8px] font-black text-indigo-950">{{ scene.title }}</div>
-              <div
-                v-for="(block, blockIndex) in (scene.slide?.blocks || []).slice(0, 3)"
-                :key="blockIndex"
-                class="truncate rounded bg-slate-100 px-1 py-0.5 text-[7px] leading-tight text-slate-600"
-              >
-                {{ block.text }}
-              </div>
-              <div v-if="scene.slide?.takeaway" class="mt-auto truncate rounded bg-indigo-950 px-1 py-0.5 text-[6px] font-medium text-indigo-50">
-                {{ scene.slide.takeaway }}
-              </div>
-            </div>
-
-            <!-- quiz：2×2 选项格 -->
-            <div v-else-if="scene.type === 'quiz'" class="flex size-full flex-col justify-center gap-1 p-2">
-              <div class="mb-0.5 h-1.5 w-3/4 rounded-full bg-white/80" />
-              <div class="grid grid-cols-2 gap-1">
-                <div v-for="n in 4" :key="n" class="h-2.5 rounded-sm bg-white/60" />
-              </div>
-            </div>
-
-            <!-- interactive：伪浏览器窗口 -->
-            <div v-else-if="scene.type === 'interactive'" class="flex size-full flex-col p-1.5">
-              <div class="flex items-center gap-0.5 pb-1">
-                <span class="size-1 rounded-full bg-red-400" />
-                <span class="size-1 rounded-full bg-amber-400" />
-                <span class="size-1 rounded-full bg-emerald-400" />
-                <div class="ml-1 h-1 flex-1 rounded-full bg-white/60" />
-              </div>
-              <div class="flex-1 rounded-sm bg-white/70" />
-            </div>
-          </template>
+          <div
+            v-else-if="scene.status === 'complete' || scene.type === 'complete'"
+            class="absolute inset-0 z-20 flex items-center justify-center"
+          >
+            <span class="absolute size-8 animate-pulse rounded-full bg-amber-300/40" />
+            <Trophy class="relative size-8 text-amber-500" />
+          </div>
         </div>
 
         <!-- 类型角标 -->

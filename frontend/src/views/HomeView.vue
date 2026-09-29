@@ -155,8 +155,17 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+/**
+ * 点课堂卡片去哪：有页生成好了就直接进课堂，一页都没好就先去生成页等。
+ *
+ * 判据是「已就绪页数」，不是 classrooms.status —— playable 在大纲刚落库、一页都还没生成时
+ * 就会置上，拿它当条件会把还没内容的课也放进课堂。列表里查不到这门课（存档没刷新到）时
+ * 也走生成页：它自己会拉最新状态，好了就给「进入课堂」，不然也能说明卡在哪。
+ */
 function openClassroom(id: string) {
-  router.push({ name: 'classroom', params: { id } })
+  const target = library.classrooms.find((item) => item.id === id)
+  const name = target && target.readyPages > 0 ? 'classroom' : 'classroom-generating'
+  router.push({ name, params: { id } })
 }
 </script>
 

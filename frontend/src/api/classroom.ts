@@ -1,4 +1,5 @@
 import { request, streamEvents } from './client'
+import type { SceneContentSource } from '@/lib/scene-mapper'
 
 /**
  * 课堂的创建与查询。
@@ -65,8 +66,18 @@ export function fetchClassroom(id: number): Promise<ClassroomDTO> {
   return request<ClassroomDTO>(`/classrooms/${id}`)
 }
 
-export function fetchClassrooms(): Promise<ClassroomDTO[]> {
-  return request<ClassroomDTO[]>('/classrooms')
+/** 列表里的一项：课堂本身，加上卡片要用的页数、已就绪页数与封面首页 */
+export interface ClassroomListItemDTO extends ClassroomDTO {
+  /** 页数，不含代码追加的课程完成页 */
+  pages: number
+  /** 已生成好的页数；大于 0 说明课堂进得去 */
+  ready_pages: number
+  /** 首个内容页，供卡片按主画布同款版式渲染封面；大纲还没落库时为 null */
+  cover: ClassroomCoverSceneDTO | null
+}
+
+export function fetchClassrooms(): Promise<ClassroomListItemDTO[]> {
+  return request<ClassroomListItemDTO[]>('/classrooms')
 }
 
 export function deleteClassroom(id: number): Promise<{ id: number }> {
@@ -85,6 +96,8 @@ export interface ClassroomSceneSummaryDTO {
   type: string
   title: string
   status: 'pending' | 'generating' | 'ready' | 'failed'
+  /** 这一页生成到哪一步：status 说成不成，phase 说走到哪一步（planning/researching/…/synthesizing） */
+  phase: string
   error_message: string | null
 }
 
@@ -112,17 +125,74 @@ export function fetchClassroomScenes(id: number): Promise<ClassroomSceneSummaryD
   return request<ClassroomSceneSummaryDTO[]>(`/classrooms/${id}/scenes`)
 }
 
-export async function* streamClassroomEvents(id: number, signal?: AbortSignal) {
+/**
+ * 生成进度流的一条事件。
+ *
+ * 后端只推「变化」：连上时先给整份 classroom 与整份 scene.snapshot，之后每有新变化才推一条。
+ * 所以消费方不需要（也不该）自己轮询——连接建立那一刻拿到的快照就是当时的最新全量状态；
+ * 断线重连也是同理，重连拿到的新快照就是最新状态，不必回放。
+ *
+ * kind 与后端事件名的对应：
+ *   classroom       ← classroom（受理时一帧，之后每次状态变化各一帧）
+ *   plan-started    ← classroom.plan.started（大纲还没落库）
+ *   plan-completed  ← classroom.plan.completed（场景行刚建出来）
+ *   stage           ← classroom.playable / classroom.ready / classroom.failed
+ *   snapshot        ← scene.snapshot（大纲落库、页面增减时重发整份）
+ *   scene           ← scene.started / scene.researching / scene.content.started /
+ *                     scene.content.completed / scene.narration.completed /
+ *                     scene.reviewing.completed / scene.ready / scene.failed
+ *   error           ← error（服务端读库失败，流随即关闭）
+ */
+export type ClassroomProgressEvent =
+  | { kind: 'classroom'; classroom: ClassroomDTO }
+  | { kind: 'plan-started' }
+  | { kind: 'plan-completed'; sceneCount: number }
+  | { kind: 'stage'; status: ClassroomStatus }
+  | { kind: 'snapshot'; scenes: ClassroomSceneSummaryDTO[] }
+  | { kind: 'scene'; scene: ClassroomSceneSummaryDTO }
+  | { kind: 'error'; message: string }
+
+/** 订阅一门课的生成进度，逐条产出变化；走到终态时由服务端收流。 */
+export async function* streamClassroomEvents(id: number, signal?: AbortSignal): AsyncGenerator<ClassroomProgressEvent> {
   for await (const event of streamEvents(`/classrooms/${id}/events`, signal)) {
-    if (event.event === 'classroom') yield JSON.parse(event.data) as ClassroomDTO
+    if (event.event.startsWith('scene.') && event.event !== 'scene.snapshot') {
+      yield { kind: 'scene', scene: JSON.parse(event.data) as ClassroomSceneSummaryDTO }
+      continue
+    }
+    switch (event.event) {
+      case 'classroom':
+        yield { kind: 'classroom', classroom: JSON.parse(event.data) as ClassroomDTO }
+        break
+      case 'classroom.plan.started':
+        yield { kind: 'plan-started' }
+        break
+      case 'classroom.plan.completed':
+        yield { kind: 'plan-completed', sceneCount: Number((JSON.parse(event.data) as { scene_count?: number }).scene_count ?? 0) }
+        break
+      case 'classroom.playable':
+      case 'classroom.ready':
+      case 'classroom.failed':
+        yield { kind: 'stage', status: event.event.slice('classroom.'.length) as ClassroomStatus }
+        break
+      case 'scene.snapshot':
+        yield { kind: 'snapshot', scenes: (JSON.parse(event.data) as { scenes: ClassroomSceneSummaryDTO[] }).scenes }
+        break
+      case 'error':
+        yield { kind: 'error', message: (JSON.parse(event.data) as { message?: string }).message ?? '状态流中断' }
+        break
+      default:
+        break
+    }
   }
 }
 
-export interface SceneDetailDTO {
-  id: number; sort_order: number; type: string; title: string; brief: string; status: string
-  content: { blocks?: { key?: string; type?: string; content?: string; text?: string; interaction?: { kind?: string; controls?: Record<string, unknown>[]; options?: string[]; answer?: string; config?: Record<string, unknown> } }[] }
-  /** 交互页的完整 HTML 文档，其余场景类型为空串；前端拿它喂沙箱 iframe */
-  interactive_html: string
+/** 列表卡片封面要画的首页；与场景详情同源，只少讲稿与审核结论 */
+export type ClassroomCoverSceneDTO = SceneContentSource
+
+/** 场景详情；正文部分（content 与 interactive_html）由 SceneContentSource 给出 */
+export interface SceneDetailDTO extends SceneContentSource {
+  sort_order: number
+  brief: string
   narration: { id: number; content_key: string; sort_order: number; text: string; status: string; audio_path: string | null }[]
   error_message: string | null
 }

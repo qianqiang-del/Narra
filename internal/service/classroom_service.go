@@ -144,7 +144,7 @@ func (s *classroomService) ListScenes(ctx context.Context, id uint64) ([]respons
 		}
 		items = append(items, responsedto.ClassroomSceneSummary{
 			ID: scene.ID, SortOrder: scene.SortOrder, Type: scene.Type,
-			Title: scene.Title, Status: scene.Status, ErrorMessage: scene.ErrorMessage,
+			Title: scene.Title, Status: scene.Status, Phase: scene.Phase, ErrorMessage: scene.ErrorMessage,
 		})
 	}
 	return items, nil
@@ -336,15 +336,39 @@ func (s *classroomService) Get(ctx context.Context, id uint64) (*responsedto.Cla
 	return detail, nil
 }
 
-func (s *classroomService) List(ctx context.Context) ([]*responsedto.Classroom, error) {
+// List 查课堂列表，连卡片要用的页数、已就绪页数与封面首页一并带上。
+//
+// 统计与封面各自一次批量查询解决，不按课程逐门去查场景：卡片按门数摊开，逐门查就是 N+1。
+func (s *classroomService) List(ctx context.Context) ([]*responsedto.ClassroomListItem, error) {
 	classrooms, err := s.classrooms.List(ctx)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂列表失败", err)
 	}
-	items := make([]*responsedto.Classroom, 0, len(classrooms))
+	ids := make([]uint64, 0, len(classrooms))
 	for _, classroom := range classrooms {
-		item := toClassroomResponse(classroom)
+		ids = append(ids, classroom.ID)
+	}
+	stats, err := s.scenes.CountSceneStatsByClassrooms(ctx, ids)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂页数失败", err)
+	}
+	covers, err := s.scenes.ListFirstByClassrooms(ctx, ids)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂封面失败", err)
+	}
+	items := make([]*responsedto.ClassroomListItem, 0, len(classrooms))
+	for _, classroom := range classrooms {
+		stat := stats[classroom.ID]
+		item := &responsedto.ClassroomListItem{Classroom: *toClassroomResponse(classroom)}
 		item.Agents = []responsedto.ClassroomAgentBrief{}
+		item.Pages = int(stat.Pages)
+		item.ReadyPages = int(stat.ReadyPages)
+		if scene, ok := covers[classroom.ID]; ok {
+			item.Cover = &responsedto.ClassroomCoverScene{
+				ID: scene.ID, Type: scene.Type, Title: scene.Title, Status: scene.Status,
+				Content: scene.Content, InteractiveHTML: scene.InteractiveHTML,
+			}
+		}
 		items = append(items, item)
 	}
 	return items, nil
