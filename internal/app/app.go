@@ -23,6 +23,7 @@ import (
 	internalmcp "narra/internal/mcp"
 	"narra/internal/model/entity"
 	"narra/internal/rag"
+	"narra/internal/rag/documentimage"
 	"narra/internal/rag/einoretriever"
 	"narra/internal/repository"
 	"narra/internal/retention"
@@ -46,6 +47,7 @@ type App struct {
 	mcpManager      *internalmcp.Manager
 	worker          *bootstrap.WorkerRuntime
 	knowledgeWorker *rag.Worker
+	imageStore      *documentimage.Store
 	retention       *retention.Cleaner
 	langfuseFlush   func()
 }
@@ -253,12 +255,30 @@ func (a *App) initDependencies() error {
 	// 文档与上传记录是两个仓储：前者是资产，后者是投递历史，表也不同。
 	parser := newDocumentParser(a.cfg)
 	knowledgeIngest := a.cfg.KnowledgeIngest.WithDefaults()
+	// 知识库图片是持久资产，落在本地目录（第一版单机部署），由静态路由对外提供；
+	// 收录时发布图片、删除文档时清理，两处必须用同一个目录（见 documentimage）。
+	knowledgeDir := a.cfg.Storage.KnowledgeDir
+	if knowledgeDir == "" {
+		knowledgeDir = "data/knowledge"
+	}
+	// 与 uploadDir 同理统一成绝对路径：相对路径会按"当时的 cwd"解析，
+	// 换个工作目录启动，静态路由指向的目录和收录写入的目录就不是同一个了。
+	knowledgeDir, err := filepath.Abs(knowledgeDir)
+	if err != nil {
+		return fmt.Errorf("解析知识图片目录的绝对路径失败: %w", err)
+	}
+	imageStore, err := documentimage.NewStore(knowledgeDir)
+	if err != nil {
+		return fmt.Errorf("初始化知识图片存储失败: %w", err)
+	}
+	a.imageStore = imageStore
 	knowledgeIngester := rag.NewIngester(
 		knowledgeDocumentRepo, knowledgeUploadRecordRepo, embeddingModelRepo, embeddingManager, parser,
 		rag.IngestOptions{
 			Tx:                   txManager,
 			QueueCapacity:        knowledgeIngest.QueueCapacity,
 			EmbeddingConcurrency: knowledgeIngest.EmbeddingConcurrency,
+			Images:               imageStore,
 		})
 	uploadDir := a.cfg.Storage.UploadDir
 	if uploadDir == "" {
@@ -268,7 +288,7 @@ func (a *App) initDependencies() error {
 	// 否则默认的 "data/uploads" 会原样记进 metadata.upload_path，而读取、重试与清理
 	// 都按"当时的 cwd"解析 —— 换个工作目录启动，失败原件就找不到了：
 	// 重试报"原件不在"，删除时的清理也会静默失效（文件永远留在磁盘上）。
-	uploadDir, err := filepath.Abs(uploadDir)
+	uploadDir, err = filepath.Abs(uploadDir)
 	if err != nil {
 		return fmt.Errorf("解析上传目录的绝对路径失败: %w", err)
 	}
@@ -292,7 +312,7 @@ func (a *App) initDependencies() error {
 	if err != nil {
 		return fmt.Errorf("创建多查询检索失败: %w", err)
 	}
-	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetrieval, uploadDir)
+	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetrieval, uploadDir, knowledgeDir)
 
 	// 内置工具 rag_retrieve：把知识库检索直接挂给 Eino agent（见 internal/mcp/knowledge_tool.go）。
 	// 注册点在这里而不是 NewManager 那边，是因为工具的实现依赖知识库服务 ——
@@ -463,6 +483,13 @@ func (a *App) initServer() {
 		audioDir = absoluteDir
 	}
 	engine.Static("/audio", audioDir)
+
+	// 知识库图片与音频同类：静态路由直接把它暴露出去（第一版单机部署，见 documentimage）。
+	// 目录在 initDependencies 里已统一成绝对路径并建好；imageStore 为空只可能是
+	// 装配顺序被绕过，此时不挂路由也不影响启动。
+	if a.imageStore != nil {
+		engine.Static(documentimage.URLPrefix, a.imageStore.ImagesDir())
+	}
 
 	// 注册路由
 	a.router.Setup(engine)

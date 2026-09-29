@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -59,6 +60,17 @@ type DocumentStore interface {
 type UploadRecordStore interface {
 	// CreateUploadRecord 插入一条上传记录，落库后回填 record.ID。
 	CreateUploadRecord(ctx context.Context, record *entity.KnowledgeUploadRecord) error
+}
+
+// ImagePublisher 把解析产出的图片发布到持久存储，返回"临时路径 → 对外 URL"的映射。
+//
+// 解析脚本导出的图片放在临时目录里（见 documentparser.Result.WorkDir），收录链路
+// 必须在清理它之前完成发布与回填（见 Ingester.backfillImages）。生产装配注入的是
+// internal/rag/documentimage 的本地存储；将来换对象存储时换掉实现即可。
+type ImagePublisher interface {
+	// Publish 发布一篇文档的图片。任何一张失败都返回错误，调用方据此整篇失败，
+	// 而不是把本地路径留在正文里变成死链。
+	Publish(documentID uint64, paths []string) (map[string]string, error)
 }
 
 // ModelRegistry 是收录链路对向量模型登记的最小依赖面。
@@ -145,6 +157,11 @@ type IngestOptions struct {
 	// 它独立于 Worker 的解析并发：解析吃 CPU 与 OCR，向量化吃上游额度与内存，
 	// 两者分开限流，避免两个解析任务把 embedding 批次放大成并发请求。
 	EmbeddingConcurrency int
+
+	// Images 是解析图片的发布器；nil 表示未接入。只有不产出图片的链路
+	// （IngestText、纯文本解析）可以不依赖它 —— 解析出图片却没接发布器时收录会
+	// 明确失败，而不是等临时目录一删、正文里的引用全变成死链（见 backfillImages）。
+	Images ImagePublisher
 }
 
 // Ingester 是收录链路的门面：把一份原文变成库里可检索的切片与向量。
@@ -171,6 +188,7 @@ type Ingester struct {
 	models    ModelRegistry
 	embedding *embedding.Manager
 	parser    documentparser.Parser
+	images    ImagePublisher
 
 	// tx 与 queueCapacity 由 SubmitFile / Retry 使用：每次提交在事务里先校验队列
 	// 还有没有空位，再落三张表的行。
@@ -292,6 +310,7 @@ func NewIngester(
 		models:        models,
 		embedding:     embeddingManager,
 		parser:        parser,
+		images:        options.Images,
 		tx:            options.Tx,
 		queueCapacity: options.QueueCapacity,
 		embeddingSem:  make(chan struct{}, limit),
@@ -459,6 +478,37 @@ func (i *Ingester) Retry(ctx context.Context, id uint64, stage string) (bool, er
 	return requeued, err
 }
 
+// backfillImages 发布解析产出的图片，并把 Markdown 里的本地路径替换成对外 URL。
+//
+// 顺序不能颠倒：发布与回填必须都完成，调用方的 defer 才能清理临时目录（见
+// Result.Cleanup）。没有图片时原样返回；有图片但没接发布器、或发布失败时返回错误 ——
+// 静默保留本地路径的话，临时目录一删，正文里全是死链，而用户和检索都看不出异常。
+func (i *Ingester) backfillImages(documentID uint64, markdown string, paths []string) (string, error) {
+	if len(paths) == 0 {
+		return markdown, nil
+	}
+	if i.images == nil {
+		return "", fmt.Errorf("解析产出 %d 张图片，但图片存储未接入，无法发布", len(paths))
+	}
+
+	urls, err := i.images.Publish(documentID, paths)
+	if err != nil {
+		return "", fmt.Errorf("发布解析图片失败: %w", err)
+	}
+
+	// 按路径长度从长到短替换：若一张图的路径恰好是另一张的前缀（如 .../a.png 与
+	// .../a.png.bak），先替换短的会把长的切坏，之后长路径就再也匹配不上了。
+	ordered := make([]string, 0, len(urls))
+	for local := range urls {
+		ordered = append(ordered, local)
+	}
+	sort.Slice(ordered, func(a, b int) bool { return len(ordered[a]) > len(ordered[b]) })
+	for _, local := range ordered {
+		markdown = strings.ReplaceAll(markdown, local, urls[local])
+	}
+	return markdown, nil
+}
+
 // IngestFile 读一份文件并收录。
 //
 // 顺序是"先建文档行、再解析"：文档行是整条链路的主线，状态机挂在它上面。
@@ -512,9 +562,8 @@ func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResul
 	if err != nil {
 		return i.failIngest(ctx, document, 0, "parse", err)
 	}
-	// 解析产物目录（导出的图片）归调用方清理。
-	// 已知短板：图片外链尚未接入对象存储，所以 Markdown 里指向本地图片的路径
-	// 在这一步之后会失效。等对象存储落地，改成"先上传图片、回填 URL、再删目录"。
+	// 解析产物目录（导出的图片）归调用方清理；图片在 backfillImages 里发布、
+	// 正文回填完成后，这个 defer 才删目录 —— 顺序就是"先发布、再回填、后清理"。
 	defer func() { _ = result.Cleanup() }()
 
 	// 有页 OCR 失败时正文不完整，宁可整篇失败也不静默入库（Cleanup 已经挂上，临时目录照删）。
@@ -522,18 +571,25 @@ func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResul
 		return i.failIngest(ctx, document, 0, "parse", err)
 	}
 
+	// 图片先发布、URL 回填进正文，之后才能删临时目录；失败仍算 parse 阶段失败，
+	// 重试会重新解析，图片目录里已经发布的部分按内容哈希覆盖，不会重复堆积。
+	markdown, err := i.backfillImages(document.ID, result.Markdown, result.PicturePaths)
+	if err != nil {
+		return i.failIngest(ctx, document, 0, "parse", err)
+	}
+
 	// 调用方没指定标题时，用正文的首个一级标题代替文件名：
 	// 文件名常带版本号和日期（"架构说明_2026-09-17_v3.md"），
 	// 而一级标题是作者给这篇文档起的正式名字，在列表页里可读得多。
 	if !explicitTitle {
-		title = preferHeadingTitle(title, result.Markdown)
+		title = preferHeadingTitle(title, markdown)
 	}
 
 	metadata := map[string]any{
 		"parser":   parserName(result),
 		"parse_ms": time.Since(started).Milliseconds(),
 	}
-	return i.ingestMarkdown(ctx, document, title, result.Markdown, metadata)
+	return i.ingestMarkdown(ctx, document, title, markdown, metadata)
 }
 
 // processExistingFile 处理一条已经建好行的文件收录任务，由 Worker 调用。
@@ -592,7 +648,12 @@ func (i *Ingester) processExistingFile(
 		if err := ocrCoverageError(result); err != nil {
 			return i.failIngest(ctx, document, attempt, "parse", err)
 		}
-		markdown = result.Markdown
+		// 图片发布、URL 回填必须在 SaveParsedContent 之前：chunk / embed 阶段是
+		// 从库里读正文恢复的，这一步没做的话，崩溃恢复出来的切片里全是失效的本地路径。
+		markdown, err = i.backfillImages(document.ID, result.Markdown, result.PicturePaths)
+		if err != nil {
+			return i.failIngest(ctx, document, attempt, "parse", err)
+		}
 		if strings.TrimSpace(input.Title) == "" {
 			title = preferHeadingTitle(title, markdown)
 		}

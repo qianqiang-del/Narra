@@ -13,6 +13,9 @@ import (
 // embeddingModelRepository 基于 GORM 的向量模型仓储。
 type embeddingModelRepository struct {
 	db *gorm.DB
+
+	// halfvec 缓存"数据库有没有 halfvec 类型"：2001–4000 维的索引要用它决定能不能建。
+	halfvec halfvecSupport
 }
 
 // NewEmbeddingModelRepository 创建向量模型仓储。

@@ -16,6 +16,9 @@ import (
 // 以及"命中词项数"这种逐项打分，用查询构造器拼出来反而更难读。
 type knowledgeSearchRepository struct {
 	db *gorm.DB
+
+	// halfvec 缓存"数据库有没有 halfvec 类型"：>2000 维的查询 cast 要用它决定。
+	halfvec halfvecSupport
 }
 
 // NewKnowledgeSearchRepository 创建检索仓储。
@@ -46,11 +49,12 @@ const chunkHaystack = `(c.content || ' ' || coalesce(c.heading, '') || ' ' || d.
 
 // SearchVector 按余弦相似度召回候选，见 KnowledgeSearchRepository 的说明。
 //
-// ⚠️ 模型 ID 与维度**拼**进 SQL 而不是用占位符，这不是 SQL 注入的口子（两者都是本服务
-// 自己生成的整数），而是规划器的硬约束：默认模型的 HNSW 是部分索引（WHERE model_id = 1）
-// 且建在表达式 (embedding::vector(1536)) 上，查询里的模型 ID 只要是个参数，
-// 规划器就无法证明"model_id = $1 蕴含 model_id = 1"（pgx 走预处理语句，通用计划下
-// 参数不是常量），于是部分索引被跳过；表达式里的维度同理，必须与索引定义逐字一致。
+// ⚠️ 模型 ID、精度类型与维度**拼**进 SQL 而不是用占位符，这不是 SQL 注入的口子
+// （两者都是本服务自己生成的整数/枚举），而是规划器的硬约束：默认模型的 HNSW 是
+// 部分索引（WHERE model_id = 1）且建在表达式 (embedding::vector(1536)) 或
+// (embedding::halfvec(3072)) 上，查询里的模型 ID 只要是个参数，规划器就无法证明
+// "model_id = $1 蕴含 model_id = 1"（pgx 走预处理语句，通用计划下参数不是常量），
+// 于是部分索引被跳过；表达式里的精度与维度同理，必须与索引定义逐字一致。
 // 结果就是一条永远用不上索引的检索 —— 数据量一大才暴露，而 EXPLAIN 之外看不出原因。
 //
 // 相似度写成 1 - 余弦距离：pgvector 的 `<=>` 给的是距离（越小越像），
@@ -72,7 +76,10 @@ func (r *knowledgeSearchRepository) SearchVector(
 		return nil, fmt.Errorf("向量召回的条数上限非法: %d", query.Limit)
 	}
 
-	statement := vectorSearchStatement(query.Dimensions, query.ModelID, query.Limit)
+	// >2000 维的 cast 要与索引表达式一致，且只在数据库真的提供 halfvec 时才用：
+	// 老 pgvector 上退成全精度 vector，用不上索引，但检索照常正确（见 useHalfvec）。
+	cast := vectorSearchCastType(query.Dimensions, r.useHalfvec(ctx, query.Dimensions))
+	statement := vectorSearchStatement(query.Dimensions, query.ModelID, query.Limit, cast)
 
 	// 占位符顺序：SELECT 里的查询向量 → WHERE 里的状态 → ORDER BY 里的查询向量。
 	args := []any{query.Vector, entity.KnowledgeDocumentStatusReady, query.Vector}
@@ -84,24 +91,42 @@ func (r *knowledgeSearchRepository) SearchVector(
 	return rows, nil
 }
 
+// useHalfvec 判断这次检索要不要用半精度 cast。
+//
+// 只有维度落在 (vector 上限, halfvec 上限] 才需要探测数据库能力，其余维度直接回答
+// "不用"，一次探测都不做：≤2000 维用单精度，>4000 维本来就没有索引可用。
+func (r *knowledgeSearchRepository) useHalfvec(ctx context.Context, dimensions int) bool {
+	if dimensions <= maxVectorIndexDimensions || dimensions > maxHalfvecIndexDimensions {
+		return false
+	}
+	return r.halfvec.available(ctx, r.db)
+}
+
 // vectorSearchStatement 拼向量召回的 SQL。
 //
-// 单独成函数是为了让用例能 EXPLAIN 这条**真实的**语句（见 TestSearchVectorCanUseHNSWIndex）：
-// 把 SQL 抄一份到测试里，改了实现却忘了改测试，那条断言就成了安慰剂。
-// 占位符顺序见 SearchVector。
-func vectorSearchStatement(dimensions int, modelID uint64, limit int) string {
+// cast 由调用方按维度选定（见 vectorSearchCastType），必须与 EnsureVectorIndex 建出的
+// 索引表达式**逐字一致**（含精度与维度），否则规划器匹配不上，索引静默失效。
+//
+// 单独成函数是为了让用例能 EXPLAIN 这条**真实的**语句（见 TestSearchVectorCanUseHNSWIndex
+// 与 TestSearchVectorCanUseHalfvecIndex）：把 SQL 抄一份到测试里，改了实现却忘了改测试，
+// 那条断言就成了安慰剂。占位符顺序见 SearchVector。
+func vectorSearchStatement(dimensions int, modelID uint64, limit int, cast vectorIndexType) string {
 	return fmt.Sprintf(`
 SELECT %s,
-	1 - ((e.embedding::vector(%d)) <=> (?::vector)) AS raw_score
+	1 - ((e.embedding::%s(%d)) <=> (?::%s(%d))) AS raw_score
 FROM knowledge_embeddings e
 JOIN knowledge_chunks c ON c.id = e.chunk_id
 JOIN knowledge_documents d ON d.id = c.document_id
 WHERE e.model_id = %d
 	AND d.enabled
 	AND d.status = ?
-ORDER BY ((e.embedding::vector(%d)) <=> (?::vector)) ASC, c.id ASC
+ORDER BY ((e.embedding::%s(%d)) <=> (?::%s(%d))) ASC, c.id ASC
 LIMIT %d`,
-		chunkViewColumns, dimensions, modelID, dimensions, limit)
+		chunkViewColumns,
+		cast, dimensions, cast, dimensions,
+		modelID,
+		cast, dimensions, cast, dimensions,
+		limit)
 }
 
 // SearchLexical 按词项命中召回候选，见 KnowledgeSearchRepository 的说明。

@@ -208,7 +208,7 @@ def _build_picture_recognizer(
 def _resolve_images_dir(work_dir: str) -> Path:
     """确定图片导出目录。
 
-    优先用调用方给的 --work-dir（Go 侧会指到一个临时目录，上传对象存储后由它清理）；
+    优先用调用方给的 --work-dir（Go 侧会指到一个临时目录，发布图片后由它清理）；
     没给就每次解析新建一个系统临时目录 —— 绝不写回输入文件所在目录，避免污染上传目录。
     """
     if work_dir:
@@ -227,7 +227,7 @@ def _convert_with_docling(
     """使用 Docling 转换文档；Office 图片导出到 work_dir 下的 images/ 目录。
 
     导出路径以绝对路径(正斜杠)写入 markdown 引用并加入 picture_paths,
-    由 Go 侧上传 MinIO 后回填 URL。单张图片导出失败降级为文本占位,不中断解析。
+    由 Go 侧发布到持久存储后回填 URL。单张图片导出失败降级为文本占位,不中断解析。
     """
     converter = _get_docling_converter()
     converted = converter.convert(file_path)
