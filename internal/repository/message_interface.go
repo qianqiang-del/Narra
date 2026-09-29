@@ -38,4 +38,7 @@ type MessageRepository interface {
 
 	// CountByConversation 统计对话内的消息条数，供上下文预算与分页判断使用。
 	CountByConversation(ctx context.Context, conversationID uint64) (int64, error)
+
+	// FailStreamingByRun 在启动对账时收尾运行留下的流式消息，保留已生成的正文。
+	FailStreamingByRun(ctx context.Context, runID uint64) error
 }

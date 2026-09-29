@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -149,7 +150,53 @@ func (o *Orchestrator) WithModels(models Models) (*Orchestrator, error) {
 // ⚠️ 契约：**返回错误时 Result 依然是有意义的**（RunID / TraceID / Turns 都已填好），
 // 调用方可以拿它去查库、写日志。这与"err 非空就别用其它返回值"的常见惯例不同，
 // 是有意的 —— 失败时最需要的恰恰是"哪一趟活失败了"这个 ID。
-func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error) {
+func (o *Orchestrator) Run(ctx context.Context, request Request) (result Result, err error) {
+	var run *entity.OrchestrationRun
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			cause := fmt.Errorf("讨论执行发生 panic: %v", recovered)
+			if run == nil {
+				result = Result{}
+				err = cause
+				return
+			}
+
+			finalizeCtx, cancel := context.WithTimeout(context.Background(), finalizeTimeout)
+			defer cancel()
+			log := o.deps.Logger.With(
+				zap.Uint64("run_id", run.ID),
+				zap.String("trace_id", run.TraceID),
+				zap.Uint64("conversation_id", run.ConversationID),
+			)
+			storedRun, lookupErr := o.deps.Runs.FindByID(finalizeCtx, run.ID)
+			if lookupErr != nil {
+				log.Error("panic 后查询运行状态失败", zap.Error(lookupErr))
+			} else if storedRun.Status == entity.RunStatusCompleted || storedRun.Status == entity.RunStatusWaitingUser {
+				log.Error("运行已完成后的后处理发生 panic", zap.Any("panic", recovered))
+				result = Result{RunID: run.ID, TraceID: run.TraceID, Status: storedRun.Status}
+				err = nil
+				return
+			}
+			turns, listErr := o.deps.Turns.ListByRun(finalizeCtx, run.ID)
+			if listErr != nil {
+				log.Error("panic 后查询回合失败", zap.Error(listErr))
+			} else {
+				for i := range turns {
+					if turns[i].Status == entity.AgentTurnStatusRunning {
+						o.abandonTurn(&turns[i], cause)
+					}
+				}
+			}
+			if closeErr := o.closeRun(finalizeCtx, run, entity.RunStatusFailed, entity.RunStopError, cause, log); closeErr != nil {
+				log.Error("panic 后写入运行失败状态失败", zap.Error(closeErr))
+			}
+			o.emitEvent(finalizeCtx, run.ConversationID, &run.ID, nil,
+				entity.ConversationEventRunFailed, runFailedPayload{Error: truncate(cause.Error(), errorMessageLimit)})
+			result = Result{RunID: run.ID, TraceID: run.TraceID, Status: entity.RunStatusFailed, StopReason: entity.RunStopError}
+			err = cause
+		}
+	}()
+
 	maxTurns, err := normalizeMaxTurns(request.MaxTurns)
 	if err != nil {
 		return Result{}, err
@@ -178,7 +225,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (Result, error)
 		return Result{}, fmt.Errorf("读取对话失败: %w", err)
 	}
 
-	run, err := o.openRun(ctx, request, maxTurns)
+	run, err = o.openRun(ctx, request, maxTurns)
 	if err != nil {
 		return Result{}, err
 	}
@@ -406,6 +453,9 @@ func (o *Orchestrator) speak(
 		o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusError, "", err)
 		return TurnOutcome{}, err
 	}
+	if streamingModel, ok := o.deps.Model.(StreamingModel); ok {
+		return o.speakStreaming(ctx, request, run, turn, classroomID, participant, turnNo, topic, rootSpanID, log, agentSpanID, agentSpanStartedAt, history, streamingModel)
+	}
 
 	response, err := o.callModel(ctx, run, turn, agentSpanID, GenerationRequest{
 		Participant: participant,
@@ -500,6 +550,123 @@ func (o *Orchestrator) speak(
 		OutputTokens: response.OutputTokens,
 		NextAction:   nextAction,
 	}, nil
+}
+
+func (o *Orchestrator) speakStreaming(
+	ctx context.Context,
+	request Request,
+	run *entity.OrchestrationRun,
+	turn *entity.AgentTurn,
+	classroomID uint64,
+	participant Participant,
+	turnNo int16,
+	topic string,
+	rootSpanID string,
+	log *zap.Logger,
+	agentSpanID string,
+	agentSpanStartedAt time.Time,
+	history []HistoryMessage,
+	model StreamingModel,
+) (TurnOutcome, error) {
+	modelRequest := GenerationRequest{Participant: participant, Topic: topic, TurnNo: turnNo, History: history}
+	message := &entity.ConversationMessage{
+		ConversationID:   request.ConversationID,
+		SenderType:       entity.MessageSenderAgent,
+		ClassroomAgentID: &participant.ClassroomAgentID,
+		SenderSnapshot:   participant.snapshot(),
+		Status:           entity.MessageStatusStreaming,
+	}
+	if err := o.deps.Tx.Run(ctx, func(ctx context.Context) error {
+		if err := o.deps.Messages.AppendNext(ctx, message); err != nil {
+			return err
+		}
+		return o.deps.Turns.AttachOutputMessage(ctx, turn.ID, message.ID)
+	}); err != nil {
+		o.abandonTurn(turn, err)
+		return TurnOutcome{}, fmt.Errorf("建立第 %d 轮流式消息失败: %w", turnNo, err)
+	}
+
+	stream, err := model.GenerateStream(ctx, modelRequest)
+	if err != nil {
+		o.failStreamingMessage(message, err)
+		o.abandonTurn(turn, err)
+		o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusError, "", err)
+		return TurnOutcome{}, fmt.Errorf("第 %d 轮生成失败: %w", turnNo, err)
+	}
+	var content strings.Builder
+	var response GenerationResponse
+	completed := false
+	for chunk := range stream {
+		if chunk.Err != nil {
+			err = chunk.Err
+			break
+		}
+		if chunk.Delta != "" {
+			content.WriteString(chunk.Delta)
+			if err = o.deps.Tx.Run(ctx, func(ctx context.Context) error {
+				if err := o.deps.Messages.AppendContent(ctx, message.ID, chunk.Delta); err != nil {
+					return err
+				}
+				return o.appendEvent(ctx, request.ConversationID, &run.ID, &turn.ID,
+					entity.ConversationEventMessageDelta, messageDeltaPayload{TurnID: turn.ID, MessageID: message.ID, Delta: chunk.Delta})
+			}); err != nil {
+				break
+			}
+		}
+		if chunk.Done {
+			response = GenerationResponse{Content: content.String(), InputTokens: chunk.InputTokens, OutputTokens: chunk.OutputTokens, NextAction: chunk.NextAction}
+			completed = true
+		}
+	}
+	if err == nil && (!completed || strings.TrimSpace(content.String()) == "") {
+		err = fmt.Errorf("流式发言未返回完整正文")
+	}
+	if err != nil {
+		o.failStreamingMessage(message, err)
+		o.abandonTurn(turn, err)
+		o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusError, "", err)
+		return TurnOutcome{}, fmt.Errorf("第 %d 轮生成失败: %w", turnNo, err)
+	}
+
+	finishedAt := time.Now().UTC()
+	nextAction := normalizeNextAction(response.NextAction)
+	if err := o.deps.Tx.Run(ctx, func(ctx context.Context) error {
+		if err := o.deps.Messages.Finish(ctx, message.ID, entity.MessageStatusCompleted, response.OutputTokens); err != nil {
+			return err
+		}
+		if err := o.appendEvent(ctx, request.ConversationID, &run.ID, &turn.ID,
+			entity.ConversationEventMessageCompleted, messageCompletedPayload{TurnID: turn.ID, MessageID: message.ID, Content: response.Content, TokenCount: response.OutputTokens}); err != nil {
+			return err
+		}
+		if err := o.deps.Turns.AttachOutputMessage(ctx, turn.ID, message.ID); err != nil {
+			return err
+		}
+		if err := o.deps.Turns.Finish(ctx, turn.ID, repository.TurnResult{Status: entity.AgentTurnStatusCompleted, NextAction: &nextAction, InputTokens: response.InputTokens, OutputTokens: response.OutputTokens, FinishedAt: finishedAt}); err != nil {
+			return err
+		}
+		if err := o.appendEvent(ctx, request.ConversationID, &run.ID, &turn.ID,
+			entity.ConversationEventAgentCompleted, agentCompletedPayload{TurnID: turn.ID, TurnNo: turn.TurnNo, MessageID: message.ID, NextAction: nextAction}); err != nil {
+			return err
+		}
+		return o.deps.Conversations.TouchLastMessage(ctx, request.ConversationID, finishedAt)
+	}); err != nil {
+		o.failStreamingMessage(message, err)
+		o.abandonTurn(turn, err)
+		o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusError, "", err)
+		return TurnOutcome{}, fmt.Errorf("落库第 %d 轮结果失败: %w", turnNo, err)
+	}
+	modelSpanID := o.traceID(log)
+	o.recordModelSpan(log, run, turn, modelSpanID, agentSpanID, agentSpanStartedAt, modelRequest, 1, response, nil)
+	o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusOK, nextAction, nil)
+	return TurnOutcome{TurnID: turn.ID, TurnNo: turn.TurnNo, AgentName: participant.Name, MessageID: message.ID, Content: response.Content, OutputTokens: response.OutputTokens, NextAction: nextAction}, nil
+}
+
+func (o *Orchestrator) failStreamingMessage(message *entity.ConversationMessage, cause error) {
+	finalizeCtx, cancel := context.WithTimeout(context.Background(), finalizeTimeout)
+	defer cancel()
+	if err := o.deps.Messages.Finish(finalizeCtx, message.ID, entity.MessageStatusFailed, 0); err != nil {
+		o.deps.Logger.Error("标记流式消息失败状态时出错", zap.Error(err))
+	}
 }
 
 // callModel 调一次模型；失败自动重试一次，两次都失败才把错误抛出去。

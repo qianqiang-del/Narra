@@ -42,4 +42,10 @@ type RunRepository interface {
 
 	// ListByConversation 按对话列出运行，最近的排在前面。
 	ListByConversation(ctx context.Context, conversationID uint64, limit int) ([]entity.OrchestrationRun, error)
+
+	// ListUnfinished 供单进程启动对账查找上次未收尾的运行。
+	ListUnfinished(ctx context.Context) ([]entity.OrchestrationRun, error)
+
+	// FailUnfinished 只将仍未结束的运行标为失败；已收尾则返回 false。
+	FailUnfinished(ctx context.Context, id uint64, message string, finishedAt time.Time) (bool, error)
 }

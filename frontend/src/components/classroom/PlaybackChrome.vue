@@ -26,6 +26,15 @@ import { useResizable } from '@/composables/useResizable'
 import type { Classroom, Scene } from '@/types/scene'
 import type { Bubble, ChatNote, ChatSession, Participant } from '@/types/classroom'
 import type { RoleCardDTO, SceneDetailDTO } from '@/api/classroom'
+import {
+  createConversation,
+  fetchConversationMessages,
+  fetchConversations,
+  startDiscussion,
+  watchConversationEvents,
+  type Conversation,
+} from '@/api/conversation'
+import { applyDiscussionEvent, createDiscussionDisplay } from '@/lib/classroomDiscussion'
 import { cn } from '@/lib/utils'
 import { getActiveAudio, registerAudio, setActiveRate, setActiveVolume, stopActiveAudio, unregisterAudio } from '@/lib/audioPlayback'
 
@@ -83,11 +92,13 @@ const stats = computed(() => ({
   scenes: scenes.value.length,
   minutes: 0,
   agents: props.agents?.length ?? 0,
-  messages: 0,
+  messages: discussionBubbles.value.length,
 }))
 
 /* ---------- 圆桌 / 聊天 ---------- */
-const bubbles = ref<Bubble[]>([])
+const discussionBubbles = ref<Bubble[]>([])
+const lectureBubbles = ref<Bubble[]>([])
+const bubbles = computed(() => [...discussionBubbles.value, ...lectureBubbles.value])
 /*
 const legacyBubbles = ref<Bubble[]>([
   {
@@ -104,7 +115,7 @@ const legacyBubbles = ref<Bubble[]>([
   },
 ])
 */
-const speaking = ref<'teacher' | 'agent' | null>('teacher')
+const speaking = ref<'teacher' | 'agent' | null>(null)
 const thinking = ref(false)
 const yourTurn = ref(false)
 const recording = ref(false)
@@ -112,6 +123,113 @@ const recording = ref(false)
 const chatTab = ref<'lecture' | 'chat'>('chat')
 
 const sessions = ref<ChatSession[]>([])
+const activeConversationId = ref<number | null>(null)
+const discussionRunning = ref(false)
+const loadingConversations = ref(false)
+const loadingMessages = ref(false)
+const sending = ref(false)
+const discussionBusy = computed(() => discussionRunning.value || sending.value || loadingConversations.value || loadingMessages.value)
+let display = createDiscussionDisplay([])
+let eventController: AbortController | null = null
+let conversationGeneration = 0
+let pendingSequence = 0
+const lastSequenceByConversation = new Map<number, number>()
+
+function conversationSession(item: Conversation): ChatSession {
+  return { id: String(item.id), title: item.title, type: 'discussion', preview: '', active: item.id === activeConversationId.value }
+}
+
+function syncDiscussion() {
+  discussionBubbles.value = [...display.bubbles]
+  thinking.value = display.thinking
+  speaking.value = display.speaking
+  yourTurn.value = display.yourTurn
+}
+
+function disconnectEvents() {
+  eventController?.abort()
+  eventController = null
+}
+
+async function consumeEvents(conversationId: number, controller: AbortController) {
+  let reportedFailure = false
+  while (!controller.signal.aborted) {
+    try {
+      const after = lastSequenceByConversation.get(conversationId) ?? 0
+      for await (const event of watchConversationEvents(conversationId, { after, signal: controller.signal })) {
+        if (controller.signal.aborted || activeConversationId.value !== conversationId) return
+        reportedFailure = false
+        applyDiscussionEvent(display, event)
+        lastSequenceByConversation.set(conversationId, display.lastSequence)
+        if (event.eventType === 'run.completed' || event.eventType === 'run.failed' || event.eventType === 'run.waiting_user') {
+          discussionRunning.value = false
+        } else if (event.eventType === 'run.started') {
+          discussionRunning.value = true
+        }
+        syncDiscussion()
+      }
+      if (!controller.signal.aborted) throw new Error('讨论事件流已断开')
+    } catch (error) {
+      if (controller.signal.aborted) return
+      if (!reportedFailure) toast(error instanceof Error ? error.message : String(error))
+      reportedFailure = true
+      await new Promise<void>((resolve) => {
+        const timer = window.setTimeout(resolve, 1500)
+        controller.signal.addEventListener('abort', () => { window.clearTimeout(timer); resolve() }, { once: true })
+      })
+    }
+  }
+}
+
+async function selectConversation(id: number) {
+  const generation = ++conversationGeneration
+  disconnectEvents()
+  loadingMessages.value = true
+  activeConversationId.value = id
+  sessions.value = sessions.value.map((item) => ({ ...item, active: item.id === String(id) }))
+  display = createDiscussionDisplay([])
+  discussionRunning.value = false
+  syncDiscussion()
+  try {
+    const history: Awaited<ReturnType<typeof fetchConversationMessages>> = []
+    let after = 0
+    while (true) {
+      const page = await fetchConversationMessages(id, { after, limit: 500 })
+      if (generation !== conversationGeneration) return
+      history.push(...page)
+      if (page.length < 500) break
+      after = page[page.length - 1].sequenceNo
+    }
+    if (generation !== conversationGeneration) return
+    display = createDiscussionDisplay(history)
+    display.lastSequence = lastSequenceByConversation.get(id) ?? 0
+    discussionRunning.value = false
+    syncDiscussion()
+    eventController = new AbortController()
+    void consumeEvents(id, eventController)
+  } catch (error) {
+    if (generation === conversationGeneration) toast(error instanceof Error ? error.message : String(error))
+  } finally {
+    if (generation === conversationGeneration) loadingMessages.value = false
+  }
+}
+
+async function loadConversations() {
+  const classroomId = Number(props.classroom.id)
+  if (!Number.isSafeInteger(classroomId) || classroomId <= 0) return
+  const generation = ++conversationGeneration
+  loadingConversations.value = true
+  try {
+    const items = await fetchConversations(classroomId)
+    if (generation !== conversationGeneration) return
+    sessions.value = items.map(conversationSession)
+    if (items[0]) await selectConversation(items[0].id)
+  } catch (error) {
+    if (generation === conversationGeneration) toast(error instanceof Error ? error.message : String(error))
+  } finally {
+    loadingConversations.value = false
+  }
+}
 /*
 const legacySessions = ref<ChatSession[]>([
   {
@@ -184,7 +302,7 @@ function playNarrationSegment() {
   if (!audio.value) audio.value = new Audio()
   registerAudio(audio.value)
   if (segment.text) {
-    bubbles.value = [...bubbles.value, {
+    lectureBubbles.value = [...lectureBubbles.value, {
       id: `lecture-${segment.id}-${Date.now()}`,
       from: 'teacher',
       name: '老师',
@@ -300,7 +418,7 @@ function updateAudioCaption(payload: { id: string; text: string }) {
   const index = activeNarration.value.findIndex((item) => String(item.id) === payload.id)
   if (index >= 0) narrationIndex.value = index
   autoPlay.value = false
-  bubbles.value = [...bubbles.value, {
+  lectureBubbles.value = [...lectureBubbles.value, {
     id: `lecture-${Date.now()}`,
     from: 'teacher',
     name: '老师',
@@ -376,24 +494,63 @@ function togglePro() {
 }
 
 function openSession(id: string) {
-  sessions.value = sessions.value.map((s) => ({ ...s, active: s.id === id }))
+  const conversationId = Number(id)
+  if (!Number.isSafeInteger(conversationId) || conversationId <= 0 || sending.value) return
+  void selectConversation(conversationId)
 }
 
-function sendMessage(text: string) {
-  bubbles.value = [...bubbles.value, { id: `b-${Date.now()}`, from: 'user', text }]
-  thinking.value = true
-  window.setTimeout(() => {
-    thinking.value = false
-    bubbles.value = [
-      ...bubbles.value,
-      {
-        id: `b-${Date.now()}-r`,
-        from: 'teacher',
-        name: '陈老师',
-        text: '好问题，我们下一段就来展开讲。',
-      },
-    ]
-  }, 1200)
+function newSession() {
+  if (sending.value) return
+  ++conversationGeneration
+  disconnectEvents()
+  loadingMessages.value = false
+  activeConversationId.value = null
+  sessions.value = sessions.value.map((item) => ({ ...item, active: false }))
+  display = createDiscussionDisplay([])
+  discussionRunning.value = false
+  syncDiscussion()
+}
+
+async function sendMessage(text: string) {
+  if (discussionBusy.value || !text.trim()) return
+  const classroomId = Number(props.classroom.id)
+  if (!Number.isSafeInteger(classroomId) || classroomId <= 0) {
+    toast('课堂 ID 无效')
+    return
+  }
+  sending.value = true
+  const pendingId = `pending-${++pendingSequence}`
+  try {
+    let conversationId = activeConversationId.value
+    if (!conversationId) {
+      const created = await createConversation(classroomId, { title: text.slice(0, 40), type: 'discussion' })
+      conversationId = created.id
+      activeConversationId.value = conversationId
+      sessions.value = [conversationSession(created), ...sessions.value.map((item) => ({ ...item, active: false }))]
+    }
+    display.bubbles.push({ id: pendingId, from: 'user', text })
+    display.thinking = true
+    syncDiscussion()
+
+    const started = await startDiscussion(conversationId, text)
+    const pending = display.bubbles.find((item) => item.id === pendingId)
+    if (pending) pending.id = `message-${started.messageId}`
+    discussionRunning.value = true
+    if (!eventController) {
+      eventController = new AbortController()
+      void consumeEvents(conversationId, eventController)
+    }
+    syncDiscussion()
+  } catch (error) {
+    display.bubbles = display.bubbles.filter((item) => item.id !== pendingId)
+    display.thinking = false
+    discussionRunning.value = false
+    syncDiscussion()
+    const message = error instanceof Error ? error.message : String(error)
+    toast(message)
+  } finally {
+    sending.value = false
+  }
 }
 
 function toggleFullscreen() {
@@ -464,8 +621,11 @@ function onFullscreenChange() {
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
   document.addEventListener('fullscreenchange', onFullscreenChange)
+  void loadConversations()
 })
 onBeforeUnmount(() => {
+  ++conversationGeneration
+  disconnectEvents()
   stopAudio()
   window.removeEventListener('keydown', onKeydown)
   document.removeEventListener('fullscreenchange', onFullscreenChange)
@@ -547,6 +707,7 @@ onBeforeUnmount(() => {
         :bubbles="bubbles"
         :speaking="speaking"
         :thinking="thinking"
+        :busy="discussionBusy"
         :your-turn="yourTurn"
         :recording="recording"
         :participants="participants"
@@ -569,6 +730,7 @@ onBeforeUnmount(() => {
       @toggle-collapse="toggleChat"
       @resize-start="startChatResize"
       @open-session="openSession"
+      @new-session="newSession"
       @audio-state="playing = $event"
       @audio-caption="updateAudioCaption"
     />

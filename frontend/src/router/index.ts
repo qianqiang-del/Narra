@@ -23,7 +23,7 @@ const router = createRouter({
       meta: { title: 'Narra' },
     },
     {
-      path: '/workspace',
+      path: '/workspace/:classroomId?',
       name: 'workspace',
       component: () => import('@/views/WorkspaceView.vue'),
       meta: { title: 'Workspace' },

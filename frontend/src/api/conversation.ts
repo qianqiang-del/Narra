@@ -1,4 +1,141 @@
-import { ApiError, CODE_STREAM, streamEvents } from './client'
+import { ApiError, CODE_STREAM, request, streamEvents } from './client'
+
+/** 后端对话资源的前端模型。 */
+export interface Conversation {
+  id: number
+  classroomId: number
+  title: string
+  type: 'qa' | 'discussion' | 'lecture' | string
+  status: 'active' | 'closed' | string
+  lastMessageAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** 对话历史消息；senderSnapshot 保留消息产生时的角色信息。 */
+export interface ConversationMessage {
+  id: number
+  conversationId: number
+  sequenceNo: number
+  senderType: 'user' | 'agent' | 'system' | string
+  classroomAgentId: number | null
+  senderSnapshot: Record<string, unknown> | null
+  content: string
+  status: 'streaming' | 'completed' | 'failed' | 'cancelled' | string
+  replyToMessageId: number | null
+  tokenCount: number
+  metadata: Record<string, unknown> | null
+  createdAt: string
+}
+
+interface ConversationDTO {
+  id: number
+  classroom_id: number
+  title: string
+  type: string
+  status: string
+  last_message_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+interface ConversationMessageDTO {
+  id: number
+  conversation_id: number
+  sequence_no: number
+  sender_type: string
+  classroom_agent_id?: number | null
+  sender_snapshot?: Record<string, unknown> | null
+  content: string
+  status: string
+  reply_to_message_id?: number | null
+  token_count: number
+  metadata?: Record<string, unknown> | null
+  created_at: string
+}
+
+function toConversation(item: ConversationDTO): Conversation {
+  return {
+    id: item.id,
+    classroomId: item.classroom_id,
+    title: item.title,
+    type: item.type,
+    status: item.status,
+    lastMessageAt: item.last_message_at ?? null,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+  }
+}
+
+function toConversationMessage(item: ConversationMessageDTO): ConversationMessage {
+  return {
+    id: item.id,
+    conversationId: item.conversation_id,
+    sequenceNo: item.sequence_no,
+    senderType: item.sender_type,
+    classroomAgentId: item.classroom_agent_id ?? null,
+    senderSnapshot: item.sender_snapshot ?? null,
+    content: item.content,
+    status: item.status,
+    replyToMessageId: item.reply_to_message_id ?? null,
+    tokenCount: item.token_count,
+    metadata: item.metadata ?? null,
+    createdAt: item.created_at,
+  }
+}
+
+export function fetchConversations(classroomId: number): Promise<Conversation[]> {
+  return request<ConversationDTO[]>(`/classrooms/${classroomId}/conversations`).then((items) =>
+    items.map(toConversation),
+  )
+}
+
+export function createConversation(
+  classroomId: number,
+  input: { title: string; type: 'discussion' },
+): Promise<Conversation> {
+  return request<ConversationDTO>(`/classrooms/${classroomId}/conversations`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  }).then(toConversation)
+}
+
+export function fetchConversationMessages(
+  conversationId: number,
+  options: { after?: number; limit?: number } = {},
+): Promise<ConversationMessage[]> {
+  const params = new URLSearchParams()
+  if (options.after != null) params.set('after', String(options.after))
+  if (options.limit != null) params.set('limit', String(options.limit))
+  const query = params.toString() ? `?${params.toString()}` : ''
+  return request<ConversationMessageDTO[]>(`/conversations/${conversationId}/messages${query}`).then(
+    (items) => items.map(toConversationMessage),
+  )
+}
+
+export interface DiscussionStart {
+  conversationId: number
+  messageId: number
+}
+
+interface DiscussionStartDTO {
+  conversation_id: number
+  message_id: number
+}
+
+/** 发送一条用户消息并启动后台讨论；过程通过 watchConversationEvents 获取。 */
+export function startDiscussion(
+  conversationId: number,
+  content: string,
+): Promise<DiscussionStart> {
+  return request<DiscussionStartDTO>(`/conversations/${conversationId}/discussions`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  }).then((item) => ({
+    conversationId: item.conversation_id,
+    messageId: item.message_id,
+  }))
+}
 
 /**
  * 对话事件流接口（SSE）：Agent 的执行过程与最终结果。

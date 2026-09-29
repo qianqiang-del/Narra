@@ -10,12 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cloudwego/eino-ext/callbacks/langfuse"
-	"github.com/cloudwego/eino/callbacks"
-	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
-	"gorm.io/gorm"
 	"narra/internal/agent/classroom"
 	"narra/internal/agent/discussion"
 	"narra/internal/api"
@@ -35,6 +29,13 @@ import (
 	"narra/pkg/embedding"
 	"narra/pkg/logger"
 	"narra/pkg/tts"
+
+	"github.com/cloudwego/eino-ext/callbacks/langfuse"
+	"github.com/cloudwego/eino/callbacks"
+	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // App 应用结构体
@@ -417,6 +418,11 @@ func (a *App) initDependencies() error {
 		retention.Table{Name: "conversation_events", Store: conversationEventRepo},
 		retention.Table{Name: "agent_trace_spans", Store: traceSpanRepo},
 	)
+	if count, err := bootstrap.ReconcileDiscussions(context.Background(), txManager, runRepo, turnRepo, messageRepo, conversationEventRepo); err != nil {
+		return fmt.Errorf("讨论运行启动对账失败: %w", err)
+	} else if count > 0 {
+		logger.Warn("已收尾上次服务中断的讨论", zap.Int("count", count))
+	}
 
 	// 对账：队列里已不会继续处理的 generating 课程，归档的判失败、丢了的重投。
 	if err := bootstrap.ReconcileGenerating(context.Background(), classroomDeps, workerRuntime, queue); err != nil {
