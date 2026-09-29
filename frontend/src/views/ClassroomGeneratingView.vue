@@ -3,10 +3,12 @@
  * 课堂生成进行页：把「一次全铺开」改成有节奏的分步流程。
  *
  * 步骤：生成大纲 → 课堂角色 → 生成场景 → 进入课堂，顶部是可回退的节点条。
- * 进度信号全部来自现有接口，不改后端：
- *   - 课堂整体状态走 SSE（GET /classrooms/:id/events，只有 classroom 事件）；
- *   - 大纲与场景走定时轮询。但只在「大纲已就绪、且还有页没出结果」时才轮询：
- *     段一期间场景为空、SSE 会在变 playable 时通知，轮询没意义；全部页出结果后立即停。
+ * 进度全部由后端的生成进度流推过来，这里一次轮询都不做：
+ *   - classroom 事件：整份课堂（状态、标题）；
+ *   - scene.snapshot 事件：全部页面的进度（连上时、大纲落库时、页面增减时各来一份）；
+ *   - scene.* 事件：单页进度变化（检索资料/写内容/写讲稿/审核/合成语音/完成/失败）。
+ * 角色只在挂载时拉一次：它们在受理时就已经写进库，之后再不会变。
+ * 标题也跟着流走 —— 大纲落库后后端会把 classrooms.title 回填成模型起的标题。
  */
 import { computed, onMounted, onUnmounted, ref, watch, type Component } from 'vue'
 import { useRouter } from 'vue-router'
@@ -14,22 +16,20 @@ import {
   AlertCircle, ArrowRight, Check, FileText, Layers, Loader2, Rocket, Sparkles, Users,
 } from 'lucide-vue-next'
 import {
-  fetchClassroom, fetchClassroomAgents, fetchClassroomOutline, fetchClassroomScenes, streamClassroomEvents,
-  type ClassroomDTO, type ClassroomOutlineDTO, type ClassroomSceneSummaryDTO, type RoleCardDTO,
+  fetchClassroom, fetchClassroomAgents, fetchClassroomScenes, streamClassroomEvents,
+  type ClassroomDTO, type ClassroomSceneSummaryDTO, type RoleCardDTO,
 } from '@/api/classroom'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
 
 const classroom = ref<ClassroomDTO | null>(null)
-const outline = ref<ClassroomOutlineDTO | null>(null)
 const agents = ref<RoleCardDTO[]>([])
 const scenes = ref<ClassroomSceneSummaryDTO[]>([])
 const loading = ref(true)
 const error = ref('')
 
 let eventController: AbortController | undefined
-let pollTimer: number | undefined
 const timers = new Set<number>()
 
 const classroomId = computed(() => Number(props.id))
@@ -39,8 +39,9 @@ const outlinePhases = ['正在理解你的需求…', '正在规划页面结构�
 const phaseIndex = ref(0)
 let phaseTimer: number | undefined
 
-const title = computed(() => outline.value?.title || classroom.value?.title || '正在生成课堂')
-const outlineReady = computed(() => (outline.value?.scenes.length ?? 0) > 0)
+const title = computed(() => classroom.value?.title || '正在生成课堂')
+/** 大纲（也就是计划）落库的标志：场景行出现了。 */
+const outlineReady = computed(() => scenes.value.length > 0)
 const totalScenes = computed(() => scenes.value.length)
 const readyCount = computed(() => scenes.value.filter((scene) => scene.status === 'ready').length)
 const failedCount = computed(() => scenes.value.filter((scene) => scene.status === 'failed').length)
@@ -50,8 +51,8 @@ const scenePercent = computed(() => (totalScenes.value === 0 ? 0 : Math.round((s
 const canEnter = computed(() => readyCount.value > 0 || classroom.value?.status === 'ready')
 
 /**
- * 生成是否已经不会再有变化——用来停轮询。
- * 只看 ready/failed 不够：后端「部分页失败」的终态是 playable，那样轮询永远停不下来。
+ * 生成是否已经不会再有变化——用来停掉动画并断开事件流。
+ * 只看 ready/failed 不够：后端「部分页失败」的终态是 playable，那样永远等不到终态。
  * 所以真正的判据是「所有页都已出结果（ready 或 failed）」。
  */
 const generationDone = computed(() => {
@@ -115,12 +116,22 @@ function labelClass(index: number) {
   return 'text-slate-700 dark:text-slate-200'
 }
 
+/** 单页状态说明；还在生成时用后端给的阶段，把笼统的「正在生成」说细一点。 */
 function statusText(scene: ClassroomSceneSummaryDTO) {
   switch (scene.status) {
     case 'ready': return '已完成'
-    case 'generating': return '正在生成…'
     case 'failed': return scene.error_message || '生成失败'
-    default: return '等待生成'
+    case 'pending': return '等待生成'
+    default: break
+  }
+  switch (scene.phase) {
+    case 'planning': return '正在规划这一页…'
+    case 'researching': return '正在检索资料…'
+    case 'generating_content': return '正在生成内容…'
+    case 'generating_narration': return '正在撰写讲稿…'
+    case 'reviewing': return '正在审核…'
+    case 'synthesizing': return '正在合成语音…'
+    default: return '正在生成…'
   }
 }
 
@@ -132,10 +143,19 @@ function typeLabel(type: string) {
   }
 }
 
+/** 单页事件带的是这一页的完整摘要，按 id 覆盖即可；没见过的新页按顺序插进去。 */
+function upsertScene(scene: ClassroomSceneSummaryDTO) {
+  const index = scenes.value.findIndex((item) => item.id === scene.id)
+  if (index < 0) {
+    scenes.value = [...scenes.value, scene].sort((left, right) => left.sort_order - right.sort_order)
+    return
+  }
+  scenes.value = scenes.value.map((item) => (item.id === scene.id ? scene : item))
+}
+
 watch(outlineReady, (ready) => {
   if (!ready) return
   if (phaseTimer) window.clearInterval(phaseTimer)
-  startPolling()
   if (activeIndex.value < 1) later(() => reach(1), 1400)
 })
 
@@ -147,18 +167,33 @@ watch(activeIndex, (index) => {
   }
 })
 
+/** 第一页就绪后停一下再自动进课堂：让节点条先亮到「进入课堂」，跳得不那么突然。 */
+const autoEnterDelayMs = 1200
+
+/**
+ * 这一趟进来有没有自动跳过。只在状态由「一页可学的都没有」翻成「有了」的那一刻跳一次。
+ *
+ * 进来时就已经有页可学却不跳：一门课一旦有过 ready 页，从卡片进会被分流直接送进课堂，
+ * 生成进度页就只剩直接敲 URL 这一条路；这里不抢跳，那个页面才留得住——页面上「进入课堂」
+ * 的按钮也始终是它的出口。
+ */
+let autoEntered = false
+
 watch(canEnter, (ok) => {
-  if (ok && activeIndex.value < 3) later(() => reach(3), 700)
+  if (!ok) return
+  if (activeIndex.value < 3) later(() => reach(3), 700)
+  if (autoEntered) return
+  autoEntered = true
+  later(enterClassroom, autoEnterDelayMs)
 })
 
 async function load() {
   const id = classroomId.value
   if (!Number.isInteger(id) || id <= 0) throw new Error('课堂 ID 无效')
-  const [current, currentOutline, currentAgents, currentScenes] = await Promise.all([
-    fetchClassroom(id), fetchClassroomOutline(id), fetchClassroomAgents(id), fetchClassroomScenes(id),
+  const [current, currentAgents, currentScenes] = await Promise.all([
+    fetchClassroom(id), fetchClassroomAgents(id), fetchClassroomScenes(id),
   ])
   classroom.value = current
-  outline.value = currentOutline
   agents.value = currentAgents
   scenes.value = currentScenes
 }
@@ -181,36 +216,12 @@ function syncInitialStep() {
   activeIndex.value = 0
 }
 
-function stopPolling() {
-  if (pollTimer) {
-    window.clearInterval(pollTimer)
-    pollTimer = undefined
-  }
-}
-
-/** 只有「大纲已就绪、且还有页没出结果」才需要轮询；否则一个请求都不发。 */
-function startPolling() {
-  if (pollTimer || !outlineReady.value || generationDone.value) return
-  pollTimer = window.setInterval(() => void pollProgress(), 1500)
-}
-
-async function pollProgress() {
-  try {
-    const id = classroomId.value
-    const [currentScenes, currentOutline] = await Promise.all([fetchClassroomScenes(id), fetchClassroomOutline(id)])
-    scenes.value = currentScenes
-    if (currentOutline.scenes.length > 0) outline.value = currentOutline
-    if (generationDone.value) stopPolling()
-  } catch {
-    // 轮询失败不打断动画，下一轮再试。
-  }
-}
-
 function enterClassroom() {
   router.push({ name: 'classroom', params: { id: props.id } })
 }
 
 onMounted(async () => {
+  eventController = new AbortController()
   try {
     await load()
   } catch (cause) {
@@ -220,16 +231,22 @@ onMounted(async () => {
   if (classroom.value?.status === 'failed') error.value = classroom.value.generation_error ?? '课堂生成失败'
 
   syncInitialStep()
-  startPolling()
 
   phaseTimer = window.setInterval(() => {
     phaseIndex.value = (phaseIndex.value + 1) % outlinePhases.length
   }, 2400)
 
-  eventController = new AbortController()
   try {
     for await (const event of streamClassroomEvents(classroomId.value, eventController.signal)) {
-      classroom.value = event
+      switch (event.kind) {
+        case 'classroom': classroom.value = event.classroom; break
+        case 'snapshot': scenes.value = event.scenes; break
+        case 'scene': upsertScene(event.scene); break
+        case 'error': if (!error.value) error.value = event.message; break
+        // plan-started / plan-completed / stage 目前不单独处理：页面进度与标题已经
+        // 由 snapshot、scene 和 classroom 三种事件表达完了。
+        default: break
+      }
       if (generationDone.value) break
     }
   } catch (cause) {
@@ -241,7 +258,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   eventController?.abort()
-  stopPolling()
   if (phaseTimer) window.clearInterval(phaseTimer)
   timers.forEach((id) => window.clearTimeout(id))
   timers.clear()

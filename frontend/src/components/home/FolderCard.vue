@@ -9,6 +9,7 @@ import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { AlertTriangle, Folder, Pencil, Trash2 } from 'lucide-vue-next'
 
+import ClassroomCover from '@/components/home/ClassroomCover.vue'
 import type { Classroom, Folder as FolderType } from '@/stores/library'
 import { cn } from '@/lib/utils'
 
@@ -96,7 +97,7 @@ function onDrop(e: DragEvent) {
           class="absolute aspect-[16/9] overflow-hidden rounded-xl bg-slate-200 shadow-md ring-1 ring-black/5"
           :style="stackStyle(i)"
         >
-          <img v-if="c.thumbnail" :src="c.thumbnail" alt="" class="size-full object-cover" />
+          <ClassroomCover :scene="c.cover" :title="c.name" />
         </div>
       </div>
 

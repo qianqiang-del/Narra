@@ -199,14 +199,11 @@ function playNarrationSegment() {
     if (narrationIndex.value < activeNarration.value.length - 1) {
       narrationIndex.value += 1
       void playNarrationSegment()
+    } else if (autoPlay.value && step(1)) {
+      narrationIndex.value = 0
     } else {
-      if (autoPlay.value && activeIndex.value < scenes.value.length - 1) {
-        activeIndex.value += 1
-        narrationIndex.value = 0
-      } else {
-        playing.value = false
-        narrationIndex.value = 0
-      }
+      playing.value = false
+      narrationIndex.value = 0
     }
   }
   audio.value.onerror = () => {
@@ -258,6 +255,16 @@ watch(activeIndex, () => {
   updateNotes()
   if (shouldContinue) window.setTimeout(() => playNarrationSegment(), 0)
 })
+// 进课堂时落在第一页看得进去的页面上；后面每有一页就绪都会重建列表，这里保证不会把人从正在看的那页挪走。
+watch(
+  scenes,
+  (list) => {
+    if (list[activeIndex.value]?.status === 'ready') return
+    const first = list.findIndex((item) => isViewable(item))
+    if (first >= 0) activeIndex.value = first
+  },
+  { immediate: true },
+)
 watch(() => props.sceneDetails, updateNotes, { deep: true })
 watch(volume, (value) => {
   setActiveVolume(value)
@@ -302,8 +309,15 @@ function updateAudioCaption(payload: { id: string; text: string }) {
 }
 
 /* ---------- 交互 ---------- */
+/** 生成完的页才进得去；还没生成的页只是列在场景栏里等它自己就绪。 */
+function isViewable(scene: Scene): boolean {
+  return scene.status === 'ready' || scene.type === 'complete'
+}
+
 function selectScene(id: string) {
   if (id === activeScene.value.id) return
+  const target = scenes.value.find((item) => item.id === id)
+  if (!target || !isViewable(target)) return
   if (topicInProgress.value) {
     pendingSelectId.value = id
     confirmSwitchOpen.value = true
@@ -338,11 +352,22 @@ function retryScene(id: string) {
   }, 1500)
 }
 
+/** 朝 direction 找最近的、看得进去的一页，跳过还没生成的页；找不到就原地不动。 */
+function step(direction: 1 | -1): boolean {
+  for (let i = activeIndex.value + direction; i >= 0 && i < scenes.value.length; i += direction) {
+    if (isViewable(scenes.value[i])) {
+      activeIndex.value = i
+      return true
+    }
+  }
+  return false
+}
+
 function prev() {
-  if (activeIndex.value > 0) activeIndex.value -= 1
+  step(-1)
 }
 function next() {
-  if (activeIndex.value < scenes.value.length - 1) activeIndex.value += 1
+  step(1)
 }
 
 function togglePro() {

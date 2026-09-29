@@ -53,6 +53,57 @@ func (r *sceneRepository) ListByClassroom(ctx context.Context, classroomID uint6
 	return scenes, err
 }
 
+// CountSceneStatsByClassrooms 一次汇总多门课的页数与其中已就绪的页数，键是课程 ID；没有页的课不出现在返回值里。
+//
+// 不算课程完成页：那一页是代码在计划末尾追加的收尾页，不是大纲排出来的内容页。
+// 首页拿 ReadyPages 决定点卡片是直接进课堂还是先去生成页等，两件事就一次查出来。
+func (r *sceneRepository) CountSceneStatsByClassrooms(ctx context.Context, classroomIDs []uint64) (map[uint64]ClassroomSceneStat, error) {
+	stats := make(map[uint64]ClassroomSceneStat, len(classroomIDs))
+	if len(classroomIDs) == 0 {
+		return stats, nil
+	}
+	var rows []struct {
+		ClassroomID uint64
+		Pages       int64
+		ReadyPages  int64
+	}
+	err := r.db.WithContext(ctx).
+		Model(&entity.Scene{}).
+		Select("classroom_id, COUNT(*) AS pages, COUNT(*) FILTER (WHERE status = ?) AS ready_pages", entity.SceneStatusReady).
+		Where("classroom_id IN ? AND type <> ?", classroomIDs, entity.SceneTypeComplete).
+		Group("classroom_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		stats[row.ClassroomID] = ClassroomSceneStat{Pages: row.Pages, ReadyPages: row.ReadyPages}
+	}
+	return stats, nil
+}
+
+// ListFirstByClassrooms 一次取回多门课各自的首个内容页，键是课程 ID；这门课还没有页时不出现在返回值里。
+//
+// 用 DISTINCT ON 让数据库按 sort_order 取每门课最小的一页，而不是把每门课的页全捞回来再挑；
+// 列表里的封面只要这一页，其余的 content 与 interactive_html 都不必进内存。
+func (r *sceneRepository) ListFirstByClassrooms(ctx context.Context, classroomIDs []uint64) (map[uint64]entity.Scene, error) {
+	first := make(map[uint64]entity.Scene, len(classroomIDs))
+	if len(classroomIDs) == 0 {
+		return first, nil
+	}
+	var scenes []entity.Scene
+	err := r.db.WithContext(ctx).
+		Raw(`SELECT DISTINCT ON (classroom_id) * FROM scenes WHERE classroom_id IN ? AND type <> ? ORDER BY classroom_id, sort_order ASC`, classroomIDs, entity.SceneTypeComplete).
+		Scan(&scenes).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, scene := range scenes {
+		first[scene.ClassroomID] = scene
+	}
+	return first, nil
+}
+
 // UpdateContent 写内容列、审核结论列与交互 HTML 列。json.RawMessage 是 []byte，直接当参数会被当成 bytea，
 // 所以转成字符串交给 PostgreSQL 按目标列类型解析。interactiveHTML 只有交互页非空。
 func (r *sceneRepository) UpdateContent(ctx context.Context, id uint64, owner string, content, review json.RawMessage, interactiveHTML string) error {

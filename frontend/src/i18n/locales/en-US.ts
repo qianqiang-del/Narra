@@ -130,6 +130,7 @@ export default {
     typeInteractive: 'Interactive',
     typeComplete: 'Complete',
     statusGenerating: 'Generating',
+    statusGeneratingNow: 'Generating…',
     statusFailed: 'Generation failed',
     statusComplete: 'Complete',
     retry: 'Retry',

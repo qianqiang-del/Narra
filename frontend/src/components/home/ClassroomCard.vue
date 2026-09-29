@@ -9,6 +9,7 @@ import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Atom, Copy, FolderInput, Pencil, Trash2, Wrench } from 'lucide-vue-next'
 
+import ClassroomCover from '@/components/home/ClassroomCover.vue'
 import UiTooltip from '@/components/ui/UiTooltip.vue'
 import { formatRelativeDate, type Classroom } from '@/stores/library'
 import { cn } from '@/lib/utils'
@@ -80,19 +81,7 @@ function onDragStart(e: DragEvent) {
       class="relative aspect-[16/9] w-full overflow-hidden rounded-2xl bg-slate-100 transition-transform duration-200 group-hover:scale-[1.02] dark:bg-slate-800/80"
       @click="!confirmingDelete && emit('open', classroom.id)"
     >
-      <img
-        v-if="classroom.thumbnail"
-        :src="classroom.thumbnail"
-        alt=""
-        class="size-full object-cover"
-      />
-      <div v-else class="flex size-full items-center justify-center">
-        <div
-          class="flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-100 to-blue-100"
-        >
-          <span class="text-xl opacity-50">📄</span>
-        </div>
-      </div>
+      <ClassroomCover :scene="classroom.cover" :title="classroom.name" />
 
       <!-- 模式徽章 -->
       <div

@@ -7,18 +7,22 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { deleteClassroom as deleteClassroomRequest, fetchClassrooms } from '@/api/classroom'
+import { toScene } from '@/lib/scene-mapper'
+import type { Scene } from '@/types/scene'
 
 export interface Classroom {
   id: string
   name: string
-  /** 幻灯片页数 */
+  /** 幻灯片页数，不含课程完成页 */
   pages: number
+  /** 已生成好的页数；大于 0 就能进课堂，0 则要先看生成进度 */
+  readyPages: number
   /** 创建时间戳（ms） */
   createdAt: number
   /** 所属文件夹 id，null 表示未归档 */
   folderId: string | null
-  /** 缩略图；无则用占位块 */
-  thumbnail?: string
+  /** 封面：首个内容页的真实内容，卡片按主画布同款版式渲染；大纲还没落库时为 null */
+  cover?: Scene | null
   /** 模式徽章：职教 / 交互 */
   mode?: 'vocational' | 'interactive'
   status?: 'generating' | 'playable' | 'ready' | 'failed'
@@ -59,12 +63,12 @@ function seed(): LibraryState {
       { id: 'f-pro', name: '专业课', createdAt: now - 5 * day },
     ],
     classrooms: [
-      { id: 'c-1', name: '从零学 Python：30 分钟写出第一个程序', pages: 18, createdAt: now - 2 * 3600_000, folderId: null },
-      { id: 'c-2', name: '线性代数入门：矩阵与向量空间', pages: 24, createdAt: now - day, folderId: 'f-math', mode: 'interactive' },
-      { id: 'c-3', name: '数控车床实操训练', pages: 12, createdAt: now - 2 * day, folderId: 'f-pro', mode: 'vocational' },
-      { id: 'c-4', name: '英语口语：日常对话场景', pages: 16, createdAt: now - 3 * day, folderId: null },
-      { id: 'c-5', name: '概率论与数理统计', pages: 30, createdAt: now - 6 * day, folderId: 'f-math' },
-      { id: 'c-6', name: '计算机网络原理速览', pages: 21, createdAt: now - 14 * day, folderId: null },
+      { id: 'c-1', name: '从零学 Python：30 分钟写出第一个程序', pages: 18, readyPages: 18, createdAt: now - 2 * 3600_000, folderId: null },
+      { id: 'c-2', name: '线性代数入门：矩阵与向量空间', pages: 24, readyPages: 24, createdAt: now - day, folderId: 'f-math', mode: 'interactive' },
+      { id: 'c-3', name: '数控车床实操训练', pages: 12, readyPages: 12, createdAt: now - 2 * day, folderId: 'f-pro', mode: 'vocational' },
+      { id: 'c-4', name: '英语口语：日常对话场景', pages: 16, readyPages: 16, createdAt: now - 3 * day, folderId: null },
+      { id: 'c-5', name: '概率论与数理统计', pages: 30, readyPages: 30, createdAt: now - 6 * day, folderId: 'f-math' },
+      { id: 'c-6', name: '计算机网络原理速览', pages: 21, readyPages: 21, createdAt: now - 14 * day, folderId: null },
     ],
   }
 }
@@ -79,6 +83,19 @@ function load(): LibraryState {
   return seed()
 }
 
+/**
+ * 去掉封面再进本地存档。
+ *
+ * 封面是课程第一页的整份内容（交互页那份 HTML 上限 256KB），几门课就可能把 localStorage
+ * 撑过配额；一次写失败会让 folders 也一起存不进去，下次打开文件夹就没了。
+ * 课堂本身每次开首页都从服务端重取，这里存的只是旧存档结构的兼容，不带封面没有损失。
+ */
+function stripCover(classroom: Classroom): Classroom {
+  const rest = { ...classroom }
+  delete rest.cover
+  return rest
+}
+
 export const useLibraryStore = defineStore('library', () => {
   const initial = load()
   // 课堂数据以服务端为唯一来源，不能使用本地 seed/mock 数据。
@@ -88,11 +105,12 @@ export const useLibraryStore = defineStore('library', () => {
   async function loadClassrooms() {
     const items = await fetchClassrooms()
     classrooms.value = items.map((item) => ({
-      id: String(item.id), name: item.title, pages: 0,
+      id: String(item.id), name: item.title, pages: item.pages, readyPages: item.ready_pages,
       createdAt: Date.parse(item.created_at), updatedAt: Date.parse(item.updated_at),
       folderId: item.folder_id == null ? null : String(item.folder_id),
       mode: item.mode === 'interactive' ? 'interactive' : 'vocational',
       status: item.status, generationError: item.generation_error,
+      cover: item.cover ? toScene(item.cover) : null,
     }))
   }
 
@@ -102,7 +120,7 @@ export const useLibraryStore = defineStore('library', () => {
       try {
         localStorage.setItem(
           STORAGE_KEY,
-          JSON.stringify({ classrooms: classrooms.value, folders: folders.value }),
+          JSON.stringify({ classrooms: classrooms.value.map(stripCover), folders: folders.value }),
         )
       } catch {
         /* 隐私模式忽略 */
