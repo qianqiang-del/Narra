@@ -28,6 +28,7 @@ import type { Bubble, ChatNote, ChatSession, Participant } from '@/types/classro
 import type { RoleCardDTO, SceneDetailDTO } from '@/api/classroom'
 import {
   createConversation,
+  closeConversation,
   fetchConversationMessages,
   fetchConversations,
   startDiscussion,
@@ -36,7 +37,7 @@ import {
 } from '@/api/conversation'
 import { applyDiscussionEvent, createDiscussionDisplay } from '@/lib/classroomDiscussion'
 import { cn } from '@/lib/utils'
-import { getActiveAudio, registerAudio, setActiveRate, setActiveVolume, stopActiveAudio, unregisterAudio } from '@/lib/audioPlayback'
+import { getActiveAudio, pauseActiveAudio, registerAudio, setActiveRate, setActiveVolume, stopActiveAudio, unregisterAudio } from '@/lib/audioPlayback'
 
 const props = defineProps<{ classroom: Classroom; agents?: RoleCardDTO[]; sceneDetails?: Record<string, SceneDetailDTO> }>()
 
@@ -98,7 +99,7 @@ const stats = computed(() => ({
 /* ---------- 圆桌 / 聊天 ---------- */
 const discussionBubbles = ref<Bubble[]>([])
 const lectureBubbles = ref<Bubble[]>([])
-const bubbles = computed(() => [...discussionBubbles.value, ...lectureBubbles.value])
+const bubbles = computed(() => lectureBubbles.value)
 /*
 const legacyBubbles = ref<Bubble[]>([
   {
@@ -116,11 +117,15 @@ const legacyBubbles = ref<Bubble[]>([
 ])
 */
 const speaking = ref<'teacher' | 'agent' | null>(null)
+const speakingAgentKey = ref<string | null>(null)
 const thinking = ref(false)
 const yourTurn = ref(false)
 const recording = ref(false)
 
 const chatTab = ref<'lecture' | 'chat'>('chat')
+const chatView = ref<'list' | 'conversation'>('list')
+const chatDraft = ref('')
+const discussionError = ref('')
 
 const sessions = ref<ChatSession[]>([])
 const activeConversationId = ref<number | null>(null)
@@ -129,6 +134,7 @@ const loadingConversations = ref(false)
 const loadingMessages = ref(false)
 const sending = ref(false)
 const discussionBusy = computed(() => discussionRunning.value || sending.value || loadingConversations.value || loadingMessages.value)
+const discussionActive = computed(() => activeConversationId.value !== null && (discussionRunning.value || sending.value || display.bubbles.length > 0))
 let display = createDiscussionDisplay([])
 let eventController: AbortController | null = null
 let conversationGeneration = 0
@@ -143,7 +149,16 @@ function syncDiscussion() {
   discussionBubbles.value = [...display.bubbles]
   thinking.value = display.thinking
   speaking.value = display.speaking
+  speakingAgentKey.value = display.speakingAgentKey
   yourTurn.value = display.yourTurn
+}
+
+function pauseLectureForDiscussion() {
+  pauseActiveAudio()
+  playing.value = false
+  autoPlay.value = false
+  chatTab.value = 'chat'
+  if (chatCollapsed.value) toggleChat()
 }
 
 function disconnectEvents() {
@@ -186,6 +201,7 @@ async function selectConversation(id: number) {
   disconnectEvents()
   loadingMessages.value = true
   activeConversationId.value = id
+  chatView.value = 'conversation'
   sessions.value = sessions.value.map((item) => ({ ...item, active: item.id === String(id) }))
   display = createDiscussionDisplay([])
   discussionRunning.value = false
@@ -219,13 +235,17 @@ async function loadConversations() {
   if (!Number.isSafeInteger(classroomId) || classroomId <= 0) return
   const generation = ++conversationGeneration
   loadingConversations.value = true
+  discussionError.value = ''
   try {
     const items = await fetchConversations(classroomId)
     if (generation !== conversationGeneration) return
     sessions.value = items.map(conversationSession)
-    if (items[0]) await selectConversation(items[0].id)
+    // 保持右侧先显示会话列表；用户点击某个会话后再加载详情。
   } catch (error) {
-    if (generation === conversationGeneration) toast(error instanceof Error ? error.message : String(error))
+    if (generation === conversationGeneration) {
+      discussionError.value = error instanceof Error ? error.message : String(error)
+      toast(discussionError.value)
+    }
   } finally {
     loadingConversations.value = false
   }
@@ -395,7 +415,7 @@ updateNotes()
 
 const hasActiveSession = computed(() => sessions.value.some((s) => s.active))
 // 交互页自带可操作的沙箱页面，中央播放按钮会挡住它，这一页永远不显示
-const showPlayHint = computed(() => !playing.value && !courseComplete.value && activeScene.value.type !== 'interactive')
+const showPlayHint = computed(() => !playing.value && !discussionBusy.value && !courseComplete.value && activeScene.value.type !== 'interactive')
 
 /* ---------- 圆桌参与者（原遗漏：学员头像 + 信息卡 + 麦克风/聊天） ---------- */
 const participants = computed<Participant[]>(() =>
@@ -409,6 +429,7 @@ const participants = computed<Participant[]>(() =>
     persona: r.persona,
   })),
 )
+const speakingName = computed(() => participants.value.find((item) => item.id === speakingAgentKey.value)?.name)
 const asrEnabled = ref(true)
 function toggleRecording() {
   recording.value = !recording.value
@@ -499,12 +520,23 @@ function openSession(id: string) {
   void selectConversation(conversationId)
 }
 
+function backToConversationList() {
+  chatView.value = 'list'
+}
+
+function retryDiscussion() {
+  discussionError.value = ''
+  if (activeConversationId.value) void selectConversation(activeConversationId.value)
+  else void loadConversations()
+}
+
 function newSession() {
   if (sending.value) return
   ++conversationGeneration
   disconnectEvents()
   loadingMessages.value = false
   activeConversationId.value = null
+  chatView.value = 'list'
   sessions.value = sessions.value.map((item) => ({ ...item, active: false }))
   display = createDiscussionDisplay([])
   discussionRunning.value = false
@@ -519,6 +551,9 @@ async function sendMessage(text: string) {
     return
   }
   sending.value = true
+  discussionError.value = ''
+  chatDraft.value = ''
+  pauseLectureForDiscussion()
   const pendingId = `pending-${++pendingSequence}`
   try {
     let conversationId = activeConversationId.value
@@ -526,6 +561,7 @@ async function sendMessage(text: string) {
       const created = await createConversation(classroomId, { title: text.slice(0, 40), type: 'discussion' })
       conversationId = created.id
       activeConversationId.value = conversationId
+      chatView.value = 'conversation'
       sessions.value = [conversationSession(created), ...sessions.value.map((item) => ({ ...item, active: false }))]
     }
     display.bubbles.push({ id: pendingId, from: 'user', text })
@@ -542,6 +578,7 @@ async function sendMessage(text: string) {
     }
     syncDiscussion()
   } catch (error) {
+    discussionError.value = error instanceof Error ? error.message : String(error)
     display.bubbles = display.bubbles.filter((item) => item.id !== pendingId)
     display.thinking = false
     discussionRunning.value = false
@@ -550,6 +587,25 @@ async function sendMessage(text: string) {
     toast(message)
   } finally {
     sending.value = false
+  }
+}
+
+async function stopDiscussion() {
+  const conversationId = activeConversationId.value
+  if (!conversationId || sending.value) return
+  try {
+    await closeConversation(conversationId)
+    disconnectEvents()
+    ++conversationGeneration
+    activeConversationId.value = null
+    chatView.value = 'list'
+    discussionRunning.value = false
+    display = createDiscussionDisplay([])
+    syncDiscussion()
+    sessions.value = sessions.value.map((item) => ({ ...item, active: false }))
+    toast(t('roundtable.discussionEnded'))
+  } catch (error) {
+    toast(error instanceof Error ? error.message : String(error))
   }
 }
 
@@ -689,6 +745,7 @@ onBeforeUnmount(() => {
           :course-complete="courseComplete"
           :stats="stats"
           :active-content-key="activeContentKey"
+          :discussion-active="discussionActive"
           @toggle-sidebar="toggleSidebar"
           @prev="prev"
           @next="next"
@@ -699,6 +756,7 @@ onBeforeUnmount(() => {
           @toggle-whiteboard="whiteboardOpen = !whiteboardOpen"
           @toggle-fullscreen="toggleFullscreen"
           @toggle-chat="toggleChat"
+          @stop-discussion="stopDiscussion"
         />
       </div>
 
@@ -711,6 +769,7 @@ onBeforeUnmount(() => {
         :your-turn="yourTurn"
         :recording="recording"
         :participants="participants"
+        :speaking-agent-id="speakingAgentKey"
         :asr-enabled="asrEnabled"
         @send="sendMessage"
         @toggle-recording="toggleRecording"
@@ -726,6 +785,19 @@ onBeforeUnmount(() => {
       :has-active-session="hasActiveSession"
       :notes="notes"
       :active-note-id="activeNarration[narrationIndex]?.id ? String(activeNarration[narrationIndex].id) : null"
+      :messages="discussionBubbles"
+      :loading-messages="loadingMessages"
+      :active-conversation-id="activeConversationId"
+      :view="chatView"
+      :busy="discussionBusy"
+      :running="discussionRunning"
+      :sending="sending"
+      :loading-conversations="loadingConversations"
+      :error="discussionError"
+      :draft="chatDraft"
+      :thinking="thinking"
+      :your-turn="yourTurn"
+      :speaking-name="speakingName"
       @update:tab="chatTab = $event"
       @toggle-collapse="toggleChat"
       @resize-start="startChatResize"
@@ -733,6 +805,11 @@ onBeforeUnmount(() => {
       @new-session="newSession"
       @audio-state="playing = $event"
       @audio-caption="updateAudioCaption"
+      @send="sendMessage"
+      @update:draft="chatDraft = $event"
+      @back="backToConversationList"
+      @retry="retryDiscussion"
+      @input-activate="pauseLectureForDiscussion"
     />
 
     <!-- 白板占位入口（完整白板后续补） -->

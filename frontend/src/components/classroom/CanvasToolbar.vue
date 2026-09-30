@@ -33,6 +33,7 @@ const props = defineProps<{
   whiteboardOpen: boolean
   fullscreen: boolean
   chatCollapsed: boolean
+  discussionActive: boolean
 }>()
 
 const emit = defineEmits<{
@@ -46,6 +47,7 @@ const emit = defineEmits<{
   (e: 'toggle-whiteboard'): void
   (e: 'toggle-fullscreen'): void
   (e: 'toggle-chat'): void
+  (e: 'stop-discussion'): void
 }>()
 
 const { t } = useI18n()
@@ -206,8 +208,10 @@ function cycleSpeed() {
 
       <!-- 结束讨论 -->
       <button
+        v-if="discussionActive"
         type="button"
         class="flex h-6 cursor-pointer items-center gap-1.5 rounded-md bg-red-500/10 px-2.5 text-[11px] font-semibold text-red-600 transition-colors hover:bg-red-500/20 dark:text-red-400"
+        @click="emit('stop-discussion')"
       >
         {{ t('roundtable.stopDiscussion') }}
       </button>

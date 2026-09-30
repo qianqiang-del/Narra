@@ -121,12 +121,12 @@ const slideUnits = computed<SlideUnit[]>(() => {
   <!-- slide：一页课件，正文块按类型分别排版 -->
   <div
     v-if="scene.type === 'slide' && scene.slide"
-    class="flex size-full flex-col overflow-hidden bg-white dark:bg-slate-900"
+    class="flex size-full flex-col justify-center overflow-hidden bg-white px-10 md:px-16 dark:bg-slate-900"
   >
     <!-- 标题区 -->
-    <header class="shrink-0 px-10 pt-9 pb-4 md:px-14 md:pt-10">
+    <header class="shrink-0 px-0 pt-0 pb-4">
       <h1
-        class="text-[26px] leading-tight font-black tracking-tight text-indigo-950 md:text-[36px] dark:text-indigo-100"
+        class="text-3xl leading-tight font-bold tracking-tight text-gray-800 md:text-4xl dark:text-gray-100"
       >
         {{ scene.title }}
       </h1>
@@ -136,11 +136,11 @@ const slideUnits = computed<SlideUnit[]>(() => {
       >
         {{ scene.slide.lead }}
       </p>
-      <div class="mt-4 h-px bg-slate-200 dark:bg-slate-700" />
+      <div class="mt-4 h-px bg-gray-200 dark:bg-gray-700" />
     </header>
 
     <!-- 正文：内容不满一屏时垂直居中，超出时从顶部开始滚动 -->
-    <div class="slide-body min-h-0 flex-1 overflow-y-auto px-10 md:px-14">
+    <div class="slide-body min-h-0 max-h-[70%] overflow-y-auto px-0">
       <template v-for="unit in slideUnits" :key="unit.id">
         <!-- 小节标题 -->
         <h2
@@ -179,26 +179,19 @@ const slideUnits = computed<SlideUnit[]>(() => {
         <!-- 并列要点：一张卡片逐行分隔，带标签的行分两列对齐 -->
         <div
           v-else-if="unit.type === 'list'"
-          class="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/40"
+          class="space-y-3"
         >
           <div
             v-for="(row, rowIndex) in unit.rows"
             :key="row.key || rowIndex"
             :class="
               cn(
-                'items-start px-4 py-2.5 md:px-5',
-                unit.hasLabel ? 'grid grid-cols-[200px_1fr] gap-0' : 'flex gap-2.5',
-                rowIndex > 0 && 'border-t border-slate-200 dark:border-slate-700',
+                'flex items-start gap-3 px-0',
               )
             "
           >
-            <span v-if="row.label" class="border-r border-slate-200 bg-indigo-50/40 pr-4 text-[13px] leading-[1.75] font-bold text-indigo-900 dark:border-slate-700 dark:bg-indigo-950/30 dark:text-indigo-200">
-              {{ row.label }}
-            </span>
-            <span v-else class="pt-[0.5rem]">
-              <span class="block size-1.5 rounded-full bg-indigo-400" />
-            </span>
-            <span :class="cn('text-[13.5px] leading-[1.75] text-slate-600 md:text-[14px] dark:text-slate-300', unit.hasLabel && 'pl-4')">{{ row.text }}</span>
+            <span class="mt-2 size-1.5 shrink-0 rounded-full bg-violet-500" />
+            <span class="text-[15px] leading-relaxed text-gray-600 dark:text-gray-300"><strong v-if="row.label" class="font-semibold text-gray-800 dark:text-gray-100">{{ row.label }}：</strong>{{ row.text }}</span>
           </div>
         </div>
 

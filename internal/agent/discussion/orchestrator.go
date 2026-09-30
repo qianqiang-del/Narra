@@ -235,6 +235,9 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (result Result,
 		zap.String("trace_id", run.TraceID),
 		zap.Uint64("conversation_id", request.ConversationID),
 	)
+	// 这趟讨论后续所有模型调用（发言、摘要、记忆提炼）都继承同一条外部观测链路。
+	// 本地 span 仍按各自的 Run/Turn 落库，两套观测使用相同的 trace_id 便于互相定位。
+	ctx = o.observationContext(ctx, run, nil)
 	rootSpanStartedAt := time.Now().UTC()
 	rootSpanID := o.traceID(log)
 
@@ -253,15 +256,17 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (result Result,
 	outcomes := make([]TurnOutcome, 0, maxTurns)
 	lastSpeaker := -1
 	lastAction := ""
+	preferredSpeakerKey := ""
 	stopReason := ""
 
 	for turnNo := int16(1); turnNo <= run.MaxTurns; turnNo++ {
 		decision := o.deps.Director.Decide(DiscussionState{
-			Participants: request.Participants,
-			Spoken:       spoken,
-			LastSpeaker:  lastSpeaker,
-			LastAction:   lastAction,
-			TurnNo:       turnNo,
+			Participants:        request.Participants,
+			Spoken:              spoken,
+			LastSpeaker:         lastSpeaker,
+			LastAction:          lastAction,
+			PreferredSpeakerKey: preferredSpeakerKey,
+			TurnNo:              turnNo,
 		})
 		if decision.Stop {
 			// 停下来有好几种原因（有人要问用户 / 有人宣布结束 / 全员说完），
@@ -300,6 +305,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (result Result,
 		spoken[decision.SpeakerIndex]++
 		lastSpeaker = decision.SpeakerIndex
 		lastAction = outcome.NextAction
+		preferredSpeakerKey = outcome.NextSpeakerKey
 		outcomes = append(outcomes, outcome)
 		log.Info("回合完成",
 			zap.Int16("turn_no", outcome.TurnNo),
@@ -454,14 +460,15 @@ func (o *Orchestrator) speak(
 		return TurnOutcome{}, err
 	}
 	if streamingModel, ok := o.deps.Model.(StreamingModel); ok {
-		return o.speakStreaming(ctx, request, run, turn, classroomID, participant, turnNo, topic, rootSpanID, log, agentSpanID, agentSpanStartedAt, history, streamingModel)
+		return o.speakStreaming(o.observationContext(ctx, run, turn), request, run, turn, classroomID, participant, turnNo, topic, rootSpanID, log, agentSpanID, agentSpanStartedAt, history, streamingModel)
 	}
 
-	response, err := o.callModel(ctx, run, turn, agentSpanID, GenerationRequest{
-		Participant: participant,
-		Topic:       topic,
-		TurnNo:      turnNo,
-		History:     history,
+	response, err := o.callModel(o.observationContext(ctx, run, turn), run, turn, agentSpanID, GenerationRequest{
+		Participant:  participant,
+		Participants: request.Participants,
+		Topic:        topic,
+		TurnNo:       turnNo,
+		History:      history,
 	})
 	if err != nil {
 		o.abandonTurn(turn, err)
@@ -568,7 +575,7 @@ func (o *Orchestrator) speakStreaming(
 	history []HistoryMessage,
 	model StreamingModel,
 ) (TurnOutcome, error) {
-	modelRequest := GenerationRequest{Participant: participant, Topic: topic, TurnNo: turnNo, History: history}
+	modelRequest := GenerationRequest{Participant: participant, Participants: request.Participants, Topic: topic, TurnNo: turnNo, History: history}
 	message := &entity.ConversationMessage{
 		ConversationID:   request.ConversationID,
 		SenderType:       entity.MessageSenderAgent,
@@ -614,7 +621,7 @@ func (o *Orchestrator) speakStreaming(
 			}
 		}
 		if chunk.Done {
-			response = GenerationResponse{Content: content.String(), InputTokens: chunk.InputTokens, OutputTokens: chunk.OutputTokens, NextAction: chunk.NextAction}
+			response = GenerationResponse{Content: content.String(), InputTokens: chunk.InputTokens, OutputTokens: chunk.OutputTokens, NextAction: chunk.NextAction, NextSpeakerKey: chunk.NextSpeakerKey}
 			completed = true
 		}
 	}
@@ -658,7 +665,7 @@ func (o *Orchestrator) speakStreaming(
 	modelSpanID := o.traceID(log)
 	o.recordModelSpan(log, run, turn, modelSpanID, agentSpanID, agentSpanStartedAt, modelRequest, 1, response, nil)
 	o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusOK, nextAction, nil)
-	return TurnOutcome{TurnID: turn.ID, TurnNo: turn.TurnNo, AgentName: participant.Name, MessageID: message.ID, Content: response.Content, OutputTokens: response.OutputTokens, NextAction: nextAction}, nil
+	return TurnOutcome{TurnID: turn.ID, TurnNo: turn.TurnNo, AgentName: participant.Name, MessageID: message.ID, Content: response.Content, OutputTokens: response.OutputTokens, NextAction: nextAction, NextSpeakerKey: response.NextSpeakerKey}, nil
 }
 
 func (o *Orchestrator) failStreamingMessage(message *entity.ConversationMessage, cause error) {

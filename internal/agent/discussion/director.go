@@ -19,11 +19,12 @@ type Director interface {
 // 只带决策需要的东西，不带模型、不带数据库句柄：选人策略应当是接近纯函数的判断，
 // 这样才能单独测，也才能在后面接上下文预算、共享记忆时不被牵连。
 type DiscussionState struct {
-	Participants []Participant
-	Spoken       []int  // 与 Participants 一一对应：各人已经发过几次言
-	LastSpeaker  int    // 上一轮发言人的下标；-1 表示还没人说过
-	LastAction   string // 上一轮给出的下一步动作；空串表示还没人说过、或模型没给
-	TurnNo       int16  // 即将进行的是第几轮（从 1 开始）
+	Participants        []Participant
+	Spoken              []int  // 与 Participants 一一对应：各人已经发过几次言
+	LastSpeaker         int    // 上一轮发言人的下标；-1 表示还没人说过
+	LastAction          string // 上一轮给出的下一步动作；空串表示还没人说过、或模型没给
+	PreferredSpeakerKey string // 上一位模型建议的下一位角色；为空时由策略自行选择
+	TurnNo              int16  // 即将进行的是第几轮（从 1 开始）
 }
 
 // Decision 是"下一步怎么走"的结论。
@@ -81,6 +82,13 @@ func (TurnTakingDirector) Decide(state DiscussionState) Decision {
 		// 第一轮就收到 continue 时退回默认轮换，否则会挑出一个不存在的发言人。
 		if state.LastSpeaker >= 0 && state.LastSpeaker < len(state.Participants) {
 			return Decision{SpeakerIndex: state.LastSpeaker, Reason: "上一轮说继续，由他补充"}
+		}
+	}
+	if state.LastAction == entity.AgentTurnActionSwitchAgent && state.PreferredSpeakerKey != "" {
+		for index, participant := range state.Participants {
+			if participant.AgentKey == state.PreferredSpeakerKey {
+				return Decision{SpeakerIndex: index, Reason: "模型根据角色人设邀请他发言"}
+			}
 		}
 	}
 	return nextUnspoken(state)

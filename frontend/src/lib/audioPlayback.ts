@@ -11,6 +11,11 @@ export function stopActiveAudio() {
   activeAudio = null
 }
 
+/** 暂停当前音频但保留 src 与 currentTime，讨论结束后可从原位置继续。 */
+export function pauseActiveAudio() {
+  activeAudio?.pause()
+}
+
 export function registerAudio(audio: HTMLAudioElement) {
   if (activeAudio && activeAudio !== audio) stopActiveAudio()
   activeAudio = audio

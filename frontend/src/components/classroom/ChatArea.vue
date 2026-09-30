@@ -1,16 +1,17 @@
 <script setup lang="ts">
 /**
  * ChatArea —— 文档 §6.8（右侧聊天面板，默认 340 / 240~560，可折叠）。
- * Tabs：笔记（lecture）/ 对话（chat）。空态 + 会话卡。
+ * Tabs：笔记（lecture）/ 对话（chat）。对话支持列表、历史详情和实时消息。
  */
+import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { BookOpen, MessageSquare, PanelRightClose, PanelRightOpen, Plus } from 'lucide-vue-next'
+import { ArrowLeft, BookOpen, MessageSquare, PanelRightClose, PanelRightOpen, Plus, Send } from 'lucide-vue-next'
 
 import { cn } from '@/lib/utils'
 import { registerAudio } from '@/lib/audioPlayback'
-import type { ChatNote, ChatSession } from '@/types/classroom'
+import type { Bubble, ChatNote, ChatSession } from '@/types/classroom'
 
-defineProps<{
+const props = defineProps<{
   collapsed: boolean
   width: number
   tab: 'lecture' | 'chat'
@@ -18,6 +19,19 @@ defineProps<{
   hasActiveSession: boolean
   notes: ChatNote[]
   activeNoteId?: string | null
+  messages: Bubble[]
+  loadingMessages?: boolean
+  activeConversationId?: number | null
+  view: 'list' | 'conversation'
+  busy: boolean
+  running: boolean
+  sending: boolean
+  loadingConversations: boolean
+  error: string
+  draft: string
+  thinking: boolean
+  yourTurn: boolean
+  speakingName?: string
 }>()
 
 const emit = defineEmits<{
@@ -28,10 +42,44 @@ const emit = defineEmits<{
   (e: 'new-session'): void
   (e: 'audio-state', playing: boolean): void
   (e: 'audio-caption', payload: { id: string; text: string }): void
+  (e: 'send', text: string): void
+  (e: 'update:draft', text: string): void
+  (e: 'back'): void
+  (e: 'retry'): void
+  (e: 'input-activate'): void
 }>()
 
 const { t } = useI18n()
+const messageList = ref<HTMLElement | null>(null)
+const followMessages = ref(true)
+const activeTitle = computed(() => props.sessions.find((item) => item.active)?.title || t('workspace.newSession'))
+watch(() => props.messages, async () => {
+  if (!followMessages.value) return
+  await nextTick()
+  messageList.value?.scrollTo({ top: messageList.value.scrollHeight })
+}, { deep: true })
+watch(() => [props.activeConversationId, props.view], async () => {
+  followMessages.value = true
+  await nextTick()
+  messageList.value?.scrollTo({ top: messageList.value.scrollHeight })
+})
+function onScroll() {
+  const element = messageList.value
+  if (element) followMessages.value = element.scrollHeight - element.scrollTop - element.clientHeight < 48
+}
+function send() {
+  const text = props.draft.trim()
+  if (!text || props.busy || props.error) return
+  followMessages.value = true
+  emit('send', text)
+}
+function onKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+  event.preventDefault()
+  send()
+}
 function playAudio(path?: string | null, text?: string, id?: string) {
+  if (props.running || props.sending) return
   const normalized = path?.trim().replaceAll('\\', '/')
   if (normalized) {
     const player = new Audio(`/audio/${normalized}`)
@@ -39,7 +87,10 @@ function playAudio(path?: string | null, text?: string, id?: string) {
     if (text && id) emit('audio-caption', { id, text })
     player.onended = () => emit('audio-state', false)
     player.onerror = () => emit('audio-state', false)
-    void player.play().then(() => emit('audio-state', true)).catch(() => emit('audio-state', false))
+    void player.play().then(() => {
+      if (props.running || props.sending) { player.pause(); return }
+      emit('audio-state', true)
+    }).catch(() => emit('audio-state', false))
   }
 }
 
@@ -52,6 +103,7 @@ const TYPE_BADGE: Record<ChatSession['type'], string> = {
 
 <template>
   <div
+    data-testid="classroom-chat"
     class="relative z-20 flex shrink-0 flex-col overflow-hidden border-l border-gray-100 bg-white/80 shadow-[-2px_0_24px_rgba(0,0,0,0.02)] backdrop-blur-xl dark:border-gray-800 dark:bg-gray-900/80"
     :style="{
       width: collapsed ? '0px' : `${width}px`,
@@ -101,7 +153,8 @@ const TYPE_BADGE: Record<ChatSession['type'], string> = {
         type="button"
         :title="t('workspace.newSession')"
         :aria-label="t('workspace.newSession')"
-        class="shrink-0 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800"
+        :disabled="busy"
+        class="shrink-0 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 disabled:opacity-40 dark:hover:bg-gray-800"
         @click="emit('new-session')"
       >
         <Plus class="size-4" />
@@ -122,6 +175,7 @@ const TYPE_BADGE: Record<ChatSession['type'], string> = {
         v-for="n in notes"
         :key="n.id"
         type="button"
+        :disabled="running || sending"
         :class="n.id === activeNoteId ? 'w-full rounded-xl border border-purple-300 bg-purple-50 p-3 text-left ring-2 ring-purple-200 dark:border-purple-700 dark:bg-purple-950/30' : 'w-full rounded-xl border border-gray-100 bg-white p-3 text-left dark:border-gray-800 dark:bg-gray-900'"
         @click="playAudio(n.audioPath, n.body, n.id)"
       >
@@ -131,9 +185,15 @@ const TYPE_BADGE: Record<ChatSession['type'], string> = {
     </div>
 
     <!-- 对话 -->
-    <div v-else class="scrollbar-hide flex-1 space-y-2 overflow-y-auto p-3">
+    <div v-else class="flex min-h-0 flex-1 flex-col">
+      <div v-if="error" role="alert" class="mx-3 mb-2 rounded-lg bg-red-50 p-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+        {{ error }}
+        <button type="button" class="ml-2 underline" :disabled="busy" @click="emit('retry')">{{ t('chat.retry') }}</button>
+      </div>
+      <div v-if="view === 'list'" class="scrollbar-hide min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+      <p v-if="loadingConversations" class="py-4 text-center text-xs text-gray-400">{{ t('chat.loadingMessages') }}</p>
       <div
-        v-if="sessions.length === 0"
+        v-else-if="sessions.length === 0"
         class="flex h-full flex-col items-center justify-center p-6 text-center opacity-50"
       >
         <div class="flex size-12 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800">
@@ -147,6 +207,7 @@ const TYPE_BADGE: Record<ChatSession['type'], string> = {
         v-for="s in sessions"
         :key="s.id"
         type="button"
+        :disabled="busy && !s.active"
         :class="
           cn(
             'w-full overflow-hidden rounded-xl border text-left transition-all duration-500',
@@ -176,6 +237,28 @@ const TYPE_BADGE: Record<ChatSession['type'], string> = {
           {{ s.preview }}
         </p>
       </button>
+      </div>
+
+      <template v-else>
+        <div class="flex shrink-0 items-center gap-2 border-b border-gray-100 px-3 py-2 dark:border-gray-800">
+          <button type="button" :aria-label="t('chat.backToList')" class="rounded-md p-1 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" @click="emit('back')"><ArrowLeft class="size-4" /></button>
+          <span class="truncate text-sm font-medium text-gray-700 dark:text-gray-200">{{ activeTitle }}</span>
+        </div>
+        <div ref="messageList" class="scrollbar-hide min-h-0 flex-1 space-y-3 overflow-y-auto p-3" @scroll="onScroll">
+          <div v-if="loadingMessages" class="py-3 text-center text-xs text-gray-400">{{ t('chat.loadingMessages') }}</div>
+          <p v-else-if="!messages.length" class="py-8 text-center text-xs text-gray-400">{{ t('chat.startConversation') }}</p>
+          <div v-for="message in messages" :key="message.id" :class="cn('rounded-xl px-3 py-2 text-[13px] leading-relaxed', message.from === 'user' ? 'ml-5 bg-violet-600 text-white' : 'mr-5 bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200')">
+            <div v-if="message.name" class="mb-0.5 text-[10px] font-medium opacity-60">{{ message.name }}</div>
+            <p class="whitespace-pre-wrap break-words">{{ message.text }}</p>
+          </div>
+          <p v-if="running || sending || thinking" role="status" class="animate-pulse text-xs text-violet-600 dark:text-violet-300">{{ speakingName ? t('chat.speaking', { name: speakingName }) : t('chat.thinking') }}</p>
+          <p v-else-if="yourTurn" role="status" class="text-xs text-violet-600">{{ t('roundtable.yourTurnHint') }}</p>
+        </div>
+        <form class="flex shrink-0 items-end gap-1.5 border-t border-gray-100 p-3 dark:border-gray-800" @submit.prevent="send">
+          <textarea :value="draft" rows="2" class="max-h-28 min-w-0 flex-1 resize-none rounded-lg border border-gray-200 bg-transparent px-2 py-1.5 text-xs outline-none focus:border-violet-400 dark:border-gray-700" :placeholder="t('chat.inputPlaceholder')" :aria-label="t('chat.inputPlaceholder')" @input="emit('update:draft', ($event.target as HTMLTextAreaElement).value)" @focus="emit('input-activate')" @keydown="onKeydown" />
+          <button type="submit" :disabled="busy || !!error || !draft.trim()" :aria-label="t('workspace.send')" class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40"><Send class="size-3.5" /></button>
+        </form>
+      </template>
     </div>
 
     <!-- 拖拽手柄 -->

@@ -22,6 +22,7 @@ defineProps<{
   whiteboardOpen: boolean
   fullscreen: boolean
   chatCollapsed: boolean
+  discussionActive: boolean
   showPlayHint: boolean
   courseComplete: boolean
   stats: { scenes: number; minutes: number; agents: number; messages: number }
@@ -39,6 +40,7 @@ const emit = defineEmits<{
   (e: 'toggle-whiteboard'): void
   (e: 'toggle-fullscreen'): void
   (e: 'toggle-chat'): void
+  (e: 'stop-discussion'): void
 }>()
 
 const { t } = useI18n()
@@ -104,6 +106,7 @@ const { t } = useI18n()
       :whiteboard-open="whiteboardOpen"
       :fullscreen="fullscreen"
       :chat-collapsed="chatCollapsed"
+      :discussion-active="discussionActive"
       @toggle-sidebar="emit('toggle-sidebar')"
       @prev="emit('prev')"
       @next="emit('next')"
@@ -114,6 +117,7 @@ const { t } = useI18n()
       @toggle-whiteboard="emit('toggle-whiteboard')"
       @toggle-fullscreen="emit('toggle-fullscreen')"
       @toggle-chat="emit('toggle-chat')"
+      @stop-discussion="emit('stop-discussion')"
     />
   </div>
 </template>

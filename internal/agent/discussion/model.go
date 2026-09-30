@@ -30,12 +30,13 @@ type StreamingModel interface {
 // Delta 只包含可展示的正文；Done=true 的最后一块携带动作和 token 用量。
 // Err 表示上游中断或协议解析失败，此时调用方不得把本轮标记为完成。
 type GenerationChunk struct {
-	Delta        string
-	NextAction   string
-	InputTokens  int32
-	OutputTokens int32
-	Done         bool
-	Err          error
+	Delta          string
+	NextAction     string
+	NextSpeakerKey string
+	InputTokens    int32
+	OutputTokens   int32
+	Done           bool
+	Err            error
 }
 
 // Summarizer 是"把一段老对话压成一段短话"的能力。
@@ -56,10 +57,11 @@ type Summarizer interface {
 // 只带"角色现在需要知道的"：他是谁、大家在聊什么、之前谁说过什么。
 // 不带 trace_id、库句柄这类东西 —— 那些是编排层的事，模型不需要也不该看到。
 type GenerationRequest struct {
-	Participant Participant      // 这次轮到谁
-	Topic       string           // 讨论主题（触发消息的正文）
-	TurnNo      int16            // 这是第几轮发言
-	History     []HistoryMessage // 此前的发言，按时间升序
+	Participant  Participant      // 这次轮到谁
+	Participants []Participant    // 本场圆桌的完整成员，供模型决定是否换人
+	Topic        string           // 讨论主题（触发消息的正文）
+	TurnNo       int16            // 这是第几轮发言
+	History      []HistoryMessage // 此前的发言，按时间升序
 }
 
 // HistoryMessage 是喂给历史上下文的一条发言。
@@ -82,7 +84,8 @@ type GenerationResponse struct {
 	//
 	// 允许为空、也允许是编出来的值 —— 调用方一律按"换人"兜底（见 TurnTakingDirector）。
 	// 也就是说：模型不按格式回话，只会让讨论效果差一点，不会让讨论崩掉。
-	NextAction string
+	NextAction     string
+	NextSpeakerKey string // 可选的角色池 agent_key
 }
 
 // FakeModel 是不调用任何大模型的替身。

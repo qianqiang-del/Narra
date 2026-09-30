@@ -9,6 +9,7 @@ import "github.com/gin-gonic/gin"
 func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	g.GET("/classrooms/:id/conversations", c.List)
 	g.POST("/classrooms/:id/conversations", c.Create)
+	g.POST("/conversations/:id/close", c.Close)
 	g.GET("/conversations/:id/events", c.Events)
 	g.GET("/conversations/:id/messages", c.ListMessages)
 }

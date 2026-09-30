@@ -23,9 +23,11 @@ import (
 
 // participantBrief 是圆桌成员在事件里的展示快照（发言当时的样子）。
 type participantBrief struct {
-	AgentID uint64 `json:"agent_id"`
-	Name    string `json:"name"`
-	Role    string `json:"role"`
+	AgentID  uint64 `json:"agent_id"`
+	AgentKey string `json:"agent_key"`
+	Name     string `json:"name"`
+	Role     string `json:"role"`
+	RoleType string `json:"role_type"`
 }
 
 // runStartedPayload：这一趟讨论开始了。
@@ -100,9 +102,11 @@ func participantBriefs(participants []Participant) []participantBrief {
 	briefs := make([]participantBrief, 0, len(participants))
 	for _, participant := range participants {
 		briefs = append(briefs, participantBrief{
-			AgentID: participant.ClassroomAgentID,
-			Name:    participant.Name,
-			Role:    participant.Role,
+			AgentID:  participant.ClassroomAgentID,
+			AgentKey: participant.AgentKey,
+			Name:     participant.Name,
+			Role:     participant.Role,
+			RoleType: participant.RoleType,
 		})
 	}
 	return briefs

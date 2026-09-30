@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gorm.io/gorm"
@@ -86,6 +87,21 @@ func (s *conversationService) Create(ctx context.Context, classroomID uint64, in
 	}
 	out := toConversationResponse(*conversation)
 	return &out, nil
+}
+
+// Close 结束一条对话。结束后只能查看历史，下一次发言由前端创建新对话。
+func (s *conversationService) Close(ctx context.Context, conversationID uint64) error {
+	conversation, err := s.findConversation(ctx, conversationID)
+	if err != nil {
+		return err
+	}
+	if conversation.Status == entity.ConversationStatusClosed {
+		return nil
+	}
+	if err := s.conversations.Close(ctx, conversationID, time.Now().UTC()); err != nil {
+		return apperrors.NewWithErr(apperrors.CodeInternalError, "结束对话失败", err)
+	}
+	return nil
 }
 
 func (s *conversationService) ListMessages(ctx context.Context, conversationID uint64, afterSequence int64, limit int) ([]responsedto.ConversationMessage, error) {
