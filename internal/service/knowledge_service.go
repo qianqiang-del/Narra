@@ -48,6 +48,14 @@ type documentQuerier interface {
 
 	// CountChunksByDocument 统计每篇文档的切片数，只返回入参里出现过的 ID。
 	CountChunksByDocument(ctx context.Context, documentIDs []uint64) (map[uint64]int64, error)
+
+	// CountDocumentsMissingModelVectors 统计指定状态下仍缺该模型向量的文档数：
+	// ready = 待修复（提示条与重新向量化的挑选取自它），pending / processing = 正在补
+	// （重新向量化的进度读数）。
+	CountDocumentsMissingModelVectors(ctx context.Context, modelID uint64, statuses []string) (int64, error)
+
+	// ListDocumentIDsMissingModelVectors 取仍缺该模型向量的 ready 文档 ID，供重新向量化。
+	ListDocumentIDsMissingModelVectors(ctx context.Context, modelID uint64) ([]uint64, error)
 }
 
 // uploadRecordStore 是本服务对上传记录存储的最小依赖面。
@@ -88,7 +96,8 @@ type asyncIngester interface {
 	SubmitFile(context.Context, rag.FileInput) (rag.IngestResult, error)
 }
 
-// fileRetrier 是收录能力里"把失败的任务重新入队"的那一半，由 *rag.Ingester 提供。
+// fileRetrier 是收录能力里"重新入队"的入口，由 *rag.Ingester 提供：
+// Retry 面向 failed（收录失败后的重试），Reembed 面向 ready（换模型后的重新向量化）。
 //
 // 与 asyncIngester 同一个路数（类型断言而非并进 ingester）：它后加，并进去会要求
 // 所有已有的测试替身再补一个方法。代价同样是这层保障从编译期退到运行期。
@@ -96,6 +105,19 @@ type fileRetrier interface {
 	// Retry 把一行 failed 文档改回 pending 重新排队；stage 是按现实材料算出的恢复点。
 	// 返回 false 表示它不满足重试条件。
 	Retry(ctx context.Context, id uint64, stage string) (bool, error)
+
+	// Reembed 把一行 ready 文档改回 pending，用当前默认模型重算向量。
+	// 返回 false 表示它已经不是 ready（并发下被别的请求抢先）。
+	Reembed(ctx context.Context, id uint64, stage string) (bool, error)
+}
+
+// embeddingModels 是本服务对向量模型登记的最小依赖面。
+//
+// 只有 GetDefault：重新向量化的对象与"缺哪个模型的向量"都以当前默认模型为准 ——
+// 与收录、检索两条链路认的是同一个默认模型（embedding_models.is_default）。
+type embeddingModels interface {
+	// GetDefault 返回当前默认模型；库里一条都没有时返回 gorm.ErrRecordNotFound。
+	GetDefault(ctx context.Context) (*entity.EmbeddingModel, error)
 }
 
 // retriever 是本服务对检索能力的最小依赖面。
@@ -127,6 +149,12 @@ var ErrIngestQueueFull = rag.ErrIngestQueueFull
 //
 // 与 ErrIngestQueueFull 同属"现在不行"这一类的可判定错误，接口层一并翻成 409。
 var ErrRetryNotFailed = errors.New("这份文档不是失败状态，不需要重试")
+
+// ErrNoEmbeddingModel 表示还没有登记默认向量模型，"重新向量化"无从谈起。
+//
+// 与 ErrRetryNotFailed 同属"现在不行"，接口层翻 409；直接复用 rag 侧的哨兵 ——
+// 收录链路的"没有可用的向量模型"与本处必须是同一个值。
+var ErrNoEmbeddingModel = rag.ErrNoEmbeddingModel
 
 // ErrRecoveryInputMissing 表示恢复所需的材料全都不在了：原件、正文、切片一个都没有。
 //
@@ -300,6 +328,98 @@ func (s *knowledgeService) resolveRecoveryStage(ctx context.Context, document *e
 	})
 }
 
+// EmbeddingStatus 返回"仍缺当前默认模型向量"的文档数，供知识库页提示与进度显示。
+//
+// 两个数字分工不同：StaleDocuments 是 ready 里待重算的（提示条据此出现），
+// PendingDocuments 是已经回到队列、正在补算的（重新向量化的进度读数 —— 入队后
+// 文档不再是 ready，"待修复"会立刻归零，只看它界面会以为已经完成）。
+//
+// "还没配置默认模型"返回零值而不是错误：提示条据此不出现 —— 该做的是去设置页，
+// 不是点"重新向量化"。其余查询失败照常上抛（接口层翻 500）。
+func (s *knowledgeService) EmbeddingStatus(ctx context.Context) (responsedto.KnowledgeEmbeddingStatus, error) {
+	model, err := s.models.GetDefault(ctx)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return responsedto.KnowledgeEmbeddingStatus{}, nil
+		}
+		return responsedto.KnowledgeEmbeddingStatus{}, fmt.Errorf("查询默认向量模型失败: %w", err)
+	}
+
+	stale, err := s.documents.CountDocumentsMissingModelVectors(ctx, model.ID,
+		[]string{entity.KnowledgeDocumentStatusReady})
+	if err != nil {
+		return responsedto.KnowledgeEmbeddingStatus{}, err
+	}
+	inFlight, err := s.documents.CountDocumentsMissingModelVectors(ctx, model.ID,
+		[]string{entity.KnowledgeDocumentStatusPending, entity.KnowledgeDocumentStatusProcessing})
+	if err != nil {
+		return responsedto.KnowledgeEmbeddingStatus{}, err
+	}
+
+	return responsedto.KnowledgeEmbeddingStatus{
+		Model:            model.Name,
+		Dimensions:       int(model.Dimensions),
+		StaleDocuments:   int(stale),
+		PendingDocuments: int(inFlight),
+	}, nil
+}
+
+// Reembed 把仍缺当前默认模型向量的 ready 文档批量重新排队。
+//
+// 逐篇入队而不是一条 SQL 批量改状态：每次入队都要过收录队列的容量闸门
+// （事务内 advisory lock + 计数，见 rag.Ingester.Reembed），批量改会绕过它。
+// 队列满时停止并返回部分结果，已入队的照常处理、剩余的下次再点 ——
+// 用户看到的是"已排队 X 篇，队列满，剩余 Y 篇"，而不是一次不可解释的整体失败。
+//
+// 起点阶段传 embed：能进这个列表的文档必然有切片（判据见仓储的 EXISTS 谓词），
+// 后台开始处理前还会按现实材料再算一次恢复点，切片若中途被动过会自己回退。
+func (s *knowledgeService) Reembed(ctx context.Context) (responsedto.KnowledgeReembedResult, error) {
+	model, err := s.models.GetDefault(ctx)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return responsedto.KnowledgeReembedResult{}, ErrNoEmbeddingModel
+		}
+		return responsedto.KnowledgeReembedResult{}, fmt.Errorf("查询默认向量模型失败: %w", err)
+	}
+
+	ids, err := s.documents.ListDocumentIDsMissingModelVectors(ctx, model.ID)
+	if err != nil {
+		return responsedto.KnowledgeReembedResult{}, err
+	}
+	result := responsedto.KnowledgeReembedResult{Total: len(ids)}
+	if len(ids) == 0 {
+		return result, nil
+	}
+
+	reembedder, ok := s.ingester.(fileRetrier)
+	if !ok {
+		return responsedto.KnowledgeReembedResult{}, fmt.Errorf("知识库异步收录不可用")
+	}
+
+	for _, id := range ids {
+		requeued, err := reembedder.Reembed(ctx, id, entity.KnowledgeDocumentStageEmbed)
+		if err != nil {
+			if errors.Is(err, ErrIngestQueueFull) {
+				result.QueueFull = true
+				break
+			}
+			// 其余是数据库/事务故障：如实报错，已入队的文档不受影响，等下一轮再点。
+			return result, fmt.Errorf("重新排队失败: %w", err)
+		}
+		if requeued {
+			result.Queued++
+		} else {
+			result.Skipped++
+		}
+	}
+
+	if result.Queued == 0 && result.QueueFull {
+		// 一篇都没进去：按可判定的"队列满"报出去（接口层翻 409），计数仍随结果带回。
+		return result, ErrIngestQueueFull
+	}
+	return result, nil
+}
+
 // knowledgeService 是 KnowledgeService 的实现。
 //
 // 它只做三件事：把 HTTP DTO 翻成收录链路的输入、把 entity 翻成 HTTP DTO、
@@ -313,6 +433,7 @@ type knowledgeService struct {
 	records      uploadRecordStore
 	ingester     ingester
 	retriever    retriever
+	models       embeddingModels
 	uploadDir    string
 	knowledgeDir string
 }
@@ -321,11 +442,14 @@ var _ KnowledgeService = (*knowledgeService)(nil)
 
 // NewKnowledgeService 创建知识库服务。
 //
-// retriever 可以传 nil（见 retriever 的说明）。assetDirs 是可选参数（早期调用点
-// 只传四个依赖），按位置传：[0] 上传暂存目录，必须与 controller、worker 用同一个值 ——
-// 删除文档时靠它判断一条记录的 upload_path 是否可信；[1] 知识资产目录，删除文档时
-// 顺带清掉它发布出去的图片。不传（空串）时对应的清理动作整体跳过，删除功能不受影响。
-func NewKnowledgeService(documents documentQuerier, records uploadRecordStore, ingester ingester, retriever retriever, assetDirs ...string) KnowledgeService {
+// retriever 可以传 nil（见 retriever 的说明），models 必须非 nil ——
+// EmbeddingStatus 与 Reembed 以当前默认模型为准，"缺哪个模型的向量"没有它算不出来。
+//
+// assetDirs 是可选参数（早期调用点只传四个依赖），按位置传：[0] 上传暂存目录，
+// 必须与 controller、worker 用同一个值 —— 删除文档时靠它判断一条记录的 upload_path
+// 是否可信；[1] 知识资产目录，删除文档时顺带清掉它发布出去的图片。
+// 不传（空串）时对应的清理动作整体跳过，删除功能不受影响。
+func NewKnowledgeService(documents documentQuerier, records uploadRecordStore, ingester ingester, retriever retriever, models embeddingModels, assetDirs ...string) KnowledgeService {
 	uploadDir := ""
 	if len(assetDirs) > 0 {
 		uploadDir = assetDirs[0]
@@ -339,6 +463,7 @@ func NewKnowledgeService(documents documentQuerier, records uploadRecordStore, i
 		records:      records,
 		ingester:     ingester,
 		retriever:    retriever,
+		models:       models,
 		uploadDir:    uploadDir,
 		knowledgeDir: knowledgeDir,
 	}

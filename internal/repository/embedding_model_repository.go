@@ -190,3 +190,27 @@ ORDER BY m.id`).Scan(&rows).Error
 	}
 	return rows, nil
 }
+
+// DeleteUnusedModels 删除名下已无向量的非默认模型行，返回被删掉的名字。
+//
+// 判定与删除放在一条 SQL 里（NOT is_default + NOT EXISTS 向量），不先查后删：
+// 两次查询之间可能有并发写入让某一行重新变得"有用"，条件交给数据库一次性判定。
+// RETURNING 让调用方能把删了什么写进日志 —— 静默删除会让人事后完全无从对账。
+//
+// 与 EnsureDefault 的竞争由行锁兜底：对方会先锁住目标行再改，DELETE 拿到锁后
+// 会重新核对 is_default，不会把刚被设为默认的那一行删掉；反过来若它先删，
+// EnsureDefault 查不到行会走插入分支，结果同样正确。
+func (r *embeddingModelRepository) DeleteUnusedModels(ctx context.Context) ([]string, error) {
+	var deleted []string
+	err := r.db.WithContext(ctx).Raw(`
+DELETE FROM embedding_models m
+WHERE NOT m.is_default
+  AND NOT EXISTS (
+	SELECT 1 FROM knowledge_embeddings e WHERE e.model_id = m.id
+  )
+RETURNING m.name`).Scan(&deleted).Error
+	if err != nil {
+		return nil, fmt.Errorf("清理无向量的旧模型失败: %w", err)
+	}
+	return deleted, nil
+}

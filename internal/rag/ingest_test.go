@@ -89,6 +89,9 @@ type fakeDocumentStore struct {
 	// requeueCalls 记录 Requeue 被调用次数：队列满时不该走到重试入队那一步。
 	requeueCalls int
 
+	// reembedCalls 记录 RequeueForReembed 被调用次数，同样是"队列满就停在门外"的观测点。
+	reembedCalls int
+
 	// queue 是 ListPending 的数据源：runner 并发用例用它喂任务。
 	// 文档指针直接改在队列里，状态变化对后续的 ListPending / Claim 可见。
 	queue []*entity.KnowledgeDocument
@@ -301,6 +304,17 @@ func (s *fakeDocumentStore) Requeue(ctx context.Context, id uint64, stage string
 	return true, nil
 }
 
+// RequeueForReembed 把这一行从 ready 改回 pending，模拟"重新向量化"的入队。
+// 真实仓储多一道 status = ready 的条件；替身把状态改回去、记下恢复点即可。
+func (s *fakeDocumentStore) RequeueForReembed(ctx context.Context, id uint64, stage string) (bool, error) {
+	s.reembedCalls++
+	s.stage = stage
+	if s.created != nil {
+		s.created.Status = entity.KnowledgeDocumentStatusPending
+	}
+	return true, nil
+}
+
 // CountChunksByDocument 按替身里的切片数回答，供 Worker 算恢复点。
 func (s *fakeDocumentStore) CountChunksByDocument(ctx context.Context, ids []uint64) (map[uint64]int64, error) {
 	counts := make(map[uint64]int64, len(ids))
@@ -458,9 +472,19 @@ type fakeModelRegistry struct {
 	// 供"零命中体检只做一次"的去重断言使用。
 	census      []entity.ModelVectorCount
 	censusCalls int
+
+	// cleanupCalls 记录"收录成功后的旧模型收尾"被触发了几次；
+	// cleanupErr 用来验证收尾失败只告警、不影响收录结果。
+	cleanupCalls int
+	cleanupErr   error
 }
 
 var _ ModelRegistry = (*fakeModelRegistry)(nil)
+
+func (r *fakeModelRegistry) DeleteUnusedModels(ctx context.Context) ([]string, error) {
+	r.cleanupCalls++
+	return nil, r.cleanupErr
+}
 
 func (r *fakeModelRegistry) CountVectorsByModel(ctx context.Context) ([]entity.ModelVectorCount, error) {
 	r.censusCalls++
@@ -823,6 +847,54 @@ func TestRetryRequeuesWhenQueueHasRoom(t *testing.T) {
 	}
 }
 
+// TestReembedRejectsWhenQueueFull 重新向量化同样占用一个队列位：队列满时拒绝入队，
+// 且不能走到 RequeueForReembed（文档保持 ready，等容量释放后再点一次）。
+func TestReembedRejectsWhenQueueFull(t *testing.T) {
+	store := &fakeDocumentStore{active: 2}
+	ingester := newIngesterWithOptions(store, newFakeModels(), nil, testEmbeddingConfig(),
+		IngestOptions{Tx: testTx{}, QueueCapacity: 2})
+
+	requeued, err := ingester.Reembed(context.Background(), testDocumentID, entity.KnowledgeDocumentStageEmbed)
+	if !errors.Is(err, ErrIngestQueueFull) {
+		t.Fatalf("期望 ErrIngestQueueFull，实际 %v", err)
+	}
+	if requeued {
+		t.Error("队列已满时不该报告入队成功")
+	}
+	if store.reembedCalls != 0 {
+		t.Errorf("队列已满时不该调用 RequeueForReembed，实际 %d 次", store.reembedCalls)
+	}
+}
+
+// TestReembedRequeuesReadyDocument 队列还有空位时把 ready 文档改回 pending，
+// 恢复点固定 embed —— 切片已落库，重新向量化不重新解析、不重新切分。
+func TestReembedRequeuesReadyDocument(t *testing.T) {
+	document := &entity.KnowledgeDocument{
+		BaseModel: entity.BaseModel{ID: testDocumentID},
+		Status:    entity.KnowledgeDocumentStatusReady,
+	}
+	store := &fakeDocumentStore{active: 1, created: document}
+	ingester := newIngesterWithOptions(store, newFakeModels(), nil, testEmbeddingConfig(),
+		IngestOptions{Tx: testTx{}, QueueCapacity: 2})
+
+	requeued, err := ingester.Reembed(context.Background(), testDocumentID, entity.KnowledgeDocumentStageEmbed)
+	if err != nil {
+		t.Fatalf("队列有空位时重新向量化不该失败: %v", err)
+	}
+	if !requeued {
+		t.Fatal("重新向量化应当入队成功")
+	}
+	if store.reembedCalls != 1 {
+		t.Errorf("RequeueForReembed 调用次数 = %d，期望 1", store.reembedCalls)
+	}
+	if store.stage != entity.KnowledgeDocumentStageEmbed {
+		t.Errorf("恢复点 = %q，期望 embed", store.stage)
+	}
+	if document.Status != entity.KnowledgeDocumentStatusPending {
+		t.Errorf("文档应当回到 pending，实际 %s", document.Status)
+	}
+}
+
 // TestIngestFileBatchesEmbeddingCalls 校验分批：一次收录不能变成几百次请求。
 func TestIngestFileBatchesEmbeddingCalls(t *testing.T) {
 	store := &fakeDocumentStore{}
@@ -1136,6 +1208,62 @@ func TestIngestTextSkipsParsing(t *testing.T) {
 	}
 	if result.Document.SourceType != entity.KnowledgeDocumentSourceManual {
 		t.Errorf("来源类型 = %q，期望 manual", result.Document.SourceType)
+	}
+}
+
+// 收录成功后顺手清理"非默认且已无向量"的旧模型行 ——
+// 重新向量化把旧模型的最后一批向量替换掉后，旧行就靠这一步收尾。
+func TestIngestCleansUnusedModelsAfterSuccess(t *testing.T) {
+	store := &fakeDocumentStore{}
+	models := newFakeModels()
+	ingester := newIngesterWith(store, models, &stubEmbedder{dimension: testVectorDims}, testEmbeddingConfig())
+
+	if _, err := ingester.IngestText(context.Background(), TextInput{
+		Content: "# 收尾清理\n\n" + strings.Repeat("正文内容。", 60),
+	}); err != nil {
+		t.Fatalf("收录失败: %v", err)
+	}
+	if models.cleanupCalls != 1 {
+		t.Errorf("收录成功后应当清理一次无向量的旧模型，实际 %d 次", models.cleanupCalls)
+	}
+}
+
+// 收尾清理是 best-effort：它失败只告警，收录结果不受影响 ——
+// 为一条清理把一篇已经成功的文档判成失败，代价完全不成比例。
+func TestIngestKeepsSuccessWhenModelCleanupFails(t *testing.T) {
+	store := &fakeDocumentStore{}
+	models := newFakeModels()
+	models.cleanupErr = errors.New("数据库抖动")
+	ingester := newIngesterWith(store, models, &stubEmbedder{dimension: testVectorDims}, testEmbeddingConfig())
+
+	result, err := ingester.IngestText(context.Background(), TextInput{
+		Content: "# 清理失败\n\n" + strings.Repeat("正文内容。", 60),
+	})
+	if err != nil {
+		t.Fatalf("清理失败不该影响收录: %v", err)
+	}
+	if result.Document.Status != entity.KnowledgeDocumentStatusReady {
+		t.Errorf("文档仍应为 ready，实际 %q", result.Document.Status)
+	}
+	if models.cleanupCalls != 1 {
+		t.Errorf("应当尝试过清理，实际 %d 次", models.cleanupCalls)
+	}
+}
+
+// 收录失败时不触发收尾：清理只挂在成功路径上。
+func TestIngestFailureSkipsModelCleanup(t *testing.T) {
+	store := &fakeDocumentStore{}
+	models := newFakeModels()
+	embedder := &stubEmbedder{dimension: testVectorDims, err: errors.New("上游 429")}
+	ingester := newIngesterWith(store, models, embedder, testEmbeddingConfig())
+
+	if _, err := ingester.IngestText(context.Background(), TextInput{
+		Content: "# 会失败\n\n" + strings.Repeat("正文内容。", 60),
+	}); err == nil {
+		t.Fatal("向量化失败时收录应当报错")
+	}
+	if models.cleanupCalls != 0 {
+		t.Errorf("收录失败不该触发清理，实际 %d 次", models.cleanupCalls)
 	}
 }
 

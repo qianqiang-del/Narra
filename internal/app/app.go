@@ -350,7 +350,7 @@ func (a *App) initDependencies() error {
 		return fmt.Errorf("创建精排装饰器失败: %w", err)
 	}
 	knowledgeRetrieval = reranked
-	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetrieval, uploadDir, knowledgeDir)
+	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetrieval, embeddingModelRepo, uploadDir, knowledgeDir)
 
 	// 内置工具 rag_retrieve：把知识库检索直接挂给 Eino agent（见 internal/mcp/knowledge_tool.go）。
 	// 注册点在这里而不是 NewManager 那边，是因为工具的实现依赖知识库服务 ——

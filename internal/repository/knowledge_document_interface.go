@@ -20,10 +20,11 @@ import (
 // 按消费方分三组：
 //   - 收录链路（rag.DocumentStore）：Create / GetByID / MarkProcessing / MarkFailed / ReplaceChunks
 //   - 后台任务队列（rag.FileTaskStore）：SetMetadata / SetUploadPath / FailedLeaseOwned /
-//     ListPending / ClaimAndReturnAttempt / Touch / ResetStale / Requeue / MarkFailed /
-//     SaveParsedContent / ReplaceStagedChunks / ListChunksByDocument / SaveEmbeddingsAndMarkReady /
-//     CountActive / AcquireIngestQueueLock
-//   - 查询与删除（service）：List / GetByID / CountChunksByDocument / Delete
+//     ListPending / ClaimAndReturnAttempt / Touch / ResetStale / Requeue / RequeueForReembed /
+//     MarkFailed / SaveParsedContent / ReplaceStagedChunks / ListChunksByDocument /
+//     SaveEmbeddingsAndMarkReady / CountActive / AcquireIngestQueueLock
+//   - 查询与删除（service）：List / GetByID / CountChunksByDocument / Delete /
+//     CountDocumentsMissingModelVectors / ListDocumentIDsMissingModelVectors
 //
 // MarkFailed 被前两组共用，所以它在两处都出现。分阶段写入的四个方法只服务异步文件链路
 // （Worker 按 ingest_stage 恢复）；同步链路（IngestText / IngestFile）仍走 ReplaceChunks，
@@ -146,6 +147,39 @@ type KnowledgeDocumentRepository interface {
 	// 调用方据此报"不需要重试" —— 不把它当成错误，是因为并发点两次重试时
 	// 后到的那次本来就该安静地输掉。
 	Requeue(ctx context.Context, id uint64, stage string) (bool, error)
+
+	// RequeueForReembed 把一行 ready 文档改回 pending，准备用当前默认模型重新向量化。
+	//
+	// 与 Requeue（面向 failed 的重试）只差起点状态。它不碰 metadata，也不动上传记录 ——
+	// 这次"重新向量化"不是一次新的投递，记录保持它原有的成败；重算真失败时，
+	// MarkFailed 会走常规路径把记录置回 failed 并带上原因，用户照常重试。
+	//
+	// stage 由调用方按现实材料算好（见 rag.ResolveRecoveryStage）；对重新向量化而言
+	// 几乎总是 embed —— 它只服务于"切片还在、向量挂了旧模型"这种文档。
+	//
+	// 与 Requeue 同一种乐观更新：条件写在 UPDATE 的 WHERE 里，返回 false 表示
+	// 状态已经不是 ready（并发的另一次请求抢先了），调用方安静跳过即可。
+	RequeueForReembed(ctx context.Context, id uint64, stage string) (bool, error)
+
+	// CountDocumentsMissingModelVectors 统计处于 statuses 状态、且仍缺 modelID 向量的文档数。
+	//
+	// 判据是"存在某个切片在该模型名下没有向量"，部分缺失同样计入 ——
+	// 向量是按文档整批写入的，出现部分缺失说明这篇文档的向量路不可用，
+	// 一律按需要重算处理。
+	//
+	// statuses 由调用方给，同一判据服务两个口径：
+	//   - 只算 ready 是"待修复"（提示条上那个数字，也决定重排队要挑哪些文档）；
+	//   - 把 pending / processing 一起算上是"正在补"（重新向量化的进度，
+	//     这些文档同样缺新模型向量，只是已经在队列里了）。
+	// 空列表直接返回 0，不生成 `IN ()` 这种非法谓词。
+	CountDocumentsMissingModelVectors(ctx context.Context, modelID uint64, statuses []string) (int64, error)
+
+	// ListDocumentIDsMissingModelVectors 取仍缺 modelID 向量的 ready 文档 ID，升序。
+	//
+	// 供"重新向量化"批量入队：调用方逐个改回 pending，队列满时中途停止，
+	// 剩下的下次再点。只回 ID 不回整行 —— 重排队不需要文档内容，
+	// 恢复阶段由后台按现实材料重算（见 rag.Worker.resolveRecoveryStage）。
+	ListDocumentIDsMissingModelVectors(ctx context.Context, modelID uint64) ([]uint64, error)
 
 	// SaveParsedContent 保存解析产物，并把 ingest_stage 推进到 chunk ——
 	// 正文与阶段必须在同一个事务里改：只写正文不推阶段会让恢复重新解析（浪费但安全），
