@@ -292,6 +292,7 @@ export default {
     testConnection: 'Test connection',
     saving: 'Saving',
     save: 'Save',
+    rerank: 'Rerank Models',
     mcpTools: 'MCP Tools',
   },
   mcp: {

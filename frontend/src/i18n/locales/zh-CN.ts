@@ -288,6 +288,7 @@ export default {
     testConnection: '测试连接',
     saving: '保存中',
     save: '保存',
+    rerank: '重排模型',
     mcpTools: 'MCP 工具',
   },
   mcp: {
