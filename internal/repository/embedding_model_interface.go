@@ -53,6 +53,17 @@ type EmbeddingModelRepository interface {
 	// 它给"向量召回静默为零"的体检提供事实：默认模型下 0 条、其他模型下有，
 	// 是换过默认模型却未重新收录的典型形态（见 rag.VectorRecallHint）。
 	CountVectorsByModel(ctx context.Context) ([]entity.ModelVectorCount, error)
+
+	// DeleteUnusedModels 删除名下已无向量的非默认模型行，返回被删掉的名字。
+	//
+	// 收录成功后调用：重新向量化把旧模型的最后一批向量替换掉之后，那个模型行
+	// 就只剩一个空壳 —— 检索只认默认模型，它再也不会被用到，留着只会让
+	// "这张表里有哪些模型"越来越难辨认。默认模型即使暂时没有向量也不动
+	// （刚切换过去时就是它，后面靠重新向量化补）。
+	//
+	// 外键 ON DELETE RESTRICT 是最后一道兜底：真有向量引用时删也删不掉。
+	// 它是 best-effort 的收尾，失败由调用方记日志，不影响收录结果。
+	DeleteUnusedModels(ctx context.Context) ([]string, error)
 }
 
 // DimensionsMismatchError 表示同名模型请求的维度与已登记值不一致。

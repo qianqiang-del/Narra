@@ -55,6 +55,24 @@ type KnowledgeService interface {
 	// 或收录队列已满（ErrIngestQueueFull）。
 	Retry(ctx context.Context, id uint64) (responsedto.KnowledgeDocument, error)
 
+	// EmbeddingStatus 返回"仍缺当前默认模型向量"的文档数，供知识库页提示与进度显示。
+	//
+	// 它是换模型之后的运行时体检：检索只查默认模型名下的向量，还挂着旧模型向量的
+	// 文档会静默召回不到（只剩词法路）。StaleDocuments 是待重算的 ready 文档数；
+	// PendingDocuments 是已经回队列、正在补算的（重新向量化的进度读数）。
+	// 没有配置默认模型时返回零值而不是错误 ——"还没配置"不该被渲染成"有 N 篇要重算"。
+	EmbeddingStatus(ctx context.Context) (responsedto.KnowledgeEmbeddingStatus, error)
+
+	// Reembed 把仍缺当前默认模型向量的 ready 文档批量重新排队，用当前模型重算向量。
+	//
+	// 逐篇入队，复用已落库的切片（不重新解析、不重新切分）；旧模型向量在新向量写入时
+	// 被替换。返回本次计数：检测到多少、入队多少、跳过多少、是否因队列满提前停止 ——
+	// 队列满时已入队的照常处理，剩余的下次再点。
+	//
+	// 没有默认模型时返回 ErrNoEmbeddingModel；队列满且一篇都没能入队时返回
+	// ErrIngestQueueFull（部分入队则返回计数而不是错误）。两者接口层都翻 409。
+	Reembed(ctx context.Context) (responsedto.KnowledgeReembedResult, error)
+
 	// IngestText 直接把一段正文收录为 Markdown，跳过解析。这条链路仍是同步的。
 	IngestText(ctx context.Context, input requestdto.KnowledgeIngestText) (responsedto.KnowledgeDocument, error)
 

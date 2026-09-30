@@ -392,6 +392,18 @@ export default {
         note: '还没收录成功的记录，删除会连同那份文档与它的暂存文件一起清掉；已收录的知识不受影响。',
       },
     },
+    // 换过向量模型后的存量修复：提示条 + 一键重新向量化
+    // （GET /documents/embedding-status、POST /documents/reembed）。
+    reembed: {
+      title: '检测到 {count} 篇文档仍在使用旧向量模型',
+      desc: '检索只查当前模型（{model}）名下的向量，这些文档暂时只能靠词法命中。重新向量化会复用现有切片重算，不重新解析。',
+      action: '重新向量化',
+      running: '正在重新向量化，剩余 {count} 篇…',
+      queued: '已重新排队 {count} 篇，处理在后台进行。',
+      partial: '已重新排队 {queued} 篇；队列已满，剩余的下次再点一次。',
+      nothing: '没有需要重新向量化的文档。',
+      failed: '重新向量化请求失败。',
+    },
     upload: {
       drop: '把文件拖到这里，或点击选择（支持 {formats}）',
       titlePlaceholder: '文档标题（留空则用正文里的首个标题）',

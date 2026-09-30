@@ -15,7 +15,7 @@
  * 主页删的是**知识**（正文、切片、向量一起没了）；抽屉删的是**记录**
  * （连带清掉还没收录成功的那份文档，已收录的知识一律不碰）。
  */
-import { ArrowLeft, Bell, Database, Loader2, Plus, RefreshCw, Search, X } from 'lucide-vue-next'
+import { ArrowLeft, Bell, Database, Loader2, Plus, RefreshCw, Search, TriangleAlert, X } from 'lucide-vue-next'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -34,8 +34,18 @@ const { t } = useI18n()
 const router = useRouter()
 const store = useKnowledgeStore()
 
-const { loading, keyword, readyDocuments, readyTotal, hasMore, isEmpty, recordAlerts } =
+const { loading, keyword, readyDocuments, readyTotal, hasMore, isEmpty, recordAlerts, embeddingStatus, reembedding, reembedTracking } =
   storeToRefs(store)
+
+// 仍缺当前默认模型向量的 ready 文档数。> 0 才显示提示条；没有默认模型时后端给 0。
+const staleCount = computed(() => embeddingStatus.value?.staleDocuments ?? 0)
+
+// 已回队列、正在补算的文档数；跟踪期间提示条上的"剩余"是它与待修复数之和。
+const inFlightCount = computed(() => embeddingStatus.value?.pendingDocuments ?? 0)
+const reembedRemaining = computed(() => staleCount.value + inFlightCount.value)
+
+// 跟踪期间提示条保持可见（此时待修复已归零，只剩"正在补"），否则只在有待修复时出现。
+const showReembed = computed(() => staleCount.value > 0 || reembedTracking.value)
 
 const newOpen = ref(false)
 const recordsOpen = ref(false)
@@ -86,6 +96,7 @@ const confirmNote = computed(() =>
 )
 
 onMounted(async () => {
+  void store.loadEmbeddingStatus()
   await refresh()
   startObserving()
 })
@@ -180,6 +191,32 @@ async function retryRecord(record: KnowledgeUploadRecord) {
     }
   } catch (error) {
     toast.error(error instanceof Error ? error.message : t('knowledge.error.retry'))
+  }
+}
+
+/**
+ * 存量向量跟不上当前模型时的一键修复：整库把缺向量的文档重新排队，用当前模型重算。
+ *
+ * 不弹确认框：它是可逆的（重算失败会落 failed，走常规重试入口），而且进度
+ * （谁已回来、还剩几篇）就在提示条上持续可见 —— 与启停、重试同一个口径。
+ */
+async function reembed() {
+  try {
+    const result = await store.reembedStale()
+    if (result.queued === 0) {
+      toast.info(t('knowledge.reembed.nothing'))
+    } else {
+      toast.success(
+        result.queueFull
+          ? t('knowledge.reembed.partial', { queued: result.queued })
+          : t('knowledge.reembed.queued', { count: result.queued }),
+      )
+    }
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : t('knowledge.reembed.failed'))
+  } finally {
+    // 无论成败都对齐一次体检：队列满/部分入队时提示条上的数字要跟上。
+    void store.loadEmbeddingStatus()
   }
 }
 
@@ -317,6 +354,40 @@ function goBack() {
     </header>
 
     <main class="mx-auto flex w-full max-w-[900px] flex-1 flex-col px-4 py-5 md:px-8">
+      <!--
+        换过向量模型后的存量提示：这些文档的向量还挂在旧模型名下，检索只查当前模型，
+        向量路召回不到它们（只剩词法命中）。重新向量化复用现有切片重算，不重新解析。
+        处理期间文档会暂时从主页消失（主页只列 ready），逐批重算完自动回来。
+      -->
+      <div
+        v-if="showReembed"
+        class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-[13px] text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200"
+      >
+        <TriangleAlert class="size-4 shrink-0" />
+        <div class="min-w-0 flex-1">
+          <p class="font-medium">
+            {{
+              reembedTracking
+                ? t('knowledge.reembed.running', { count: reembedRemaining })
+                : t('knowledge.reembed.title', { count: staleCount })
+            }}
+          </p>
+          <p class="mt-0.5 text-amber-700/90 dark:text-amber-300/80">
+            {{ t('knowledge.reembed.desc', { model: embeddingStatus?.model ?? '' }) }}
+          </p>
+        </div>
+        <button
+          v-if="!reembedTracking"
+          type="button"
+          class="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-amber-400 px-2.5 py-1 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-900/40"
+          :disabled="reembedding"
+          @click="reembed"
+        >
+          <Loader2 v-if="reembedding" class="size-3.5 animate-spin" />
+          {{ t('knowledge.reembed.action') }}
+        </button>
+      </div>
+
       <!-- 首次加载 -->
       <div
         v-if="loading && readyDocuments.length === 0"

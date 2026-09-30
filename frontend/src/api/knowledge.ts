@@ -591,3 +591,80 @@ export async function ingestKnowledgeText(content: string, title?: string): Prom
   })
   return toDocument(d)
 }
+
+/** 后端 `response.KnowledgeEmbeddingStatus` 的原样形状 */
+interface KnowledgeEmbeddingStatusDTO {
+  model?: string
+  dimensions: number
+  stale_documents: number
+  pending_documents: number
+}
+
+/**
+ * 存量向量是否跟上了当前默认模型的体检结果。
+ *
+ * `staleDocuments > 0` 说明有 ready 文档的向量还挂在旧模型（或没有向量）名下：
+ * 检索只查默认模型名下的向量，这些文档现在向量路召回不到，只能靠词法命中。
+ * `pendingDocuments` 同样缺新模型向量、但已经回到队列正在补算的文档数 ——
+ * 入队后文档不再是 ready（staleDocuments 归零），进度只能看它，降到 0 才算收敛。
+ * 没有配置默认模型时 model 为空串、两个计数都是 0 —— 那是"还没配置"，提示条不出现。
+ */
+export interface KnowledgeEmbeddingStatus {
+  /** 当前默认模型名；还没配置向量服务时为空串 */
+  model: string
+  /** 当前默认模型的输出维度 */
+  dimensions: number
+  /** ready 里仍缺该模型向量的文档数（待修复） */
+  staleDocuments: number
+  /** pending / processing 里仍缺该模型向量的文档数（正在补） */
+  pendingDocuments: number
+}
+
+/** 拉一次向量体检。知识库页的提示条靠它决定显不显示、显示几篇。 */
+export async function fetchKnowledgeEmbeddingStatus(): Promise<KnowledgeEmbeddingStatus> {
+  const d = await request<KnowledgeEmbeddingStatusDTO>('/knowledge/documents/embedding-status')
+  return {
+    model: d.model ?? '',
+    dimensions: d.dimensions,
+    staleDocuments: d.stale_documents,
+    pendingDocuments: d.pending_documents,
+  }
+}
+
+/** 后端 `response.KnowledgeReembedResult` 的原样形状 */
+interface KnowledgeReembedResultDTO {
+  total: number
+  queued: number
+  skipped: number
+  queue_full: boolean
+}
+
+/**
+ * 一次"重新向量化"的受理结果。
+ *
+ * 批处理：`total = queued + skipped + 未入队的剩余`（只有 `queueFull` 为真时才有剩余）。
+ */
+export interface KnowledgeReembedResult {
+  /** 检测到的缺当前模型向量的文档数 */
+  total: number
+  /** 本次已重新排队的文档数 */
+  queued: number
+  /** 状态已变、安静跳过的文档数（并发下被别的请求抢先） */
+  skipped: number
+  /** 队列满导致提前停止；剩余文档下次再点 */
+  queueFull: boolean
+}
+
+/**
+ * 把仍缺当前默认模型向量的 ready 文档批量重新排队。
+ *
+ * 后端复用已落库的切片重算向量（不重新解析、不重新切分），旧模型向量在新向量写入时
+ * 被替换。一篇都没入队且原因是"现在不行"（队列满、还没配置默认模型）时回 409，
+ * 由 request 抛 ApiError；部分入队返回 200 与计数。
+ */
+export async function reembedKnowledgeDocuments(): Promise<KnowledgeReembedResult> {
+  const d = await request<KnowledgeReembedResultDTO>('/knowledge/documents/reembed', {
+    method: 'POST',
+  })
+  return { total: d.total, queued: d.queued, skipped: d.skipped, queueFull: d.queue_full }
+}

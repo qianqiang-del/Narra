@@ -37,6 +37,15 @@ type fakeDocumentQuerier struct {
 	total    int64
 	counts   map[uint64]int64
 
+	// 向量体检 / 重新向量化：missingIDs 是"缺当前模型向量"的文档 ID，
+	// missingCount 是 ready 下的计数、missingInFlight 是 pending/processing 下的计数；
+	// missingModelID 记录最近一次查询用的模型 ID，missingStatuses 累计每次的状态口径。
+	missingIDs      []uint64
+	missingCount    int64
+	missingInFlight int64
+	missingModelID  uint64
+	missingStatuses [][]string
+
 	// query 记录最近一次收到的查询条件，供断言筛选与分页换算是否透传。
 	query entity.KnowledgeDocumentQuery
 }
@@ -78,6 +87,22 @@ func (q *fakeDocumentQuerier) SetEnabled(ctx context.Context, id uint64, enabled
 	return true, nil
 }
 
+// CountDocumentsMissingModelVectors / ListDocumentIDsMissingModelVectors 是向量体检与
+// 重新向量化的数据源，返回用例预设的计数与 ID 列表；顺手记下查询用的模型 ID 与状态口径。
+func (q *fakeDocumentQuerier) CountDocumentsMissingModelVectors(ctx context.Context, modelID uint64, statuses []string) (int64, error) {
+	q.missingModelID = modelID
+	q.missingStatuses = append(q.missingStatuses, statuses)
+	if slices.Contains(statuses, entity.KnowledgeDocumentStatusPending) {
+		return q.missingInFlight, nil
+	}
+	return q.missingCount, nil
+}
+
+func (q *fakeDocumentQuerier) ListDocumentIDsMissingModelVectors(ctx context.Context, modelID uint64) ([]uint64, error) {
+	q.missingModelID = modelID
+	return q.missingIDs, nil
+}
+
 // fakeIngester 是 ingester 的替身：只记录收到的输入，不真的切分与向量化。
 // 它也实现了 asyncIngester（SubmitFile）与 fileRetrier（Retry）—— 服务层的
 // 上传与重试入口正是走那两条路。
@@ -101,6 +126,16 @@ type fakeIngester struct {
 	retriedStage string
 	retryResult  bool
 	retryErr     error
+
+	// reembeds 累计 Reembed 被调用次数，reembedStages 记录每次传入的恢复点；
+	// reembedResults / reembedErrs 非空时按调用次序返回，用来构造"前几篇入队、
+	// 第 N 篇撞上队列满"的部分成功场景。
+	reembeds       int
+	reembedStages  []string
+	reembedResults []bool
+	reembedErrs    []error
+	reembedResult  bool
+	reembedErr     error
 }
 
 var (
@@ -114,6 +149,20 @@ func (f *fakeIngester) Retry(ctx context.Context, id uint64, stage string) (bool
 	f.retried++
 	f.retriedStage = stage
 	return f.retryResult, f.retryErr
+}
+
+// Reembed 记录重新向量化入队被调用过，以及收到的恢复点；结果按次序回放。
+func (f *fakeIngester) Reembed(ctx context.Context, id uint64, stage string) (bool, error) {
+	index := f.reembeds
+	f.reembeds++
+	f.reembedStages = append(f.reembedStages, stage)
+	if index < len(f.reembedErrs) && f.reembedErrs[index] != nil {
+		return false, f.reembedErrs[index]
+	}
+	if index < len(f.reembedResults) {
+		return f.reembedResults[index], nil
+	}
+	return f.reembedResult, f.reembedErr
 }
 
 func (f *fakeIngester) SubmitFile(ctx context.Context, input rag.FileInput) (rag.IngestResult, error) {
@@ -187,7 +236,7 @@ func newTestServiceWithRecords(
 	records *fakeUploadRecordStore,
 	ingestion *fakeIngester,
 ) KnowledgeService {
-	return NewKnowledgeService(querier, records, ingestion, &fakeRetriever{})
+	return NewKnowledgeService(querier, records, ingestion, &fakeRetriever{}, &fakeEmbeddingModels{})
 }
 
 // fakeRetriever 是 retriever 的替身：记录最近一次的输入，返回预设的结果或错误。
@@ -204,6 +253,25 @@ var _ retriever = (*fakeRetriever)(nil)
 func (f *fakeRetriever) Retrieve(ctx context.Context, input rag.RetrieveInput) (rag.RetrieveResult, error) {
 	f.input = input
 	return f.result, f.err
+}
+
+// fakeEmbeddingModels 是 embeddingModels 的替身：model 为 nil 时返回
+// gorm.ErrRecordNotFound，模拟"还没配置默认模型"。
+type fakeEmbeddingModels struct {
+	model *entity.EmbeddingModel
+	err   error
+}
+
+var _ embeddingModels = (*fakeEmbeddingModels)(nil)
+
+func (m *fakeEmbeddingModels) GetDefault(ctx context.Context) (*entity.EmbeddingModel, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.model == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return m.model, nil
 }
 
 // TestRetrieveMapsRequestAndHits 校验检索的 DTO 映射：请求字段透传，
@@ -239,7 +307,7 @@ func TestRetrieveMapsRequestAndHits(t *testing.T) {
 			},
 		},
 	}}
-	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval)
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval, &fakeEmbeddingModels{})
 
 	result, err := svc.Retrieve(context.Background(), requestdto.KnowledgeRetrieve{Query: "  向量检索 ", TopK: 2})
 	if err != nil {
@@ -277,7 +345,7 @@ func TestRetrieveMapsRequestAndHits(t *testing.T) {
 // 接口层要按它翻 400，所以必须在进 rag 之前就拦下来。
 func TestRetrieveRejectsEmptyQuery(t *testing.T) {
 	retrieval := &fakeRetriever{}
-	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval)
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval, &fakeEmbeddingModels{})
 
 	if _, err := svc.Retrieve(context.Background(), requestdto.KnowledgeRetrieve{Query: "   "}); !errors.Is(err, ErrEmptyQuery) {
 		t.Fatalf("空检索词应当返回 ErrEmptyQuery，实际是 %v", err)
@@ -291,7 +359,7 @@ func TestRetrieveRejectsEmptyQuery(t *testing.T) {
 // 多路召回的编排与融合在外层门面（internal/rag/einoretriever），服务层只做透传。
 func TestRetrievePassesQueryVariants(t *testing.T) {
 	retrieval := &fakeRetriever{}
-	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval)
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval, &fakeEmbeddingModels{})
 
 	if _, err := svc.Retrieve(context.Background(), requestdto.KnowledgeRetrieve{
 		Query:   "原查询",
@@ -308,7 +376,7 @@ func TestRetrievePassesQueryVariants(t *testing.T) {
 // 时间统一转 UTC，最后原样进入 rag 层。
 func TestRetrievePassesFilters(t *testing.T) {
 	retrieval := &fakeRetriever{}
-	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval)
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval, &fakeEmbeddingModels{})
 
 	from := time.Date(2026, 9, 1, 8, 0, 0, 0, time.FixedZone("CST", 8*3600))
 	to := time.Date(2026, 10, 1, 8, 0, 0, 0, time.FixedZone("CST", 8*3600))
@@ -359,7 +427,7 @@ func TestRetrieveRejectsInvalidFilters(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			retrieval := &fakeRetriever{}
-			svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval)
+			svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, retrieval, &fakeEmbeddingModels{})
 
 			_, err := svc.Retrieve(context.Background(), requestdto.KnowledgeRetrieve{
 				Query:   "向量检索",
@@ -378,7 +446,7 @@ func TestRetrieveRejectsInvalidFilters(t *testing.T) {
 // TestRetrieveReportsUnavailableSearcher 校验没接检索能力时给的是一句明确说明，
 // 而不是空指针 —— retriever 可以为 nil（见 service.retriever 的注释）。
 func TestRetrieveReportsUnavailableSearcher(t *testing.T) {
-	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, nil)
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, nil, &fakeEmbeddingModels{})
 
 	if _, err := svc.Retrieve(context.Background(), requestdto.KnowledgeRetrieve{Query: "向量检索"}); err == nil {
 		t.Fatal("没接检索能力时应当报错")
@@ -770,7 +838,7 @@ func TestRetryResolvesRecoveryStageFromMaterial(t *testing.T) {
 				counts: map[uint64]int64{testDocumentID: tc.chunks},
 			}
 			ingestion := &fakeIngester{retryResult: true}
-			svc := NewKnowledgeService(querier, &fakeUploadRecordStore{}, ingestion, &fakeRetriever{}, root)
+			svc := NewKnowledgeService(querier, &fakeUploadRecordStore{}, ingestion, &fakeRetriever{}, &fakeEmbeddingModels{}, root)
 
 			_, err := svc.Retry(context.Background(), testDocumentID)
 			if tc.wantErr != nil {
@@ -1006,7 +1074,7 @@ func TestDeleteRemovesDocumentImages(t *testing.T) {
 		Metadata:  json.RawMessage(`{}`),
 	}
 	// 第一个位置参数是上传暂存目录，这里为空（本用例不涉及）；第二个是知识资产目录。
-	svc := NewKnowledgeService(querier, &fakeUploadRecordStore{}, &fakeIngester{}, &fakeRetriever{}, "", knowledgeDir)
+	svc := NewKnowledgeService(querier, &fakeUploadRecordStore{}, &fakeIngester{}, &fakeRetriever{}, &fakeEmbeddingModels{}, "", knowledgeDir)
 
 	if err := svc.Delete(context.Background(), testDocumentID); err != nil {
 		t.Fatalf("删除失败: %v", err)
@@ -1019,5 +1087,145 @@ func TestDeleteRemovesDocumentImages(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(knowledgeDir, "images", "8")); err != nil {
 		t.Errorf("其他文档的图片目录不该受影响: %v", err)
+	}
+}
+
+// 向量体检回答两个数字：ready 里"待修复"的文档数，以及已经回队列"正在补"的文档数；
+// 两者都必须按默认模型的 ID 去统计 —— 换模型后的提示条与进度就靠它们。
+func TestEmbeddingStatusCountsStaleDocuments(t *testing.T) {
+	querier := &fakeDocumentQuerier{missingCount: 18, missingInFlight: 3}
+	models := &fakeEmbeddingModels{model: &entity.EmbeddingModel{
+		BaseModel:  entity.BaseModel{ID: 666},
+		Name:       "Qwen/Qwen3-Embedding-0.6B",
+		Dimensions: 1024,
+	}}
+	svc := NewKnowledgeService(querier, &fakeUploadRecordStore{}, &fakeIngester{}, &fakeRetriever{}, models)
+
+	status, err := svc.EmbeddingStatus(context.Background())
+	if err != nil {
+		t.Fatalf("向量体检失败: %v", err)
+	}
+	if status.Model != "Qwen/Qwen3-Embedding-0.6B" || status.Dimensions != 1024 {
+		t.Errorf("模型信息不对: %+v", status)
+	}
+	if status.StaleDocuments != 18 {
+		t.Errorf("待修复的文档数 = %d，期望 18", status.StaleDocuments)
+	}
+	if status.PendingDocuments != 3 {
+		t.Errorf("正在补的文档数 = %d，期望 3", status.PendingDocuments)
+	}
+	if querier.missingModelID != 666 {
+		t.Errorf("统计必须按默认模型 ID %d 进行，实际用了 %d", 666, querier.missingModelID)
+	}
+	if len(querier.missingStatuses) != 2 {
+		t.Fatalf("应当查询两种状态口径（待修复 / 正在补），实际 %v", querier.missingStatuses)
+	}
+	if !slices.Equal(querier.missingStatuses[0], []string{entity.KnowledgeDocumentStatusReady}) {
+		t.Errorf("第一个口径应是 ready，实际 %v", querier.missingStatuses[0])
+	}
+	if !slices.Contains(querier.missingStatuses[1], entity.KnowledgeDocumentStatusPending) ||
+		!slices.Contains(querier.missingStatuses[1], entity.KnowledgeDocumentStatusProcessing) {
+		t.Errorf("第二个口径应含 pending 与 processing，实际 %v", querier.missingStatuses[1])
+	}
+}
+
+// 还没有默认模型时返回零值而不是错误：那是"还没配置"，不是"有文档要重算"，
+// 提示条据此不出现（引导配置是设置页的事）。
+func TestEmbeddingStatusWithoutDefaultModelIsZero(t *testing.T) {
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, &fakeRetriever{}, &fakeEmbeddingModels{})
+
+	status, err := svc.EmbeddingStatus(context.Background())
+	if err != nil {
+		t.Fatalf("没有默认模型不该报错: %v", err)
+	}
+	if status != (responsedto.KnowledgeEmbeddingStatus{}) {
+		t.Errorf("没有默认模型时应为零值，实际 %+v", status)
+	}
+}
+
+// 重新向量化逐篇入队，起点阶段固定 embed：切片已落库，不重新解析、不重新切分。
+func TestReembedQueuesStaleDocuments(t *testing.T) {
+	querier := &fakeDocumentQuerier{missingIDs: []uint64{9, 27, 28}}
+	ingestion := &fakeIngester{reembedResult: true}
+	models := &fakeEmbeddingModels{model: &entity.EmbeddingModel{BaseModel: entity.BaseModel{ID: 666}, Name: "m", Dimensions: 1024}}
+	svc := NewKnowledgeService(querier, &fakeUploadRecordStore{}, ingestion, &fakeRetriever{}, models)
+
+	result, err := svc.Reembed(context.Background())
+	if err != nil {
+		t.Fatalf("重新向量化失败: %v", err)
+	}
+	if result.Total != 3 || result.Queued != 3 || result.Skipped != 0 || result.QueueFull {
+		t.Errorf("受理结果不对: %+v", result)
+	}
+	if ingestion.reembeds != 3 {
+		t.Errorf("应当逐篇入队 3 次，实际 %d", ingestion.reembeds)
+	}
+	for _, stage := range ingestion.reembedStages {
+		if stage != entity.KnowledgeDocumentStageEmbed {
+			t.Errorf("起点阶段应为 embed，实际 %q", stage)
+		}
+	}
+	if querier.missingModelID != 666 {
+		t.Errorf("列表必须按默认模型 ID 查，实际用了 %d", querier.missingModelID)
+	}
+}
+
+// 队列满中途停下：已入队的如实计数，剩余留给下一次点击，而不是整体失败。
+func TestReembedStopsAtQueueFullWithPartialResult(t *testing.T) {
+	querier := &fakeDocumentQuerier{missingIDs: []uint64{1, 2, 3}}
+	ingestion := &fakeIngester{
+		reembedResults: []bool{true, true, false},
+		reembedErrs:    []error{nil, nil, rag.ErrIngestQueueFull},
+	}
+	models := &fakeEmbeddingModels{model: &entity.EmbeddingModel{BaseModel: entity.BaseModel{ID: 666}}}
+	svc := NewKnowledgeService(querier, &fakeUploadRecordStore{}, ingestion, &fakeRetriever{}, models)
+
+	result, err := svc.Reembed(context.Background())
+	if err != nil {
+		t.Fatalf("部分入队不该整体报错: %v", err)
+	}
+	if result.Queued != 2 || result.Total != 3 || !result.QueueFull {
+		t.Errorf("部分结果不对: %+v", result)
+	}
+	if ingestion.reembeds != 3 {
+		t.Errorf("撞上队列满后应当停止，实际尝试 %d 次", ingestion.reembeds)
+	}
+}
+
+// 队列满且一篇都没进去：返回可判定的 ErrIngestQueueFull，接口层翻 409。
+func TestReembedAllRejectedByQueueFull(t *testing.T) {
+	querier := &fakeDocumentQuerier{missingIDs: []uint64{1}}
+	ingestion := &fakeIngester{reembedErrs: []error{rag.ErrIngestQueueFull}}
+	models := &fakeEmbeddingModels{model: &entity.EmbeddingModel{BaseModel: entity.BaseModel{ID: 666}}}
+	svc := NewKnowledgeService(querier, &fakeUploadRecordStore{}, ingestion, &fakeRetriever{}, models)
+
+	_, err := svc.Reembed(context.Background())
+	if !errors.Is(err, ErrIngestQueueFull) {
+		t.Fatalf("应当返回 ErrIngestQueueFull，实际 %v", err)
+	}
+}
+
+// 并发下文档已不再是 ready（别人抢先入队）：安静跳过，不算失败。
+func TestReembedSkipsDocumentsAlreadyRequeued(t *testing.T) {
+	querier := &fakeDocumentQuerier{missingIDs: []uint64{1, 2}}
+	ingestion := &fakeIngester{reembedResults: []bool{true, false}}
+	models := &fakeEmbeddingModels{model: &entity.EmbeddingModel{BaseModel: entity.BaseModel{ID: 666}}}
+	svc := NewKnowledgeService(querier, &fakeUploadRecordStore{}, ingestion, &fakeRetriever{}, models)
+
+	result, err := svc.Reembed(context.Background())
+	if err != nil {
+		t.Fatalf("重新向量化失败: %v", err)
+	}
+	if result.Queued != 1 || result.Skipped != 1 {
+		t.Errorf("跳过计数不对: %+v", result)
+	}
+}
+
+// 没有默认模型时重新向量化无从谈起：返回 ErrNoEmbeddingModel（接口层翻 409）。
+func TestReembedWithoutDefaultModel(t *testing.T) {
+	svc := NewKnowledgeService(&fakeDocumentQuerier{}, &fakeUploadRecordStore{}, &fakeIngester{}, &fakeRetriever{}, &fakeEmbeddingModels{})
+
+	if _, err := svc.Reembed(context.Background()); !errors.Is(err, ErrNoEmbeddingModel) {
+		t.Fatalf("应当返回 ErrNoEmbeddingModel，实际 %v", err)
 	}
 }
