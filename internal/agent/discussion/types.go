@@ -42,8 +42,10 @@ const (
 // 角色的其他字段（头像、音色等）本包用不到，不往这里塞。
 type Participant struct {
 	ClassroomAgentID uint64 // classroom_agents.id，写进回合与消息的归属字段
+	AgentKey         string // 角色池稳定标识，用于前端匹配头像与发言状态
 	Name             string // 显示名，写入 sender_snapshot / agent_snapshot
 	Role             string // teacher / student 等
+	RoleType         string // teacher / assistant / student
 	Persona          string // 人设提示词
 }
 
@@ -66,13 +68,14 @@ type Result struct {
 
 // TurnOutcome 是一个回合的结果。
 type TurnOutcome struct {
-	TurnID       uint64
-	TurnNo       int16
-	AgentName    string
-	MessageID    uint64 // 这个回合产出的可见消息
-	Content      string
-	OutputTokens int32
-	NextAction   string // 这一轮给出的下一步动作，供调用方和日志使用
+	TurnID         uint64
+	TurnNo         int16
+	AgentName      string
+	MessageID      uint64 // 这个回合产出的可见消息
+	Content        string
+	OutputTokens   int32
+	NextAction     string // 这一轮给出的下一步动作，供调用方和日志使用
+	NextSpeakerKey string // 模型建议的下一位角色，可为空
 }
 
 // snapshot 组装写进快照列的 JSON。
@@ -81,7 +84,9 @@ type TurnOutcome struct {
 // 所以这里抄的是此刻的值，而不是存一个指向角色的 ID —— ID 会跟着角色一起变。
 // 第一版只抄名字和身份；等前端要显示头像时再加字段（加字段不影响已存的历史）。
 func (p Participant) snapshot() json.RawMessage {
-	encoded, err := json.Marshal(map[string]string{"name": p.Name, "role": p.Role})
+	encoded, err := json.Marshal(map[string]string{
+		"name": p.Name, "role": p.Role, "agent_key": p.AgentKey, "role_type": p.RoleType,
+	})
 	if err != nil {
 		// 对 string 只有无效 UTF-8 才会失败。退回空对象比写进一段坏 JSON 好：
 		// 列上本来就有 default '{}'，空对象是合法值。

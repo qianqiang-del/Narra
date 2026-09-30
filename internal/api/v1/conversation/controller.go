@@ -95,6 +95,18 @@ func (c *Controller) Create(ctx *gin.Context) {
 	response.Success(ctx, item)
 }
 
+func (c *Controller) Close(ctx *gin.Context) {
+	id, ok := parseRouteID(ctx, "id")
+	if !ok {
+		return
+	}
+	if err := c.svc.Close(ctx.Request.Context(), id); err != nil {
+		response.BizError(ctx, err)
+		return
+	}
+	response.Success(ctx, gin.H{"id": id, "status": "closed"})
+}
+
 func (c *Controller) ListMessages(ctx *gin.Context) {
 	id, ok := parseRouteID(ctx, "id")
 	if !ok {

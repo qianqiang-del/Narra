@@ -355,8 +355,10 @@ func buildParticipants(links []entity.ClassroomAgent, roles []entity.PresetAgent
 			// 注意这里是 classroom_agents.id（本课程的角色实例），不是 preset_agents.id：
 			// 消息与回合的归属字段指向的就是它。
 			ClassroomAgentID: linkID,
+			AgentKey:         role.AgentKey,
 			Name:             role.Name,
 			Role:             role.Role,
+			RoleType:         role.RoleType,
 			Persona:          role.Persona,
 		})
 	}

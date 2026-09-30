@@ -14,6 +14,7 @@ import (
 type ConversationService interface {
 	List(ctx context.Context, classroomID uint64) ([]responsedto.Conversation, error)
 	Create(ctx context.Context, classroomID uint64, input requestdto.CreateConversation) (*responsedto.Conversation, error)
+	Close(ctx context.Context, conversationID uint64) error
 	ListMessages(ctx context.Context, conversationID uint64, afterSequence int64, limit int) ([]responsedto.ConversationMessage, error)
 
 	// Exists 判断对话是否存在。SSE 端点在开流之前用它决定：回统一信封的
