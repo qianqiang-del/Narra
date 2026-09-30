@@ -1,13 +1,14 @@
 import type { ConversationEvent, ConversationMessage } from '../api/conversation'
 import type { Bubble } from '../types/classroom'
 
-type Speaker = { name: string; role: string }
+type Speaker = { name: string; role: string; agentKey?: string; roleType?: string }
 
 export interface DiscussionDisplay {
   bubbles: Bubble[]
   lastSequence: number
   thinking: boolean
   speaking: 'teacher' | 'agent' | null
+  speakingAgentKey: string | null
   yourTurn: boolean
   participants: Map<number, Speaker>
   turns: Map<number, Speaker>
@@ -15,9 +16,14 @@ export interface DiscussionDisplay {
 }
 
 function speakerFromSnapshot(snapshot: Record<string, unknown> | null | undefined): Speaker {
+  const role = typeof snapshot?.role === 'string' ? snapshot.role : ''
+  const roleType = typeof snapshot?.role_type === 'string' ? snapshot.role_type : undefined
+  const agentKey = typeof snapshot?.agent_key === 'string' ? snapshot.agent_key : undefined
   return {
     name: typeof snapshot?.name === 'string' ? snapshot.name : 'Agent',
-    role: typeof snapshot?.role === 'string' ? snapshot.role : '',
+    role,
+    roleType,
+    agentKey,
   }
 }
 
@@ -30,7 +36,7 @@ export function createDiscussionDisplay(history: Pick<ConversationMessage, 'id' 
       const speaker = speakerFromSnapshot(message.senderSnapshot)
       return {
         id: `message-${message.id}`,
-        from: speaker.role === 'teacher' ? 'teacher' : 'agent',
+        from: speaker.agentKey === 'teacher' || speaker.roleType === 'teacher' || speaker.role === 'teacher' || speaker.role === '主讲' ? 'teacher' : 'agent',
         name: speaker.name,
         text: message.content,
       }
@@ -38,6 +44,7 @@ export function createDiscussionDisplay(history: Pick<ConversationMessage, 'id' 
     lastSequence: 0,
     thinking: false,
     speaking: null,
+    speakingAgentKey: null,
     yourTurn: false,
     participants: new Map(),
     turns: new Map(),
@@ -51,14 +58,15 @@ export function applyDiscussionEvent(display: DiscussionDisplay, event: Conversa
 
   switch (event.eventType) {
     case 'run.started':
-      display.participants = new Map(event.payload.participants.map((item) => [item.agent_id, { name: item.name, role: item.role }]))
+      display.participants = new Map(event.payload.participants.map((item) => [item.agent_id, { name: item.name, role: item.role, agentKey: item.agent_key, roleType: item.role_type }]))
       display.thinking = true
       display.yourTurn = false
       break
     case 'agent.started': {
       const speaker = display.participants.get(event.payload.agent_id) ?? { name: event.payload.agent_name, role: '' }
       display.turns.set(event.payload.turn_id, speaker)
-      display.speaking = speaker.role === 'teacher' ? 'teacher' : 'agent'
+      display.speaking = speaker.agentKey === 'teacher' || speaker.roleType === 'teacher' ? 'teacher' : 'agent'
+      display.speakingAgentKey = speaker.agentKey ?? null
       display.thinking = true
       break
     }
@@ -68,7 +76,7 @@ export function applyDiscussionEvent(display: DiscussionDisplay, event: Conversa
       if (existing && display.streamingIds.has(id)) existing.text += event.payload.delta
       else if (!existing) {
         const speaker = display.turns.get(event.payload.turn_id) ?? { name: 'Agent', role: '' }
-        display.bubbles.push({ id, from: speaker.role === 'teacher' ? 'teacher' : 'agent', name: speaker.name, text: event.payload.delta })
+        display.bubbles.push({ id, from: speaker.agentKey === 'teacher' || speaker.roleType === 'teacher' ? 'teacher' : 'agent', name: speaker.name, text: event.payload.delta })
         display.streamingIds.add(id)
       }
       break
@@ -79,26 +87,30 @@ export function applyDiscussionEvent(display: DiscussionDisplay, event: Conversa
       if (existing) existing.text = event.payload.content
       else {
         const speaker = display.turns.get(event.payload.turn_id) ?? { name: 'Agent', role: '' }
-        display.bubbles.push({ id, from: speaker.role === 'teacher' ? 'teacher' : 'agent', name: speaker.name, text: event.payload.content })
+        display.bubbles.push({ id, from: speaker.agentKey === 'teacher' || speaker.roleType === 'teacher' ? 'teacher' : 'agent', name: speaker.name, text: event.payload.content })
       }
       display.streamingIds.delete(id)
       break
     }
     case 'agent.completed':
       display.speaking = null
+      display.speakingAgentKey = null
       break
     case 'run.waiting_user':
       display.yourTurn = true
       display.thinking = false
       display.speaking = null
+      display.speakingAgentKey = null
       break
     case 'run.completed':
       display.thinking = false
       display.speaking = null
+      display.speakingAgentKey = null
       break
     case 'run.failed':
       display.thinking = false
       display.speaking = null
+      display.speakingAgentKey = null
       display.bubbles.push({ id: `run-error-${event.sequenceNo}`, from: 'agent', name: '系统', text: event.payload.error || '讨论执行失败' })
       break
   }

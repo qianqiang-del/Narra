@@ -163,8 +163,14 @@ export interface RunStartedPayload {
 /** 圆桌成员的展示快照（发言当时的样子） */
 export interface ParticipantPayload {
   agent_id: number
+  agent_key?: string
   name: string
   role: string
+  role_type?: string
+}
+
+export function closeConversation(conversationId: number): Promise<void> {
+  return request<{ id: number; status: string }>(`/conversations/${conversationId}/close`, { method: 'POST' }).then(() => undefined)
 }
 
 /** director.decision：下一个该谁、为什么 */

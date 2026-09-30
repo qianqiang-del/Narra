@@ -54,3 +54,20 @@ test('run.failed becomes a visible error and clears waiting state', () => {
   assert.equal(display.thinking, false)
   assert.deepEqual(display.bubbles, [{ id: 'run-error-2', from: 'agent', name: '系统', text: '模型连接失败' }])
 })
+
+test('classroom role keys identify the speaker even when the role label is Chinese', () => {
+  const display = createDiscussionDisplay([])
+  applyDiscussionEvent(display, event(1, 'run.started', { participants: [
+    { agent_id: 31, agent_key: 'teacher', name: '陈老师', role: '主讲', role_type: 'teacher' },
+    { agent_id: 32, agent_key: 'curious', name: '好奇宝宝', role: '提问', role_type: 'student' },
+  ] }))
+  applyDiscussionEvent(display, event(2, 'agent.started', { agent_id: 31, turn_id: 10 }))
+  assert.equal(display.speaking, 'teacher')
+  assert.equal(display.speakingAgentKey, 'teacher')
+  applyDiscussionEvent(display, event(3, 'agent.started', { agent_id: 32, turn_id: 11 }))
+  assert.equal(display.speakingAgentKey, 'curious')
+  applyDiscussionEvent(display, event(4, 'message.delta', { turn_id: 11, message_id: 12, delta: '我想问' }))
+  assert.equal(display.bubbles[0].name, '好奇宝宝')
+  applyDiscussionEvent(display, event(5, 'run.completed', {}))
+  assert.equal(display.speakingAgentKey, null)
+})
