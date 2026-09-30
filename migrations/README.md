@@ -135,6 +135,21 @@ psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0006_clea
 排查 SQL，不会先把约束删掉再失败），再重建 CHECK、删两列。幂等，可重复跑；
 新环境不用跑——tag 直接建出收紧后的约束，也没有那两个列。
 
+**第八步（2026-09-30 之前建的老环境，一次性），清理 `embedding_models` 的冗余列**：
+
+```bash
+psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0007_drop_embedding_model_dead_columns.sql
+```
+
+`provider` / `base_url` / `model_version` / `enabled` 四列因无人读写已从实体删除
+（协议与地址属于"怎么连服务"，只归 `embedding_settings`，见 `docs/rag-database.md`）。
+AutoMigrate 只加不减，存量库要手动删；脚本幂等，新环境不用跑。
+
+⚠️ **顺序：停掉旧版服务 → 跑脚本 → 再启动新版。** 两边各有一条硬约束：
+旧版代码仍会向这四列写入（删列后会报 `column does not exist`）；新版代码不再写
+`provider` / `enabled`，而它们在旧表上是 `NOT NULL` 且没有默认值（不删列会违反非空
+约束，设置页保存与启动对齐都会失败）。迁移与新版代码必须一起上。
+
 ## 约束全部归实体 tag（2026-09-17 大迁移）
 
 历史上约束分两处：AutoMigrate 建表和单列 UNIQUE，SQL 文件补 CHECK / 外键 /

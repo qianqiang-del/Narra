@@ -530,7 +530,6 @@ func newFakeModels() *fakeModelRegistry {
 	return &fakeModelRegistry{model: &entity.EmbeddingModel{
 		BaseModel:  entity.BaseModel{ID: testModelID},
 		Name:       testModelName,
-		Provider:   entity.EmbeddingProviderOpenAICompatible,
 		Dimensions: testVectorDims,
 	}}
 }

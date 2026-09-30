@@ -30,7 +30,6 @@ func knowledgeTestModelID(t *testing.T, tx *gorm.DB) uint64 {
 
 	model, err := NewEmbeddingModelRepository(tx).EnsureDefault(context.Background(), entity.EmbeddingModel{
 		Name:       uniqueName("kb"),
-		Provider:   "openai-compatible",
 		Dimensions: knowledgeTestDimensions,
 	})
 	if err != nil {
