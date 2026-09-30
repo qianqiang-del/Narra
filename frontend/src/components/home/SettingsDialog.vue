@@ -4,7 +4,7 @@
  * 使用左侧导航组织设置项，便于后续扩展更多配置页面。
  */
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
-import { Bot, Database, Monitor, Moon, Palette, Plug, Plus, SlidersHorizontal, Sun, Timer, Trash2, Wifi, X } from 'lucide-vue-next'
+import { ArrowUpDown, Bot, Database, Monitor, Moon, Palette, Plug, Plus, SlidersHorizontal, Sun, Timer, Trash2, Wifi, X } from 'lucide-vue-next'
 import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'
@@ -13,16 +13,19 @@ import { useTheme, type ThemeMode } from '@/composables/useTheme'
 import type { McpServer } from '@/api/mcp'
 import { useMcpStore } from '@/stores/mcp'
 import { useLlmStore } from '@/stores/llm'
+import { useRerankStore } from '@/stores/rerank'
 import LlmSettingsSection from '@/components/home/LlmSettingsSection.vue'
+import RerankSettingsSection from '@/components/home/RerankSettingsSection.vue'
 import { detectNativeEmbeddingEndpoint, type NativeEmbeddingHint } from '@/lib/embeddingEndpoint'
 import { cn } from '@/lib/utils'
 
 const open = defineModel<boolean>('open', { default: false })
-const activeSection = defineModel<'theme' | 'llm' | 'embedding' | 'mcp'>('section', { default: 'theme' })
+const activeSection = defineModel<'theme' | 'llm' | 'embedding' | 'rerank' | 'mcp'>('section', { default: 'theme' })
 
 const { t } = useI18n()
 const { mode, setMode } = useTheme()
 const llmStore = useLlmStore()
+const rerankStore = useRerankStore()
 
 const mcpStore = useMcpStore()
 const { servers: mcpServers, loading: mcpLoading } = storeToRefs(mcpStore)
@@ -90,6 +93,11 @@ function openMcp() {
 function openLlm() {
   activeSection.value = 'llm'
   void llmStore.loadProviders()
+}
+
+function openRerank() {
+  activeSection.value = 'rerank'
+  void rerankStore.loadModels()
 }
 
 let testTimer: ReturnType<typeof setTimeout> | null = null
@@ -441,6 +449,14 @@ function openEmbedding() {
             </button>
             <button
               type="button"
+              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'rerank' ? 'bg-violet-100 text-violet-800 dark:bg-violet-500/15 dark:text-violet-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
+              @click="openRerank"
+            >
+              <ArrowUpDown class="size-4" />
+              {{ t('settings.rerank') }}
+            </button>
+            <button
+              type="button"
               :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'mcp' ? 'bg-violet-100 text-violet-800 dark:bg-violet-500/15 dark:text-violet-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
               @click="openMcp"
             >
@@ -583,6 +599,8 @@ function openEmbedding() {
               </div>
             </form>
           </section>
+
+          <RerankSettingsSection v-else-if="activeSection === 'rerank'" />
 
           <section v-else-if="activeSection === 'mcp'" class="space-y-5">
             <div class="flex items-center justify-between">
