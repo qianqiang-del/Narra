@@ -61,11 +61,8 @@ func uniqueName(suffix string) string {
 }
 
 func model(name string, dimensions int) entity.EmbeddingModel {
-	baseURL := "https://example.test/v1"
 	return entity.EmbeddingModel{
 		Name:       name,
-		Provider:   "openai-compatible",
-		BaseURL:    &baseURL,
 		Dimensions: int32(dimensions),
 	}
 }
@@ -151,14 +148,8 @@ func TestEmbeddingModelEnsureDefaultCreatesSoleDefault(t *testing.T) {
 	if !created.IsDefault {
 		t.Error("登记的模型必须是默认模型")
 	}
-	if !created.Enabled {
-		t.Error("登记的模型必须是启用状态")
-	}
 	if created.Dimensions != 1536 {
 		t.Errorf("维度 = %d, 期望 1536", created.Dimensions)
-	}
-	if created.BaseURL == nil || *created.BaseURL != "https://example.test/v1" {
-		t.Errorf("base_url 应当回填配置里的地址，实际 %v", created.BaseURL)
 	}
 	if got := countDefaults(t, tx); got != 1 {
 		t.Errorf("默认模型数量 = %d, 期望 1", got)

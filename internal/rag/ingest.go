@@ -20,7 +20,6 @@ import (
 	"narra/pkg/documentparser"
 	"narra/pkg/embedding"
 	"narra/pkg/logger"
-	"narra/pkg/utils"
 )
 
 // DocumentStore 是收录链路对持久化的最小依赖面。
@@ -877,8 +876,6 @@ func (i *Ingester) resolveModel(ctx context.Context) (*entity.EmbeddingModel, er
 	// 以配置为准重新登记一次，让维度冲突在这里变成明确错误，而不是变成一份查不到的向量。
 	aligned, err := i.models.EnsureDefault(ctx, entity.EmbeddingModel{
 		Name:       cfg.Model,
-		Provider:   entity.EmbeddingProviderOpenAICompatible,
-		BaseURL:    utils.OptionalString(cfg.BaseURL),
 		Dimensions: int32(cfg.Dimensions),
 	})
 	if err != nil {

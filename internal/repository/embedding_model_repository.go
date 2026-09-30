@@ -66,7 +66,6 @@ func (r *embeddingModelRepository) EnsureDefault(ctx context.Context, model enti
 				return err
 			}
 			model.IsDefault = true
-			model.Enabled = true
 			if err := tx.Create(&model).Error; err != nil {
 				return err
 			}
@@ -79,15 +78,11 @@ func (r *embeddingModelRepository) EnsureDefault(ctx context.Context, model enti
 		}
 
 		// 已存在则复用原行：Name 上有唯一约束，同名再插一行会直接失败。
-		// ID / CreatedAt 沿用旧值，只覆盖由配置推导出来的字段。
+		// ID / CreatedAt 沿用旧值，只覆盖由入参推导出来的两列（维度与默认标记）。
 		if err := clearOtherDefaults(tx, existing.ID); err != nil {
 			return err
 		}
-		existing.Provider = model.Provider
-		existing.BaseURL = model.BaseURL
 		existing.Dimensions = model.Dimensions
-		existing.ModelVersion = model.ModelVersion
-		existing.Enabled = true
 		existing.IsDefault = true
 		if err := tx.Save(existing).Error; err != nil {
 			return err

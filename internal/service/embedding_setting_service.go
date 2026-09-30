@@ -20,7 +20,6 @@ import (
 	"narra/pkg/config"
 	"narra/pkg/embedding"
 	"narra/pkg/logger"
-	"narra/pkg/utils"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -187,11 +186,7 @@ func (s *embeddingSettingService) ensureDefaultModel(ctx context.Context, cfg co
 	}
 
 	model, err := s.modelRepo.EnsureDefault(ctx, entity.EmbeddingModel{
-		Name:     cfg.Model,
-		Provider: entity.EmbeddingProviderOpenAICompatible,
-		// base_url 为空表示"沿用应用的全局 embedding 配置"（见实体注释），
-		// 所以用 NULL 表达"没写"，而不是存一个空字符串把它变成"明确配成了空地址"。
-		BaseURL:    utils.OptionalString(cfg.BaseURL),
+		Name:       cfg.Model,
 		Dimensions: int32(cfg.Dimensions),
 	})
 	if err != nil {

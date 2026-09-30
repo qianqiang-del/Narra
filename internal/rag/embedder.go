@@ -61,9 +61,9 @@ func newModelEmbedderFactory(manager *embedding.Manager) embedderFactory {
 
 // modelEmbedderConfig 把"库里的模型行"与"当前生效的连接配置"拼成一份向量化配置。
 //
-// 连接信息（密钥、超时）来自全局配置；模型身份（名字、维度、地址）以模型行为准 ——
-// 模型行上带了自己的 base_url 时也以它为准：同一个密钥配到不同网关的场景下，
-// 全局配置里的地址可能根本托管不了这个模型。
+// 连接信息（地址、密钥、超时）全部来自当前生效配置；模型行只提供身份（名字、维度）——
+// 模型行曾经允许带自己的 base_url，2026-09-30 清理冗余列时删除：那个字段一直只是
+// 配置的镜像、没有任何入口能单独改它，"连哪个网关"归 embedding_settings 一处说了算。
 //
 // 包级可见是为了能被单测直接验（纯函数，不建客户端、不发请求）。
 func modelEmbedderConfig(manager *embedding.Manager, model *entity.EmbeddingModel) config.EmbeddingConfig {
@@ -73,9 +73,6 @@ func modelEmbedderConfig(manager *embedding.Manager, model *entity.EmbeddingMode
 	}
 	cfg.Model = model.Name
 	cfg.Dimensions = int(model.Dimensions)
-	if model.BaseURL != nil && strings.TrimSpace(*model.BaseURL) != "" {
-		cfg.BaseURL = *model.BaseURL
-	}
 	return cfg
 }
 
