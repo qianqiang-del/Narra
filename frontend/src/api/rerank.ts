@@ -15,7 +15,6 @@ interface RerankModelDTO {
   api_key_configured: boolean
   test_status: 'untested' | 'success' | 'failed'
   last_test_error: string | null
-  last_tested_at: string | null
   enabled: boolean
   created_at: string
   updated_at: string
@@ -30,7 +29,6 @@ export interface RerankModel {
   apiKeyConfigured: boolean
   testStatus: 'untested' | 'success' | 'failed'
   lastTestError: string | null
-  lastTestedAt: string | null
   enabled: boolean
 }
 
@@ -52,7 +50,7 @@ function toModel(d: RerankModelDTO): RerankModel {
   return {
     id: d.id, name: d.name, baseUrl: d.base_url, timeout: d.timeout, model: d.model,
     apiKeyConfigured: d.api_key_configured, testStatus: d.test_status,
-    lastTestError: d.last_test_error, lastTestedAt: d.last_tested_at, enabled: d.enabled,
+    lastTestError: d.last_test_error, enabled: d.enabled,
   }
 }
 
