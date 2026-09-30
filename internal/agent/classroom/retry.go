@@ -25,7 +25,9 @@ const maxRevisionRounds = 1
 const maxPageModelCalls = 10
 
 // maxResearchStep 是调研 Agent 的图执行步数上限，容得下多次工具往返加一次交卷。
-const maxResearchStep = 12
+const maxResearchStep = 8
+
+const maxPlannedToolSteps = 3
 
 // retryBackoff 是两次重试之间的固定等待。
 const retryBackoff = time.Second

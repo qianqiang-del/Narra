@@ -64,7 +64,7 @@ func researchEvidence(ctx context.Context, rt *runtime, in *researchInput) (*Evi
 	if len(rt.tools) == 0 {
 		return &EvidenceBundle{}, ""
 	}
-	agentInstance, err := rt.researchAgent(ctx)
+	agentInstance, err := rt.researchAgent(ctx, plannedToolNames(in.Steps))
 	if err != nil {
 		logger.Warn("调研 Agent 构造失败，跳过资料检索", zap.Error(err))
 		return &EvidenceBundle{}, "调研 Agent 构造失败，这一页没有外部资料"
@@ -74,7 +74,7 @@ func researchEvidence(ctx context.Context, rt *runtime, in *researchInput) (*Evi
 		logger.Warn("调研提示词未注册，跳过资料检索")
 		return &EvidenceBundle{}, "调研提示词未注册，这一页没有外部资料"
 	}
-	messages := []*schema.Message{schema.SystemMessage(system), schema.UserMessage(researchPrompt(in))}
+	messages := researchMessages(system, in)
 
 	recorder := toolcall.NewRecorder()
 	ctx = rt.retrievalContext(ctx)
@@ -125,7 +125,7 @@ func parseEvidenceBundle(message *schema.Message) (*EvidenceBundle, error) {
 // researchPrompt 拼调研专家的用户提示词。
 func researchPrompt(in *researchInput) string {
 	var builder strings.Builder
-	in.Page.writePrompt(&builder)
+	builder.WriteString(in.Page.executionPagePrompt())
 	builder.WriteString("\n## 这一页定下的调研步骤\n")
 	if len(in.Steps) == 0 {
 		builder.WriteString("规划阶段没有给出具体步骤，请自行判断需要查什么。\n")
@@ -137,6 +137,14 @@ func researchPrompt(in *researchInput) string {
 	builder.WriteString(toolNameEmitEvidence)
 	builder.WriteString(" 交卷。资料查不到就交回空证据，不要编造。\n")
 	return builder.String()
+}
+
+func researchMessages(system string, in *researchInput) []*schema.Message {
+	return []*schema.Message{
+		schema.SystemMessage(system),
+		schema.UserMessage(in.Page.stableClassroomPrompt()),
+		schema.UserMessage(researchPrompt(in)),
+	}
 }
 
 // emitEvidenceTool 是调研交卷用的工具：把参数原样回传，由调用方解析成证据包。
@@ -178,9 +186,13 @@ func evidenceItemSchema() *jsonschema.Schema {
 }
 
 // researchAgent 建调研 Agent：挂白名单工具，交卷工具进 ToolReturnDirectly。
-func (r *runtime) researchAgent(ctx context.Context) (*react.Agent, error) {
-	tools := make([]tool.BaseTool, 0, len(r.tools)+1)
-	tools = append(tools, r.tools...)
+func (r *runtime) researchAgent(ctx context.Context, planned []string) (*react.Agent, error) {
+	selected, err := r.selectResearchTools(ctx, planned)
+	if err != nil {
+		return nil, err
+	}
+	tools := make([]tool.BaseTool, 0, len(selected)+1)
+	tools = append(tools, selected...)
 	tools = append(tools, newEmitEvidenceTool())
 
 	agentInstance, err := react.NewAgent(ctx, &react.AgentConfig{
@@ -193,6 +205,47 @@ func (r *runtime) researchAgent(ctx context.Context) (*react.Agent, error) {
 		return nil, fmt.Errorf("构造调研 Agent 失败: %w", err)
 	}
 	return agentInstance, nil
+}
+
+func plannedToolNames(steps []ToolStep) []string {
+	names := make([]string, 0, len(steps))
+	seen := make(map[string]struct{}, len(steps))
+	for _, step := range steps {
+		name := strings.TrimSpace(step.Tool)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
+}
+
+func (r *runtime) selectResearchTools(ctx context.Context, planned []string) ([]tool.BaseTool, error) {
+	allowed := make(map[string]struct{}, len(planned))
+	for _, name := range planned {
+		allowed[name] = struct{}{}
+	}
+	selected := make([]tool.BaseTool, 0, len(allowed))
+	for _, candidate := range r.tools {
+		info, err := candidate.Info(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("读取调研工具信息失败: %w", err)
+		}
+		if info == nil {
+			continue
+		}
+		if _, ok := allowed[info.Name]; ok {
+			selected = append(selected, candidate)
+		}
+	}
+	if len(selected) != len(allowed) {
+		return nil, fmt.Errorf("调研计划中的工具与当前可用工具不一致")
+	}
+	return selected, nil
 }
 
 // toolNames 列出本次生成可用的工具名，供提示词与页规划使用。

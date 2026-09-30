@@ -33,11 +33,13 @@ type pageRunState struct {
 	Context PageContext
 	Budget  *pageBudget
 
-	Plan      *PageExecutionPlan
-	Evidence  *EvidenceBundle
-	Blocks    []contentBlock
-	Narration []narrationSegment
-	Review    *ReviewResult
+	Plan               *PageExecutionPlan
+	Evidence           *EvidenceBundle
+	Blocks             []contentBlock
+	Narration          []narrationSegment
+	Review             *ReviewResult
+	ReviewArtifactHash string
+	RevisionFallback   *reviewedPageSnapshot
 
 	// HTML 是交互页的完整文档，其余场景类型为空串。
 	HTML string
@@ -57,6 +59,18 @@ type pageRunState struct {
 	Revision          string
 	ContentFeedback   string
 	NarrationFeedback string
+
+	// ResumeNode 是持久化断点指定的下一节点；Graph 从入口经过此前节点时只路由、不重复调用模型。
+	ResumeNode string
+}
+
+type reviewedPageSnapshot struct {
+	Blocks       []contentBlock
+	Narration    []narrationSegment
+	HTML         string
+	Review       ReviewResult
+	ArtifactHash string
+	ReviewNote   string
 }
 
 // pageNodes 是单页 Graph 的六个节点，抽成接口便于用假节点验证图本身。

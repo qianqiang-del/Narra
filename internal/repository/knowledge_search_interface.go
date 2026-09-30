@@ -29,9 +29,10 @@ type KnowledgeSearchRepository interface {
 	// 改写它就会让索引失效、退回顺序扫描（见 vector_index.go）。
 	SearchVector(ctx context.Context, query entity.KnowledgeVectorQuery) ([]entity.KnowledgeChunkView, error)
 
-	// SearchLexical 取命中任意词项的切片，返回按命中词项数降序的候选。
+	// SearchLexical 取命中任意词项的切片，返回按加权命中分降序的候选。
 	//
 	// 匹配是大小写不敏感的子串匹配（ILIKE），范围是切片正文、章节标题与文档标题
-	// 拼起来的那一段。terms 为空时直接返回空结果，不查库。
+	// 拼起来的那一段；每个词项的权重由调用方给（见 entity.KnowledgeLexicalTerm），
+	// 短语只在不改变准入的前提下额外加分。terms 为空时直接返回空结果，不查库。
 	SearchLexical(ctx context.Context, query entity.KnowledgeLexicalQuery) ([]entity.KnowledgeChunkView, error)
 }

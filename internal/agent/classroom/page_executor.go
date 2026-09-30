@@ -2,6 +2,7 @@ package classroom
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -119,6 +120,7 @@ func (e *pageExecutor) execute(ctx context.Context, task pageTask) error {
 		Context: e.pageContext(task),
 		Budget:  &pageBudget{},
 	}
+	checkpointRestored := restorePageCheckpoint(state, task.Scene.GenerationCheckpoint)
 	resumed, err := e.resumeSynthesis(ctx, task.Scene)
 	if err == nil && !resumed {
 		err = e.runPageGraph(ctx, state)
@@ -132,25 +134,35 @@ func (e *pageExecutor) execute(ctx context.Context, task pageTask) error {
 		zap.Int("revisions", state.Rounds),
 		zap.Int("model_calls", state.Budget.used),
 		zap.Bool("resumed", resumed),
+		zap.Bool("checkpoint_restored", checkpointRestored),
 		zap.Bool("ok", err == nil),
 	)
 	if err != nil {
 		return err
 	}
-	if err := e.deps.Scenes.UpdateStatus(ctx, task.Scene.ID, e.owner, entity.SceneStatusReady, nil); err != nil {
+	if err := e.deps.Scenes.CompleteGeneration(ctx, task.Scene.ID, e.owner); err != nil {
+		if errors.Is(err, repository.ErrLeaseLost) {
+			return errLeaseLost
+		}
 		return err
 	}
-	return e.setPhase(ctx, task.Scene.ID, entity.ScenePhaseReady)
+	return nil
 }
 
 // runPageGraph 建图、跑图、落库：这一页的全部模型工作都在这里。
 func (e *pageExecutor) runPageGraph(ctx context.Context, state *pageRunState) error {
+	if state.ResumeNode == pageRouteDone {
+		return e.persistResult(ctx, state)
+	}
 	graph, err := buildPageGraph(ctx, e)
 	if err != nil {
 		return err
 	}
 	result, err := graph.Invoke(ctx, state)
 	if err != nil {
+		if restoreRevisionFallback(state, "修订执行失败，已恢复修订前版本："+truncateRunes(err.Error(), 200)) {
+			return e.persistResult(ctx, state)
+		}
 		return err
 	}
 	return e.persistResult(ctx, result)
@@ -273,6 +285,9 @@ func (e *pageExecutor) renewLease(ctx context.Context, sceneID uint64) bool {
 
 // plan 节点：定这一页的执行计划。
 func (e *pageExecutor) plan(ctx context.Context, state *pageRunState) error {
+	if state.skipForResume(pageNodePlan) {
+		return nil
+	}
 	if !state.Budget.trySpend() {
 		return fmt.Errorf("这一页的模型调用预算已用尽")
 	}
@@ -281,11 +296,18 @@ func (e *pageExecutor) plan(ctx context.Context, state *pageRunState) error {
 		return err
 	}
 	state.Plan = plan
-	return nil
+	nextNode := pageNodeContent
+	if plan.RequiresTools {
+		nextNode = pageNodeResearch
+	}
+	return e.saveCheckpoint(ctx, state, nextNode)
 }
 
 // research 节点：按执行计划取证据，取不到就用空证据继续。
 func (e *pageExecutor) research(ctx context.Context, state *pageRunState) error {
+	if state.skipForResume(pageNodeResearch) {
+		return nil
+	}
 	if err := e.setPhase(ctx, state.Scene.ID, entity.ScenePhaseResearching); err != nil {
 		return err
 	}
@@ -301,17 +323,17 @@ func (e *pageExecutor) research(ctx context.Context, state *pageRunState) error 
 			zap.Uint64("classroom_id", e.classroom.ID),
 			zap.Int32("sort_order", state.Scene.SortOrder),
 		)
-		return nil
+		return e.saveCheckpoint(ctx, state, pageNodeContent)
 	}
 	if !state.Budget.trySpend() {
 		state.ReviewNote = "模型调用预算已用尽，跳过资料调研"
-		return nil
+		return e.saveCheckpoint(ctx, state, pageNodeContent)
 	}
 	bundle, note := researchEvidence(ctx, e.rt, &researchInput{Page: state.Context, Steps: steps})
 	state.Evidence = bundle
 	state.ResearchNote = note
 	state.ResearchSteps = signature
-	return nil
+	return e.saveCheckpoint(ctx, state, pageNodeContent)
 }
 
 // toolStepsSignature 把工具步骤压成可比较的指纹；计划没变就不必重新取资料。
@@ -328,6 +350,9 @@ func toolStepsSignature(steps []ToolStep) string {
 
 // content 节点：生成并校验内容，校验不过就在节点内重跑这条 Chain。
 func (e *pageExecutor) content(ctx context.Context, state *pageRunState) error {
+	if state.skipForResume(pageNodeContent) {
+		return nil
+	}
 	if err := e.setPhase(ctx, state.Scene.ID, entity.ScenePhaseContent); err != nil {
 		return err
 	}
@@ -342,12 +367,16 @@ func (e *pageExecutor) content(ctx context.Context, state *pageRunState) error {
 	}
 	state.Blocks = content.Blocks
 	state.HTML = content.HTML
+	invalidateReview(state)
 	state.ContentFeedback = ""
-	return nil
+	return e.saveCheckpoint(ctx, state, pageNodeNarration)
 }
 
 // narration 节点：生成并校验讲稿，校验不过就在节点内重跑这条 Chain。
 func (e *pageExecutor) narration(ctx context.Context, state *pageRunState) error {
+	if state.skipForResume(pageNodeNarration) {
+		return nil
+	}
 	if err := e.setPhase(ctx, state.Scene.ID, entity.ScenePhaseNarration); err != nil {
 		return err
 	}
@@ -361,18 +390,23 @@ func (e *pageExecutor) narration(ctx context.Context, state *pageRunState) error
 		return err
 	}
 	state.Narration = items
+	invalidateReview(state)
 	state.NarrationFeedback = ""
-	return nil
+	return e.saveCheckpoint(ctx, state, pageNodeReview)
 }
 
 // review 节点：审核内容与讲稿。审核没做成不否决这一页，只记一条说明。
 func (e *pageExecutor) review(ctx context.Context, state *pageRunState) error {
+	if state.skipForResume(pageNodeReview) {
+		return nil
+	}
 	if err := e.setPhase(ctx, state.Scene.ID, entity.ScenePhaseReviewing); err != nil {
 		return err
 	}
+	invalidateReview(state)
 	if !state.Budget.trySpend() {
 		state.ReviewNote = "模型调用预算已用尽，跳过审核"
-		return nil
+		return e.saveCheckpoint(ctx, state, pageNodeRevision)
 	}
 	review, err := reviewPage(ctx, e.rt, &reviewInput{
 		Page:      state.Context,
@@ -388,26 +422,40 @@ func (e *pageExecutor) review(ctx context.Context, state *pageRunState) error {
 			zap.Int32("sort_order", state.Scene.SortOrder),
 			zap.Error(err),
 		)
-		return nil
+		return e.saveCheckpoint(ctx, state, pageNodeRevision)
 	}
 	state.Review = review
-	return nil
+	state.ReviewArtifactHash = pageArtifactHash(state)
+	return e.saveCheckpoint(ctx, state, pageNodeRevision)
 }
 
 // route 节点：按审核意见决定回哪个节点，或就此收束。
-func (e *pageExecutor) route(_ context.Context, state *pageRunState) error {
-	review := state.Review
-	if review == nil || review.Approved {
-		state.Route = pageRouteDone
+func (e *pageExecutor) route(ctx context.Context, state *pageRunState) error {
+	if state.skipForResume(pageNodeRevision) {
 		return nil
 	}
-	if state.Rounds >= maxRevisionRounds || state.Budget.exhausted() {
-		state.ReviewNote = "达到修订上限，按代码校验结果落库"
+	review := state.Review
+	if review == nil {
+		restoreRevisionFallback(state, "修订后审核未完成，已恢复修订前版本")
 		state.Route = pageRouteDone
-		return nil
+		return e.saveCheckpoint(ctx, state, pageRouteDone)
+	}
+	if review.Approved {
+		state.RevisionFallback = nil
+		state.Route = pageRouteDone
+		return e.saveCheckpoint(ctx, state, pageRouteDone)
+	}
+	if state.Rounds >= maxRevisionRounds || state.Budget.exhausted() {
+		if !restoreRevisionFallback(state, "修订后仍未通过审核，已恢复修订前版本") {
+			state.ReviewNote = "达到修订上限，按代码校验结果落库"
+		}
+		state.Route = pageRouteDone
+		return e.saveCheckpoint(ctx, state, pageRouteDone)
 	}
 	state.Rounds++
 	state.Revision = reviewFeedback(review)
+	state.RevisionFallback = snapshotReviewedPage(state)
+	invalidateReview(state)
 
 	// both 与 content 都从内容专家重做：内容改完，讲稿会顺着图上的边重新生成。
 	switch revisionTarget(review.Issues) {
@@ -420,14 +468,18 @@ func (e *pageExecutor) route(_ context.Context, state *pageRunState) error {
 	default:
 		state.Route = pageNodeContent
 	}
-	return nil
+	return e.saveCheckpoint(ctx, state, state.Route)
 }
 
 // persistResult 落库这一页的内容、讲稿与审核摘要，然后合成语音。
 func (e *pageExecutor) persistResult(ctx context.Context, state *pageRunState) error {
 	record := pageReviewRecord{Rounds: state.Rounds, Note: state.ReviewNote, ResearchNote: state.ResearchNote}
-	if state.Review != nil {
+	artifactHash := pageArtifactHash(state)
+	if state.Review != nil && state.ReviewArtifactHash == artifactHash {
 		record.ReviewResult = *state.Review
+		record.ArtifactHash = artifactHash
+	} else if state.Review != nil || state.ReviewArtifactHash != "" {
+		record.Note = appendReviewNote(record.Note, "审核结论与最终内容不一致，已丢弃旧审核")
 	}
 	review, err := json.Marshal(record)
 	if err != nil {
@@ -446,6 +498,110 @@ func (e *pageExecutor) persistResult(ctx context.Context, state *pageRunState) e
 		return err
 	}
 	return synthesizeSegments(ctx, e.deps, e.classroom.ID, state.Scene.ID, e.owner, e.voice, segments, e.ttsPool)
+}
+
+func (e *pageExecutor) saveCheckpoint(ctx context.Context, state *pageRunState, nextNode string) error {
+	// 纯节点单测会用不带仓储依赖的执行器；生产运行时 Scenes 始终存在。
+	if e.deps.Scenes == nil {
+		return nil
+	}
+	checkpoint := checkpointFromState(state, nextNode)
+	raw, err := json.Marshal(checkpoint)
+	if err != nil {
+		return fmt.Errorf("编码页面生成断点失败: %w", err)
+	}
+	err = e.deps.Scenes.UpdateCheckpoint(ctx, state.Scene.ID, e.owner, raw)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, repository.ErrLeaseLost) {
+		return errLeaseLost
+	}
+	logger.Warn("保存页面生成断点失败，本次继续生成",
+		zap.Uint64("classroom_id", e.classroom.ID),
+		zap.Uint64("scene_id", state.Scene.ID),
+		zap.String("next_node", nextNode),
+		zap.Error(err),
+	)
+	return nil
+}
+
+func (e *pageExecutor) clearCheckpoint(ctx context.Context, sceneID uint64) error {
+	if e.deps.Scenes == nil {
+		return nil
+	}
+	err := e.deps.Scenes.ClearCheckpoint(ctx, sceneID, e.owner)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, repository.ErrLeaseLost) {
+		return errLeaseLost
+	}
+	logger.Warn("清理页面生成断点失败，保留断点供幂等恢复",
+		zap.Uint64("classroom_id", e.classroom.ID),
+		zap.Uint64("scene_id", sceneID),
+		zap.Error(err),
+	)
+	return nil
+}
+
+func invalidateReview(state *pageRunState) {
+	state.Review = nil
+	state.ReviewArtifactHash = ""
+}
+
+func snapshotReviewedPage(state *pageRunState) *reviewedPageSnapshot {
+	if state.Review == nil || state.ReviewArtifactHash == "" || state.ReviewArtifactHash != pageArtifactHash(state) {
+		return nil
+	}
+	review := *state.Review
+	review.Issues = append([]ReviewIssue(nil), state.Review.Issues...)
+	return &reviewedPageSnapshot{
+		Blocks:       append([]contentBlock(nil), state.Blocks...),
+		Narration:    append([]narrationSegment(nil), state.Narration...),
+		HTML:         state.HTML,
+		Review:       review,
+		ArtifactHash: state.ReviewArtifactHash,
+		ReviewNote:   state.ReviewNote,
+	}
+}
+
+func restoreRevisionFallback(state *pageRunState, note string) bool {
+	fallback := state.RevisionFallback
+	if fallback == nil {
+		return false
+	}
+	state.Blocks = append([]contentBlock(nil), fallback.Blocks...)
+	state.Narration = append([]narrationSegment(nil), fallback.Narration...)
+	state.HTML = fallback.HTML
+	review := fallback.Review
+	review.Issues = append([]ReviewIssue(nil), fallback.Review.Issues...)
+	state.Review = &review
+	state.ReviewArtifactHash = fallback.ArtifactHash
+	state.ReviewNote = appendReviewNote(fallback.ReviewNote, note)
+	state.RevisionFallback = nil
+	return true
+}
+
+func pageArtifactHash(state *pageRunState) string {
+	raw, err := json.Marshal(struct {
+		Blocks    []contentBlock     `json:"blocks"`
+		Narration []narrationSegment `json:"narration"`
+		HTML      string             `json:"html"`
+	}{
+		Blocks: state.Blocks, Narration: state.Narration, HTML: state.HTML,
+	})
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(raw))
+}
+
+func appendReviewNote(existing, note string) string {
+	if existing == "" {
+		return note
+	}
+	return existing + "\uFF1B" + note
 }
 
 // pageContext 组装这一页的分层上下文。

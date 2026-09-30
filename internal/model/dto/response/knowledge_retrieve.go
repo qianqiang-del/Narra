@@ -13,7 +13,7 @@ type KnowledgeHit struct {
 	Heading    string   `json:"heading,omitempty"`    // 所在章节标题；无章节归属时不出现
 	Content    string   `json:"content"`              // 切片正文
 	Source     string   `json:"source"`               // 来源标识（原始文件名等）；手工录入的文档回落到标题
-	Score      float64  `json:"score"`                // 融合排序分，只用于本次检索内部比较
+	Score      float64  `json:"score"`                // 本次检索的最终排序分，只用于本次检索内部比较
 	Similarity *float64 `json:"similarity,omitempty"` // 余弦相似度；纯词法命中的切片没有这个值
 	Method     string   `json:"method"`               // 命中来源：vector / lexical / hybrid
 }

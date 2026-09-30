@@ -20,7 +20,6 @@ import (
 	"narra/pkg/documentparser"
 	"narra/pkg/embedding"
 	"narra/pkg/logger"
-	"narra/pkg/utils"
 )
 
 // DocumentStore 是收录链路对持久化的最小依赖面。
@@ -73,7 +72,7 @@ type ImagePublisher interface {
 	Publish(documentID uint64, paths []string) (map[string]string, error)
 }
 
-// ModelRegistry 是收录链路对向量模型登记的最小依赖面。
+// ModelRegistry 是收录与检索两条链路对向量模型登记的最小依赖面。
 type ModelRegistry interface {
 	// GetDefault 取当前默认模型。库里没有默认模型时返回 gorm.ErrRecordNotFound。
 	GetDefault(ctx context.Context) (*entity.EmbeddingModel, error)
@@ -81,6 +80,14 @@ type ModelRegistry interface {
 	// EnsureDefault 把一份模型登记为唯一默认模型；同名且维度一致时复用已有行。
 	// 同名但维度不同、且该模型下已有向量时，实现方会拒绝并返回维度冲突错误。
 	EnsureDefault(ctx context.Context, model entity.EmbeddingModel) (*entity.EmbeddingModel, error)
+
+	// CountVectorsByModel 统计每个模型名下的向量数，给"向量召回静默为零"的体检用
+	// （见 vector_census.go）。收录链路不用它，但两链路共用同一个接口，不另拆一个。
+	CountVectorsByModel(ctx context.Context) ([]entity.ModelVectorCount, error)
+
+	// DeleteUnusedModels 删除名下已无向量的非默认模型行，返回被删掉的名字。
+	// 收录成功后做一次收尾：重新向量化把旧模型的最后一批向量替换掉后，旧行就是空壳。
+	DeleteUnusedModels(ctx context.Context) ([]string, error)
 }
 
 // FileInput 是从磁盘收录一份文件所需的输入。
@@ -264,6 +271,11 @@ type FileTaskStore interface {
 	// 恢复点（stage 由调用方算好传入，见 ResolveRecoveryStage）；返回 false 表示它已经不是
 	// 失败状态。重试因此不会死守原来的阶段：切片没了就退回正文，正文没了就退回原文件。
 	Requeue(context.Context, uint64, string) (bool, error)
+
+	// RequeueForReembed 把一行 ready 文档改回 pending，准备用当前默认模型重新向量化；
+	// 只改状态与阶段，不碰 metadata 与上传记录。返回 false 表示它已经不是 ready
+	// （并发的另一次请求抢先了）。与 Requeue 一样是"条件更新里决胜负"，不需要额外加锁。
+	RequeueForReembed(context.Context, uint64, string) (bool, error)
 
 	// CountChunksByDocument 统计文档已落库的切片数，供恢复点计算判断"切片还在不在"。
 	// 与查询侧共用同一个方法（服务层列表要批量统计，传多个 ID 一次查完）；
@@ -473,6 +485,36 @@ func (i *Ingester) Retry(ctx context.Context, id uint64, stage string) (bool, er
 		}
 		var err error
 		requeued, err = store.Requeue(ctx, id, stage)
+		return err
+	})
+	return requeued, err
+}
+
+// Reembed 把一条已经 ready 的文档重新排队，用**当前默认模型**重算向量。
+//
+// 它服务"换过默认模型、但存量向量还挂在旧模型名下"的场景：后台按现实材料算恢复点，
+// 切片还在就直接从 embed 阶段重跑 —— 不重新解析、不重新切分，保存新向量时旧的
+// 一并被替换（见 SaveEmbeddingsAndMarkReady）。默认模型没变时调用方不该调它，
+// 否则只会白烧一次上游额度。
+//
+// 与 Retry 共用同一套机制，只有起点状态不同：同样在事务里占一个队列名额，
+// 同样靠条件更新决定并发胜负（两个请求同时点，只有一个的 requeued 为 true）。
+// 返回 false 表示这一行不满足条件 —— 它已经不是 ready，安静跳过即可。
+//
+// 队列满时原样返回 ErrIngestQueueFull，批量入队的调用方据此停下（见 service.Reembed）。
+func (i *Ingester) Reembed(ctx context.Context, id uint64, stage string) (bool, error) {
+	store, ok := i.store.(FileTaskStore)
+	if !ok {
+		return false, fmt.Errorf("知识库存储不支持异步文件任务")
+	}
+
+	requeued := false
+	err := i.runInTx(ctx, func(ctx context.Context) error {
+		if err := i.reserveQueueSlot(ctx, store); err != nil {
+			return err
+		}
+		var err error
+		requeued, err = store.RequeueForReembed(ctx, id, stage)
 		return err
 	})
 	return requeued, err
@@ -740,6 +782,8 @@ func (i *Ingester) processExistingFile(
 		if err := store.SaveEmbeddingsAndMarkReady(ctx, document.ID, attempt, embeddings, metadata); err != nil {
 			return i.failIngest(ctx, document, attempt, "store", fmt.Errorf("保存向量失败: %w", err))
 		}
+		// 向量换完了，被替换光的旧模型行就此收尾（best-effort，不参与成败）。
+		i.cleanupUnusedModels(ctx)
 
 		// 回读一次再返回：内存里这份是 worker 取任务时读到的，中间的阶段推进与正文替换
 		// 都没有回写到它身上。
@@ -835,6 +879,8 @@ func (i *Ingester) ingestMarkdown(
 	if err := i.store.ReplaceChunks(ctx, document.ID, replacement); err != nil {
 		return i.failIngest(ctx, document, 0, "store", err)
 	}
+	// 重新收录也会把旧模型的向量整批换掉，同样顺手收尾（best-effort，不参与成败）。
+	i.cleanupUnusedModels(ctx)
 
 	// 回读一次再返回：内存里这份是创建文档时读到的，中间的状态推进和正文替换
 	// 都没有回写到它身上。直接拿它出响应会给出一个"刚创建就再没更新过"的
@@ -873,14 +919,32 @@ func (i *Ingester) resolveModel(ctx context.Context) (*entity.EmbeddingModel, er
 	// 以配置为准重新登记一次，让维度冲突在这里变成明确错误，而不是变成一份查不到的向量。
 	aligned, err := i.models.EnsureDefault(ctx, entity.EmbeddingModel{
 		Name:       cfg.Model,
-		Provider:   entity.EmbeddingProviderOpenAICompatible,
-		BaseURL:    utils.OptionalString(cfg.BaseURL),
 		Dimensions: int32(cfg.Dimensions),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("向量模型登记与当前配置不一致，重新对齐失败: %w", err)
 	}
 	return aligned, nil
+}
+
+// cleanupUnusedModels 清掉名下已无向量的非默认模型行（best-effort）。
+//
+// 重新向量化把旧模型的最后一批向量替换掉之后，那个模型行就只剩空壳；在每次
+// 向量写入成功之后顺手收尾，旧行不会在库里长期留着。它刻意不参与收录成败：
+// 失败只记一条 Warn —— 为一条清理把一篇已经成功的文档判成失败，代价完全不成比例，
+// 而且下一次成功的收录还会再清一次。
+func (i *Ingester) cleanupUnusedModels(ctx context.Context) {
+	deleted, err := i.models.DeleteUnusedModels(ctx)
+	if err != nil {
+		// 关停时 ctx 已取消，失败是预期内的，不必喧哗。
+		if ctx.Err() == nil {
+			logger.Warn("清理无向量的旧模型失败（不影响收录结果）", zap.Error(err))
+		}
+		return
+	}
+	for _, name := range deleted {
+		logger.Info("已清理名下无向量的旧模型", zap.String("model", name))
+	}
 }
 
 // createDocument 建文档行，此时正文还是空的，状态是 pending。

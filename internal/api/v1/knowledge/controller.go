@@ -524,6 +524,39 @@ func (c *Controller) Retry(ctx *gin.Context) {
 	response.SuccessWithMessage(ctx, "已重新排队", document)
 }
 
+// EmbeddingStatus 返回仍缺当前默认模型向量的 ready 文档数，供知识库页提示条。
+//
+// 它是只读体检：没有默认模型时服务层返回零值（Model 为空），提示条据此不出现 ——
+// "还没配置"该引导去设置页，不是"有 N 篇要重算"。
+func (c *Controller) EmbeddingStatus(ctx *gin.Context) {
+	status, err := c.svc.EmbeddingStatus(ctx.Request.Context())
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+	response.Success(ctx, status)
+}
+
+// Reembed 把仍缺当前默认模型向量的 ready 文档批量重新排队，用当前模型重算向量。
+//
+// 它是整库动作而不是对某一篇的操作，所以不收请求体、也不带文档 ID。
+// 一篇都没入队且原因是"现在不行"（队列满、还没配置默认模型）时翻 409；
+// 部分入队返回 200 与计数 —— 已排队的照常处理，剩余的下次再点。
+func (c *Controller) Reembed(ctx *gin.Context) {
+	result, err := c.svc.Reembed(ctx.Request.Context())
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrIngestQueueFull),
+			errors.Is(err, service.ErrNoEmbeddingModel):
+			response.Conflict(ctx, err.Error())
+		default:
+			response.InternalError(ctx, err.Error())
+		}
+		return
+	}
+	response.SuccessWithMessage(ctx, "已重新排队", result)
+}
+
 // IngestText 直接把一段正文收录为知识文档。
 //
 // 提供它是为了让"不走文件"的场景也能用同一条链路（外部系统同步、编辑器保存），

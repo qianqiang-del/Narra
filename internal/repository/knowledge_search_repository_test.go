@@ -17,10 +17,10 @@ import (
 )
 
 // 这些用例必须跑真库：两条召回路的正确性全在 SQL 里 —— pgvector 的余弦算子与
-// 表达式索引、ILIKE 的转义与大小写、按命中词项数排序，这些用替身测等于没测。
+// 表达式索引、ILIKE 的转义与大小写、按加权命中分排序，这些用替身测等于没测。
 //
-// 向量索引（EnsureVectorIndex）是 DDL，不能跑在事务里，所以它单独用 openTestDB +
-// 显式清理，其余用例仍然用 testTx 回滚，不往开发库里留任何数据。
+// 向量索引与词法索引（EnsureVectorIndex / EnsureLexicalIndex）是 DDL，不能跑在事务里，
+// 所以它们单独用 openTestDB + 显式清理，其余用例仍然用 testTx 回滚，不往开发库里留任何数据。
 //
 // 本地运行：
 //
@@ -171,9 +171,14 @@ func TestSearchVectorHidesUnsearchableChunks(t *testing.T) {
 	}
 }
 
-// lexicalQuery 是词法召回用例的简写：这些用例都不带过滤条件。
+// lexicalQuery 是词法召回用例的简写：等权词项、不带过滤条件。
+// 权重本身的口径由 TestSearchLexicalAddsWeightsAndPhraseBonus 单独钉。
 func lexicalQuery(terms []string, limit int) entity.KnowledgeLexicalQuery {
-	return entity.KnowledgeLexicalQuery{Terms: terms, Limit: limit}
+	weighted := make([]entity.KnowledgeLexicalTerm, 0, len(terms))
+	for _, term := range terms {
+		weighted = append(weighted, entity.KnowledgeLexicalTerm{Text: term, Weight: 1})
+	}
+	return entity.KnowledgeLexicalQuery{Terms: weighted, Limit: limit}
 }
 
 // searchTokenSequence 让同一时刻的两次取号也不重复。
@@ -188,12 +193,12 @@ var searchTokenSequence atomic.Uint64
 // 断言随机变红。唯一的词项把这件事一次性解决。
 //
 // 固定宽度的序号放在末尾还保证了另一个性质：两个词项互不为子串
-// （否则搜短的那个会把长的那个一起命中，"命中词项数"就没法断言了）。
+// （否则搜短的那个会把长的那个一起命中，命中分就没法断言了）。
 func searchTestToken() string {
 	return fmt.Sprintf("narra%dq%06dxk", time.Now().UnixNano(), searchTokenSequence.Add(1))
 }
 
-// TestSearchLexicalRanksByMatchedTerms 校验词法路按命中词项数降序，
+// TestSearchLexicalRanksByMatchedTerms 校验等权词项下词法路按命中数量降序，
 // 且匹配大小写不敏感、切片正文与文档标题都在命中面上。
 func TestSearchLexicalRanksByMatchedTerms(t *testing.T) {
 	tx := testTx(t)
@@ -231,6 +236,56 @@ func TestSearchLexicalRanksByMatchedTerms(t *testing.T) {
 	}
 	if len(byTitle) != 2 {
 		t.Fatalf("文档标题里的词项应当能命中这篇文档的全部切片，实际 %+v", byTitle)
+	}
+}
+
+// TestSearchLexicalAddsWeightsAndPhraseBonus 校验两条打分规则：
+// 高权重词项能压过命中个数；短语在命中词项的前提下额外加分。
+func TestSearchLexicalAddsWeightsAndPhraseBonus(t *testing.T) {
+	tx := testTx(t)
+	modelID := knowledgeTestModelID(t, tx)
+	exactToken := searchTestToken()
+	bonusToken := searchTestToken()
+	documentID := seedSearchDocument(t, tx, "加权", entity.KnowledgeDocumentStatusReady, true)
+
+	exactChunk := seedSearchChunk(t, tx, documentID, modelID, 0, "",
+		"只提到精确词 "+exactToken, vectorLiteral(searchTestDimensions))
+	// 这一条同时命中 bonusToken（权重 2）与短语（权重 4）：总分 6，压过精确词的 3。
+	phrase := "短语 " + bonusToken + " 原样出现"
+	bonusChunk := seedSearchChunk(t, tx, documentID, modelID, 1, "",
+		"开头 "+phrase+" 结尾", vectorLiteral(searchTestDimensions))
+
+	repo := NewKnowledgeSearchRepository(tx)
+	rows, err := repo.SearchLexical(context.Background(), entity.KnowledgeLexicalQuery{
+		Terms: []entity.KnowledgeLexicalTerm{
+			{Text: exactToken, Weight: 3},
+			{Text: bonusToken, Weight: 2},
+		},
+		Phrases: []entity.KnowledgeLexicalTerm{{Text: phrase, Weight: 4}},
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("词法召回失败: %v", err)
+	}
+	if len(rows) != 2 || rows[0].ChunkID != bonusChunk || rows[1].ChunkID != exactChunk {
+		t.Fatalf("加权命中分的排序不对: %+v", rows)
+	}
+	if rows[0].RawScore != 6 || rows[1].RawScore != 3 {
+		t.Fatalf("加权命中分不对: %v / %v", rows[0].RawScore, rows[1].RawScore)
+	}
+}
+
+// TestSearchLexicalRejectsNonPositiveWeight 校验权重非正当场报错 ——
+// 0 会让词项只贡献"入选资格"却不贡献分数，那是调用方没想清楚，不该静默修正。
+func TestSearchLexicalRejectsNonPositiveWeight(t *testing.T) {
+	repo := NewKnowledgeSearchRepository(testTx(t))
+
+	_, err := repo.SearchLexical(context.Background(), entity.KnowledgeLexicalQuery{
+		Terms: []entity.KnowledgeLexicalTerm{{Text: searchTestToken(), Weight: 0}},
+		Limit: 10,
+	})
+	if err == nil {
+		t.Fatal("权重非正时必须报错")
 	}
 }
 
@@ -335,7 +390,7 @@ func TestSearchAppliesChunkFilter(t *testing.T) {
 	lexicalRows := func(filter entity.KnowledgeChunkFilter) []entity.KnowledgeChunkView {
 		t.Helper()
 		rows, err := repo.SearchLexical(context.Background(), entity.KnowledgeLexicalQuery{
-			Terms:  []string{token},
+			Terms:  []entity.KnowledgeLexicalTerm{{Text: token, Weight: 1}},
 			Limit:  10,
 			Filter: filter,
 		})
@@ -410,6 +465,163 @@ func TestSearchLexicalWithoutTermsSkipsDatabase(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("没有词项时不该返回任何候选: %+v", rows)
+	}
+}
+
+// TestSearchLexicalCountsTermOnceAcrossSurfaces 校验标题拆路后的合并语义：
+// 文档标题命中的切片照常进入候选，且一个词项在正文与标题各出现一次也只算命中一次
+// （取两条路的较高分，而不是相加）—— 与改造前"拼成一段再匹配"完全一致。
+func TestSearchLexicalCountsTermOnceAcrossSurfaces(t *testing.T) {
+	tx := testTx(t)
+	modelID := knowledgeTestModelID(t, tx)
+	token := searchTestToken()
+	documentID := seedSearchDocument(t, tx, "标题含 "+token, entity.KnowledgeDocumentStatusReady, true)
+
+	both := seedSearchChunk(t, tx, documentID, modelID, 0, "", "正文也含 "+token, vectorLiteral(searchTestDimensions))
+	titleOnly := seedSearchChunk(t, tx, documentID, modelID, 1, "", "正文里没有那个词", vectorLiteral(searchTestDimensions))
+
+	repo := NewKnowledgeSearchRepository(tx)
+	rows, err := repo.SearchLexical(context.Background(), lexicalQuery([]string{token}, 10))
+	if err != nil {
+		t.Fatalf("词法召回失败: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("标题命中的文档下所有切片都该进入候选: %+v", rows)
+	}
+	if rows[0].ChunkID != both || rows[1].ChunkID != titleOnly {
+		t.Fatalf("同分时应当按切片 ID 升序: %+v", rows)
+	}
+	// 只命中标题的那条得 1 分；正文与标题都命中的那条也只该是 1 分（取较高分，不相加）。
+	if rows[0].RawScore != 1 || rows[1].RawScore != 1 {
+		t.Fatalf("同一个词项跨两个匹配面不该重复计分: %v / %v", rows[0].RawScore, rows[1].RawScore)
+	}
+}
+
+// TestLexicalIndexDisposition 校验同名词法索引的处置规则 —— 与向量索引共用三态，
+// 但比对的是**算子类**：部署从 pg_trgm 换成 pg_bigm（或反过来）后，旧索引与查询匹配不上，
+// 必须删掉重建。真库里造无效索引很麻烦，所以规则被提成纯函数。
+func TestLexicalIndexDisposition(t *testing.T) {
+	trgm := "CREATE INDEX x ON public.knowledge_chunks USING gin (((content || ' '::text) || COALESCE(heading, ''::character varying)::text) gin_trgm_ops)"
+	bigm := "CREATE INDEX x ON public.knowledge_chunks USING gin (((content || ' '::text) || COALESCE(heading, ''::character varying)::text) gin_bigm_ops)"
+
+	cases := []struct {
+		name       string
+		definition string
+		valid      bool
+		opclass    string
+		want       indexAction
+	}{
+		{"没有索引时新建", "", false, "gin_trgm_ops", indexActionCreate},
+		{"有效且算子类一致的索引保留", trgm, true, "gin_trgm_ops", indexActionKeep},
+		{"换过扩展的索引要重建", trgm, true, "gin_bigm_ops", indexActionRebuild},
+		{"无效索引即使算子类一致也要重建", trgm, false, "gin_trgm_ops", indexActionRebuild},
+		{"bigm 环境保留 bigm 索引", bigm, true, "gin_bigm_ops", indexActionKeep},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := lexicalIndexDisposition(testCase.definition, testCase.valid, testCase.opclass); got != testCase.want {
+				t.Fatalf("处置判断不对: got=%d want=%d", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestEnsureLexicalIndexCreatesAndIsIdempotent 校验词法索引建得出来、重复建无副作用，
+// 且定义里的表达式与检索 SQL 的匹配面一致（不一致就永远用不上索引，没有任何报错）。
+//
+// 这条用例是 DDL，不走事务（CREATE INDEX CONCURRENTLY 不能跑在事务块里）。
+// 索引是全局固定名、服务启动时本来就会补建，所以用完不删：它正是本机应有的状态。
+func TestEnsureLexicalIndexCreatesAndIsIdempotent(t *testing.T) {
+	db := openTestDB(t)
+	kind, err := EnsureLexicalIndex(context.Background(), db)
+	if errors.Is(err, ErrLexicalIndexUnavailable) {
+		t.Skip("数据库没有 pg_bigm / pg_trgm 扩展，跳过词法索引用例")
+	}
+	if err != nil {
+		t.Fatalf("建词法索引失败: %v", err)
+	}
+
+	definition, valid, err := currentLexicalIndex(context.Background(), db)
+	if err != nil {
+		t.Fatalf("查询词法索引定义失败: %v", err)
+	}
+	if !valid {
+		t.Fatalf("刚建好的词法索引应当是有效的: %q", definition)
+	}
+	if !strings.Contains(definition, kind.opclass()) {
+		t.Fatalf("索引算子类与扩展不一致，检索永远用不上它: %q", definition)
+	}
+	// 表达式必须与检索 SQL 的匹配面一致：混进别的列（比如文档标题）索引就用不上。
+	if !strings.Contains(definition, "content") || !strings.Contains(definition, "heading") {
+		t.Fatalf("索引表达式应当覆盖切片正文与章节标题: %q", definition)
+	}
+
+	// 重复建必须幂等：处置规则要认得现有定义并原样保留，不能每次启动都删了重建。
+	if _, err := EnsureLexicalIndex(context.Background(), db); err != nil {
+		t.Fatalf("重复建词法索引应当是幂等的: %v", err)
+	}
+	after, _, err := currentLexicalIndex(context.Background(), db)
+	if err != nil {
+		t.Fatalf("查询词法索引定义失败: %v", err)
+	}
+	if after != definition {
+		t.Fatalf("幂等重建不该改索引定义: %q vs %q", after, definition)
+	}
+}
+
+// TestSearchLexicalCanUseIndex 校验词法候选查询真的用得上表达式索引 ——
+// 表达式写法、算子类、参数形状，任何一处对不上都会**静默**退回顺序扫描，
+// 所以用 EXPLAIN 把"用得上索引"变成一条断言（与向量索引同样的理由）。
+//
+// 探针索引建在事务里（不走 CONCURRENTLY）：小表上规划器当然选顺序扫描，
+// 关掉它逼着从索引取；探针随事务回滚，不留痕迹。
+func TestSearchLexicalCanUseIndex(t *testing.T) {
+	tx := testTx(t)
+	kind, err := pickLexicalIndexKind(context.Background(), tx)
+	if errors.Is(err, ErrLexicalIndexUnavailable) {
+		t.Skip("数据库没有 pg_bigm / pg_trgm 扩展，跳过词法索引用例")
+	}
+	if err != nil {
+		t.Fatalf("探测索引扩展失败: %v", err)
+	}
+
+	name := "narra_test_lexical_probe_idx"
+	statement := fmt.Sprintf(
+		"CREATE INDEX %s ON knowledge_chunks USING gin (%s %s)",
+		name, lexicalIndexExpression, kind.opclass())
+	if err := tx.Exec(statement).Error; err != nil {
+		t.Fatalf("建探针索引失败: %v", err)
+	}
+	if err := tx.Exec("SET LOCAL enable_seqscan = off").Error; err != nil {
+		t.Fatalf("调整执行计划开关失败: %v", err)
+	}
+
+	// 探针用三字词：pg_trgm 对两字中文的 trigram 全是首尾填充项、剪不掉行
+	// （5 万行实测仍走顺序扫描），三字才有可剪枝的实心 trigram；两字词的提速
+	// 要靠 pg_bigm（2-gram），见 lexical_index.go 的说明。
+	pattern := likePattern("向量检")
+	scoring := []lexicalPair{{pattern: pattern, weight: 2}}
+	explainSQL, args := lexicalStatement(chunkTextHaystack, scoring, []string{pattern}, 5, "", nil)
+	rows, err := tx.Raw("EXPLAIN "+explainSQL, args...).Rows()
+	if err != nil {
+		t.Fatalf("EXPLAIN 失败: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatalf("读取执行计划失败: %v", err)
+		}
+		plan.WriteString(line)
+		plan.WriteString("\n")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("读取执行计划失败: %v", err)
+	}
+	if !strings.Contains(plan.String(), name) {
+		t.Fatalf("词法检索用不上表达式索引，会退化成顺序扫描。执行计划:\n%s", plan.String())
 	}
 }
 
@@ -633,7 +845,7 @@ func TestVectorIndexDisposition(t *testing.T) {
 		definition string
 		valid      bool
 		expression string
-		want       vectorIndexAction
+		want       indexAction
 	}{
 		{"没有索引时新建", "", false, "vector(1536)", indexActionCreate},
 		{"有效且精度维度一致的索引保留", example, true, "vector(1536)", indexActionKeep},

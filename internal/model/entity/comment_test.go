@@ -35,6 +35,7 @@ var commentGuardModels = []any{
 	&AgentTraceSpan{},
 	&MCPServer{},
 	&LLMProvider{},
+	&RerankSetting{},
 }
 
 // tableNameMethod 用来在实体源码里找出「哪些结构体是表」。

@@ -301,6 +301,7 @@ export default {
     testConnection: 'Test connection',
     saving: 'Saving',
     save: 'Save',
+    rerank: 'Rerank Models',
     mcpTools: 'MCP Tools',
   },
   mcp: {
@@ -403,6 +404,18 @@ export default {
         message: 'Delete the upload record “{title}”?',
         note: 'For a record that has not been ingested yet, deleting it also removes that document and its temporary files. Ingested knowledge bases are unaffected.',
       },
+    },
+    // After switching embedding models: banner + one-click re-embed
+    // (GET /documents/embedding-status, POST /documents/reembed).
+    reembed: {
+      title: '{count} document(s) still use vectors from an old model',
+      desc: 'Retrieval only searches vectors of the current model ({model}), so these documents can only be matched lexically for now. Re-embedding reuses existing chunks — no re-parsing.',
+      action: 'Re-embed',
+      running: 'Re-embedding, {count} remaining…',
+      queued: 'Queued {count} document(s); processing continues in the background.',
+      partial: 'Queued {queued}; the queue is full — click again later for the rest.',
+      nothing: 'Nothing to re-embed.',
+      failed: 'Failed to start re-embedding.',
     },
     upload: {
       drop: 'Drop one or more files here, or click to choose ({formats})',

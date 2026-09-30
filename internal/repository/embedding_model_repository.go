@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -65,7 +66,6 @@ func (r *embeddingModelRepository) EnsureDefault(ctx context.Context, model enti
 				return err
 			}
 			model.IsDefault = true
-			model.Enabled = true
 			if err := tx.Create(&model).Error; err != nil {
 				return err
 			}
@@ -78,15 +78,11 @@ func (r *embeddingModelRepository) EnsureDefault(ctx context.Context, model enti
 		}
 
 		// 已存在则复用原行：Name 上有唯一约束，同名再插一行会直接失败。
-		// ID / CreatedAt 沿用旧值，只覆盖由配置推导出来的字段。
+		// ID / CreatedAt 沿用旧值，只覆盖由入参推导出来的两列（维度与默认标记）。
 		if err := clearOtherDefaults(tx, existing.ID); err != nil {
 			return err
 		}
-		existing.Provider = model.Provider
-		existing.BaseURL = model.BaseURL
 		existing.Dimensions = model.Dimensions
-		existing.ModelVersion = model.ModelVersion
-		existing.Enabled = true
 		existing.IsDefault = true
 		if err := tx.Save(existing).Error; err != nil {
 			return err
@@ -175,4 +171,46 @@ func countVectors(tx *gorm.DB, modelID uint64) (int64, error) {
 		Where("model_id = ?", modelID).
 		Count(&count).Error
 	return count, err
+}
+
+// CountVectorsByModel 统计每个已登记模型名下的向量数（左连接，没有向量的模型计 0）。
+//
+// 不限定默认模型：体检要同时看到"当前模型下有没有"和"别的模型下还有多少"，
+// 只看默认模型那一行的话，就把"换过模型"与"全库都还没有向量"混成同一种形态了。
+func (r *embeddingModelRepository) CountVectorsByModel(ctx context.Context) ([]entity.ModelVectorCount, error) {
+	var rows []entity.ModelVectorCount
+	err := r.db.WithContext(ctx).Raw(`
+SELECT m.id AS model_id, m.name AS name, count(e.id) AS vectors
+FROM embedding_models m
+LEFT JOIN knowledge_embeddings e ON e.model_id = m.id
+GROUP BY m.id, m.name
+ORDER BY m.id`).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("统计各模型向量数失败: %w", err)
+	}
+	return rows, nil
+}
+
+// DeleteUnusedModels 删除名下已无向量的非默认模型行，返回被删掉的名字。
+//
+// 判定与删除放在一条 SQL 里（NOT is_default + NOT EXISTS 向量），不先查后删：
+// 两次查询之间可能有并发写入让某一行重新变得"有用"，条件交给数据库一次性判定。
+// RETURNING 让调用方能把删了什么写进日志 —— 静默删除会让人事后完全无从对账。
+//
+// 与 EnsureDefault 的竞争由行锁兜底：对方会先锁住目标行再改，DELETE 拿到锁后
+// 会重新核对 is_default，不会把刚被设为默认的那一行删掉；反过来若它先删，
+// EnsureDefault 查不到行会走插入分支，结果同样正确。
+func (r *embeddingModelRepository) DeleteUnusedModels(ctx context.Context) ([]string, error) {
+	var deleted []string
+	err := r.db.WithContext(ctx).Raw(`
+DELETE FROM embedding_models m
+WHERE NOT m.is_default
+  AND NOT EXISTS (
+	SELECT 1 FROM knowledge_embeddings e WHERE e.model_id = m.id
+  )
+RETURNING m.name`).Scan(&deleted).Error
+	if err != nil {
+		return nil, fmt.Errorf("清理无向量的旧模型失败: %w", err)
+	}
+	return deleted, nil
 }

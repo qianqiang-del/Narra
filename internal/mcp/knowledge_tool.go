@@ -51,7 +51,7 @@ type knowledgeRetrieveArgs struct {
 type knowledgeRetrieveHit struct {
 	Content string  `json:"content"` // 命中的原文切片
 	Source  string  `json:"source"`  // 来源标识（原始文件名等），引用时用它
-	Score   float64 `json:"score"`   // 融合排序分，只在本次结果内部可比
+	Score   float64 `json:"score"`   // 本次检索的最终排序分，只在本次结果内部可比
 }
 
 // knowledgeRetrieveResult 是工具出参。

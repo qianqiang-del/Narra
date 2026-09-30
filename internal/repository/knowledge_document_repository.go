@@ -475,6 +475,77 @@ func (r *knowledgeDocumentRepository) Requeue(ctx context.Context, id uint64, st
 	return requeued, err
 }
 
+// RequeueForReembed 把一行 ready 文档改回 pending 并写上恢复阶段。
+//
+// 只改状态与阶段两列，metadata 与上传记录原样保留：这不是一次新的投递，
+// 只是同一份资产换当前模型重算向量。重算失败时 MarkFailed 会照常把记录置为
+// failed 并带上原因，用户看到的就是常规的"失败可重试"形态。
+// updated_at 由 GORM 的 autoUpdateTime 跟着刷新（列表排序与心跳都靠它）。
+func (r *knowledgeDocumentRepository) RequeueForReembed(ctx context.Context, id uint64, stage string) (bool, error) {
+	result := conn(ctx, r.db).Model(&entity.KnowledgeDocument{}).
+		Where("id = ? AND status = ?", id, entity.KnowledgeDocumentStatusReady).
+		Updates(map[string]any{
+			"status":       entity.KnowledgeDocumentStatusPending,
+			"ingest_stage": stage,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
+// missingModelVectorsPredicate 是"这篇文档仍缺该模型向量"的判据。
+//
+// 用 EXISTS + NOT EXISTS 而不是把切片数与向量数各数一遍：命中一个缺向量的切片
+// 即可短路；状态过滤在外层，调用方给 ready 就是"待修复"，给 pending / processing
+// 就是"正在补"。谓词里的 ? 依次是状态列表与模型 ID，计数与取 ID 共用同一份，
+// 免得"计数"和"取 ID"在边界上分叉。
+const missingModelVectorsPredicate = `d.status IN ?
+	  AND EXISTS (
+		SELECT 1 FROM knowledge_chunks c
+		WHERE c.document_id = d.id
+		  AND NOT EXISTS (
+			SELECT 1 FROM knowledge_embeddings e
+			WHERE e.chunk_id = c.id AND e.model_id = ?
+		  )
+	  )`
+
+// CountDocumentsMissingModelVectors 统计指定状态下仍缺该模型向量的文档数。
+//
+// "存在切片缺向量"就算一篇：向量是按文档整批写的，部分缺失同样说明这篇文档
+// 在新模型下不可检索，要按需要重算处理。
+func (r *knowledgeDocumentRepository) CountDocumentsMissingModelVectors(ctx context.Context, modelID uint64, statuses []string) (int64, error) {
+	if len(statuses) == 0 {
+		return 0, nil
+	}
+
+	var count int64
+	err := conn(ctx, r.db).Raw(
+		`SELECT count(*) FROM knowledge_documents d WHERE `+missingModelVectorsPredicate,
+		statuses, modelID,
+	).Scan(&count).Error
+	if err != nil {
+		return 0, fmt.Errorf("统计缺少模型向量的文档失败: %w", err)
+	}
+	return count, nil
+}
+
+// ListDocumentIDsMissingModelVectors 取仍缺该模型向量的 ready 文档 ID，按 ID 升序。
+//
+// 升序是为了让批量入队有一个稳定、可预期的处理顺序（老文档先重算）；
+// 与 ListPending 的先进先出同一个考量。
+func (r *knowledgeDocumentRepository) ListDocumentIDsMissingModelVectors(ctx context.Context, modelID uint64) ([]uint64, error) {
+	var ids []uint64
+	err := conn(ctx, r.db).Raw(
+		`SELECT d.id FROM knowledge_documents d WHERE `+missingModelVectorsPredicate+` ORDER BY d.id`,
+		[]string{entity.KnowledgeDocumentStatusReady}, modelID,
+	).Scan(&ids).Error
+	if err != nil {
+		return nil, fmt.Errorf("查询缺少模型向量的文档失败: %w", err)
+	}
+	return ids, nil
+}
+
 // SaveParsedContent 保存解析产物，并把 ingest_stage 推进到 chunk。
 //
 // 正文与阶段必须原子：只写正文不推阶段会让恢复重新解析（浪费但安全），

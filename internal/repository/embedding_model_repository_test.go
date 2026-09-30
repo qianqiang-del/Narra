@@ -61,11 +61,8 @@ func uniqueName(suffix string) string {
 }
 
 func model(name string, dimensions int) entity.EmbeddingModel {
-	baseURL := "https://example.test/v1"
 	return entity.EmbeddingModel{
 		Name:       name,
-		Provider:   "openai-compatible",
-		BaseURL:    &baseURL,
 		Dimensions: int32(dimensions),
 	}
 }
@@ -151,14 +148,8 @@ func TestEmbeddingModelEnsureDefaultCreatesSoleDefault(t *testing.T) {
 	if !created.IsDefault {
 		t.Error("登记的模型必须是默认模型")
 	}
-	if !created.Enabled {
-		t.Error("登记的模型必须是启用状态")
-	}
 	if created.Dimensions != 1536 {
 		t.Errorf("维度 = %d, 期望 1536", created.Dimensions)
-	}
-	if created.BaseURL == nil || *created.BaseURL != "https://example.test/v1" {
-		t.Errorf("base_url 应当回填配置里的地址，实际 %v", created.BaseURL)
 	}
 	if got := countDefaults(t, tx); got != 1 {
 		t.Errorf("默认模型数量 = %d, 期望 1", got)
@@ -272,5 +263,109 @@ func TestEmbeddingModelEnsureDefaultRejectsDimensionsChangeWithVectors(t *testin
 	}
 	if !reloaded.IsDefault {
 		t.Error("被拒绝后默认标记不应丢失")
+	}
+}
+
+// TestCountVectorsByModel 校验体检统计的口径：左连接让没有向量的模型计 0，
+// 有向量的模型逐条计数 —— "默认模型下 0 条、其他模型下有"正是它要暴露的形态。
+func TestCountVectorsByModel(t *testing.T) {
+	tx := testTx(t)
+	repo := NewEmbeddingModelRepository(tx)
+	ctx := context.Background()
+
+	// 两个模型：旧模型下造向量，新模型留空（模拟"换了默认模型还没重新收录"）。
+	withVectors, err := repo.EnsureDefault(ctx, model(uniqueName("census-old"), searchTestDimensions))
+	if err != nil {
+		t.Fatalf("登记旧模型失败: %v", err)
+	}
+	empty, err := repo.EnsureDefault(ctx, model(uniqueName("census-new"), searchTestDimensions))
+	if err != nil {
+		t.Fatalf("登记新模型失败: %v", err)
+	}
+
+	documentID := seedSearchDocument(t, tx, "向量体检", entity.KnowledgeDocumentStatusReady, true)
+	seedSearchChunk(t, tx, documentID, withVectors.ID, 0, "", "第一条", vectorLiteral(searchTestDimensions))
+	seedSearchChunk(t, tx, documentID, withVectors.ID, 1, "", "第二条", vectorLiteral(searchTestDimensions))
+
+	rows, err := repo.CountVectorsByModel(ctx)
+	if err != nil {
+		t.Fatalf("统计各模型向量数失败: %v", err)
+	}
+	counts := make(map[uint64]int64, len(rows))
+	for _, row := range rows {
+		counts[row.ModelID] = row.Vectors
+	}
+	if counts[withVectors.ID] != 2 {
+		t.Fatalf("旧模型的向量数应为 2，实际 %d（%+v）", counts[withVectors.ID], rows)
+	}
+	if counts[empty.ID] != 0 {
+		t.Fatalf("没有向量的模型也应当出现且计 0，实际 %d（%+v）", counts[empty.ID], rows)
+	}
+}
+
+// 自动清理只认"非默认且无向量"：有向量的旧模型留着；向量被替换光之后才删；
+// 默认模型即使暂时没有向量也不动 —— 刚切换过去时就是它。
+func TestEmbeddingModelDeleteUnusedModels(t *testing.T) {
+	tx := testTx(t)
+	repo := NewEmbeddingModelRepository(tx)
+	ctx := context.Background()
+
+	oldName := uniqueName("prune-old")
+	old, err := repo.EnsureDefault(ctx, model(oldName, searchTestDimensions))
+	if err != nil {
+		t.Fatalf("登记旧模型失败: %v", err)
+	}
+	documentID := seedSearchDocument(t, tx, "待清理的旧模型", entity.KnowledgeDocumentStatusReady, true)
+	seedSearchChunk(t, tx, documentID, old.ID, 0, "", "旧向量", vectorLiteral(searchTestDimensions))
+
+	// 再登记当前模型：它成为默认，旧模型退为非默认。
+	current, err := repo.EnsureDefault(ctx, model(uniqueName("prune-current"), 1536))
+	if err != nil {
+		t.Fatalf("登记当前模型失败: %v", err)
+	}
+
+	// 旧模型名下有向量：不能删。
+	deleted, err := repo.DeleteUnusedModels(ctx)
+	if err != nil {
+		t.Fatalf("清理失败: %v", err)
+	}
+	for _, name := range deleted {
+		if name == oldName {
+			t.Fatalf("名下有向量的旧模型 %s 不该被清理", oldName)
+		}
+	}
+	var keptOld entity.EmbeddingModel
+	if err := tx.Where("id = ?", old.ID).First(&keptOld).Error; err != nil {
+		t.Fatalf("有向量的旧模型应当保留: %v", err)
+	}
+
+	// 向量被替换光之后，旧行才该消失。
+	if err := tx.Where("model_id = ?", old.ID).Delete(&entity.KnowledgeEmbedding{}).Error; err != nil {
+		t.Fatalf("清空旧模型向量失败: %v", err)
+	}
+	deleted, err = repo.DeleteUnusedModels(ctx)
+	if err != nil {
+		t.Fatalf("再次清理失败: %v", err)
+	}
+	pruned := false
+	for _, name := range deleted {
+		if name == oldName {
+			pruned = true
+		}
+	}
+	if !pruned {
+		t.Errorf("清空向量后应当删掉旧模型，实际删除: %v", deleted)
+	}
+	// 查询目标用新变量：GORM 会把目标结构体上已有的主键拼进条件，
+	// 复用变量会让第二次 First 变成 "id = 新 AND id = 旧"，什么都查不到。
+	var goneOld entity.EmbeddingModel
+	if err := tx.Where("id = ?", old.ID).First(&goneOld).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Errorf("旧模型行应当已被删除，实际 err=%v", err)
+	}
+
+	// 默认模型即使没有向量也必须留着。
+	var keptCurrent entity.EmbeddingModel
+	if err := tx.Where("id = ?", current.ID).First(&keptCurrent).Error; err != nil {
+		t.Errorf("默认模型不该被清理: %v", err)
 	}
 }

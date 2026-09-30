@@ -16,6 +16,12 @@ func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	documents.POST("/text", c.IngestText)
 	// 上传限制由状态接口下发，前端据此做选择文件时的预检（服务端仍是唯一裁判）。
 	documents.GET("/upload-limits", c.UploadLimits)
+	// 向量体检：仍缺当前默认模型向量的 ready 文档数，给知识库页的提示条用。
+	// 静态段优先于参数段，不会被 /:id 吃掉（与 /parser/status 同理）。
+	documents.GET("/embedding-status", c.EmbeddingStatus)
+	// 重新向量化是整库动作：换过默认模型后，把仍缺新模型向量的文档批量重新排队。
+	// 它不是对某一篇的操作，所以不挂 /:id；收录进度仍由各文档自己的 SSE/列表查询收敛。
+	documents.POST("/reembed", c.Reembed)
 	// 重试是"让这一篇再跑一遍"，所以它是文档的子动作，不是新的一次上传（POST 而非 PUT）：
 	// 收的是状态流转，不是内容。路由段与 /:id/preview 同一形状，能共存。
 	documents.POST("/:id/retry", c.Retry)

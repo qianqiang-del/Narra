@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"unicode"
+	"sync"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -25,7 +25,7 @@ import (
 // 为什么要两路：向量召回管"意思对得上"（"怎么让检索更快"能召回讲索引的那篇），
 // 但它对精确词不敏感 —— "W38"、"P99 800ms"、"knowledge_embeddings" 这类查询，
 // 向量空间里挤在一起的往往是毫不相干的段落，而子串匹配一拿一个准。反过来，词法路
-// 对自然语言整句无能为力（中文连分词器都没有）。两路各补对方的短板，融合交给 RRF。
+// 对自然语言整句无能为力（中文要靠分词层切词，切不对就召不回）。两路各补对方的短板，融合交给 RRF。
 
 // ChunkSearcher 是检索链路对持久化的最小依赖面。
 //
@@ -35,7 +35,7 @@ type ChunkSearcher interface {
 	// SearchVector 在同一模型下按余弦相似度召回候选，返回按相似度降序。
 	SearchVector(ctx context.Context, query entity.KnowledgeVectorQuery) ([]entity.KnowledgeChunkView, error)
 
-	// SearchLexical 取命中任意词项的候选，返回按命中词项数降序。query.Terms 为空时返回空。
+	// SearchLexical 取命中任意词项的候选，返回按加权命中分降序。query.Terms 为空时返回空。
 	SearchLexical(ctx context.Context, query entity.KnowledgeLexicalQuery) ([]entity.KnowledgeChunkView, error)
 }
 
@@ -114,9 +114,10 @@ type Hit struct {
 	SourceType    string // 所属文档的来源类型
 	SourceURI     string // 所属文档的来源标识；手工录入时为空串
 
-	// Score 是 RRF 融合分，只用于**同一次检索内部**排序。
-	// 它是名次的函数（1/61 + 1/64 这种量级），既不是相似度也没有绝对含义，
-	// 跨次比较它没有意义 —— 要判断相关性看 Similarity 与 Method。
+	// Score 是本次检索的**最终排序分**，只用于**同一次检索内部**排序。
+	// 默认是 RRF 融合分（名次的函数，1/61 + 1/64 这种量级）；接上精排装饰器后
+	// 是精排模型给出的相关度分（0 ~ 1 量级）。两种量纲都只在各自开启状态下有意义，
+	// 跨次比较没有意义 —— 要判断一条结果怎么来的，看 Method 与 Similarity。
 	Score float64
 
 	// Similarity 是余弦相似度（-1 ~ 1，越大越像），只有向量路召回过它才有值。
@@ -135,7 +136,8 @@ type RetrieveResult struct {
 	// 向量只在同一模型下可比，换了默认模型却没有重建切片时，向量路会一条都召回不到。
 	Model string
 
-	// Terms 是词法路实际使用的词项（已经过分词规则与截断），给调参与排障看。
+	// Terms 是词法路实际使用的词项文本（已经过分词与截断），给调参与排障看。
+	// 权重与短语不上浮到响应：它们只影响排序，对调用方没有语义。
 	Terms []string
 
 	// Hits 是按 Score 降序的命中，长度不超过 topK。
@@ -148,6 +150,11 @@ type Retriever struct {
 	models      ModelRegistry
 	embedding   *embedding.Manager
 	newEmbedder embedderFactory
+
+	// vectorCensusChecked 记录体检过的模型 ID（无论结果如何）：那是"默认模型下有没有
+	// 向量"的事实，不会因为多搜几次就变；不记账的话每个空结果都会白跑一次统计查询
+	// （见 warnOnEmptyVectorRecall）。
+	vectorCensusChecked sync.Map
 }
 
 // NewRetriever 创建检索器。
@@ -185,7 +192,7 @@ func (r *Retriever) Retrieve(ctx context.Context, input RetrieveInput) (Retrieve
 
 	// 清洗后再分词：词项回在响应里，调参时能直接看到剥壳后的结果。
 	plan := buildQueryPlan(query)
-	result := RetrieveResult{Terms: plan.Terms}
+	result := RetrieveResult{Terms: lexicalTermTexts(plan.Terms)}
 	var failures []error
 
 	// 向量路的准入条件是模型行：没有它就不知道该用哪个模型向量化查询串。
@@ -207,13 +214,18 @@ func (r *Retriever) Retrieve(ctx context.Context, input RetrieveInput) (Retrieve
 		if err != nil {
 			failures = append(failures, err)
 			logger.Warn("向量召回不可用，本次检索只走词法路", zap.Error(err))
+		} else if len(vectorHits) == 0 {
+			// 零命中不一定是故障（可能就是没搜到），但"默认模型下没有向量"的形态
+			// 会让向量路静默归零 —— 体检一次，见 vector_census.go。
+			r.warnOnEmptyVectorRecall(ctx, model)
 		}
 	}
 
 	lexicalHits, err := r.search.SearchLexical(ctx, entity.KnowledgeLexicalQuery{
-		Terms:  result.Terms,
-		Limit:  limit,
-		Filter: input.Filter,
+		Terms:   plan.Terms,
+		Phrases: plan.Phrases,
+		Limit:   limit,
+		Filter:  input.Filter,
 	})
 	if err != nil {
 		failures = append(failures, fmt.Errorf("词法召回失败: %w", err))
@@ -281,6 +293,26 @@ func (r *Retriever) vectorRecall(
 	return hits, nil
 }
 
+// warnOnEmptyVectorRecall 在向量召回零命中时体检一次：默认模型下确实没有向量、
+// 而其他模型下还有，就告警"换模型没重新收录"（每个模型进程内只告警一次）。
+//
+// 默认模型下有向量时什么都不做 —— 零命中就是一次正常的空结果；体检结果无论有没有
+// 问题都记账，避免频繁的空结果把这条统计查询反复带进来。
+func (r *Retriever) warnOnEmptyVectorRecall(ctx context.Context, model *entity.EmbeddingModel) {
+	if _, checked := r.vectorCensusChecked.Load(model.ID); checked {
+		return
+	}
+	counts, err := r.models.CountVectorsByModel(ctx)
+	if err != nil {
+		// 体检失败不喧哗：它只是排障辅助，不该让日志盖过检索本身的问题。
+		return
+	}
+	r.vectorCensusChecked.Store(model.ID, struct{}{})
+	if hint := VectorRecallHint(model, counts); hint != "" {
+		logger.Warn(hint, zap.Uint64("model_id", model.ID))
+	}
+}
+
 // clampTopK 把调用方要的条数钳到 [1, maxTopK]；没给（≤0）时用默认值。
 func clampTopK(topK int) int {
 	if topK <= 0 {
@@ -305,125 +337,6 @@ func recallLimit(topK int) int {
 		return minRecallLimit
 	}
 	return limit
-}
-
-// lexicalRun 是检索词里一段连续的词字符，以及它是不是 CJK 段。
-type lexicalRun struct {
-	text string
-	cjk  bool
-}
-
-// lexicalTerms 把一次检索词拆成词法匹配用的词项。
-//
-// 词法路是给"精确词"准备的：专有名词、编号、英文标识（"W38"、"P99"、"pgvector"）
-// 这类查询向量路经常排不准，而子串匹配一拿一个准。反过来它对自然语言整句无能为力，
-// 那部分交给向量路 —— 两条路各管一半，这正是要做混合检索的原因。
-//
-// 拆分规则（没有中文分词器可用，所以规则必须简单、可解释、可复算）：
-//
-//  1. 按"词字符"切段：字母、数字与 CJK 算词内字符，空白与中英文标点都是分隔。
-//     于是 "knowledge_embeddings" 拆成 knowledge 与 embeddings —— 分开匹配反而更准，
-//     整串匹配会被中间的下划线卡死。中英混排（"pgvector索引"）也在这里被切成两段。
-//  2. 非 CJK 段（英文、数字、编号）整段作一个词项，长度不足 2 个字符的丢掉
-//     （"a"、"3"命中半张表，全是噪声）。
-//  3. CJK 段按长度：正好 2 字整段作词项（"索引"本身就是词）；**3 字及以上拆成相邻
-//     二元组**（"向量检索" → 向量、量检、检索）。整句短语几乎不可能在库里逐字出现，
-//     拿它当词项等于这一路直接归零；二元组是中文没有分词器时的近似，代价是会有
-//     "量检"这种不成词的噪声 —— 打分只数命中词项个数，噪声词项命中谁都只得 1 分，
-//     排不上去。单字丢掉（"的"、"了"）。
-//  4. 词项去重（大小写不敏感）后按"精确词优先"取前 maxLexicalTerms 个：
-//     专有名词与编号挑得动结果，长句的二元组之间却彼此可以替代，挤名额时先让前者。
-//     顺序上先非 CJK 后 CJK，各自保持出现顺序，保证同一句检索词拆出来的结果可复算。
-func lexicalTerms(query string) []string {
-	var exact, approximate []string
-	seen := make(map[string]struct{})
-	appendTerm := func(bucket *[]string, term string) {
-		key := strings.ToLower(term)
-		if _, duplicated := seen[key]; duplicated {
-			return
-		}
-		seen[key] = struct{}{}
-		*bucket = append(*bucket, term)
-	}
-
-	for _, run := range splitLexicalRuns(query) {
-		runes := []rune(run.text)
-		if !run.cjk {
-			if len(runes) >= 2 {
-				appendTerm(&exact, run.text)
-			}
-			continue
-		}
-		switch {
-		case len(runes) < 2:
-			// 单字噪声，丢。
-		case len(runes) == 2:
-			appendTerm(&approximate, run.text)
-		default:
-			for index := 0; index+1 < len(runes); index++ {
-				appendTerm(&approximate, string(runes[index:index+2]))
-			}
-		}
-	}
-
-	terms := make([]string, 0, maxLexicalTerms)
-	for _, bucket := range [][]string{exact, approximate} {
-		for _, term := range bucket {
-			if len(terms) >= maxLexicalTerms {
-				return terms
-			}
-			terms = append(terms, term)
-		}
-	}
-	return terms
-}
-
-// splitLexicalRuns 按词字符把检索词切成若干段，段内字符同为 CJK 或同为非 CJK。
-func splitLexicalRuns(query string) []lexicalRun {
-	var runs []lexicalRun
-	var current []rune
-	currentCJK := false
-
-	flush := func() {
-		if len(current) > 0 {
-			runs = append(runs, lexicalRun{text: string(current), cjk: currentCJK})
-			current = current[:0]
-		}
-	}
-
-	for _, character := range query {
-		if !isWordRune(character) {
-			flush()
-			continue
-		}
-		cjk := isCJKRune(character)
-		if len(current) > 0 && cjk != currentCJK {
-			flush()
-		}
-		currentCJK = cjk
-		current = append(current, character)
-	}
-	flush()
-	return runs
-}
-
-// isWordRune 判断一个字符能不能待在词项中间。
-//
-// 用"字母或数字"而不是"不是标点"：后者会把 ①、★、→ 这类符号也收进词项，
-// 它们既匹配不到东西，又会把词项的字面量撑长。
-func isWordRune(character rune) bool {
-	return unicode.IsLetter(character) || unicode.IsDigit(character)
-}
-
-// isCJKRune 判断一个字符是不是中日韩文字。
-//
-// 日文假名与韩文一并算进来：它们与中文一样没有空格分词，二元组的近似同样适用。
-// 标点（，。！？）虽然在这些区段里，但已经被 isWordRune 挡在外面了。
-func isCJKRune(character rune) bool {
-	return unicode.Is(unicode.Han, character) ||
-		unicode.Is(unicode.Hiragana, character) ||
-		unicode.Is(unicode.Katakana, character) ||
-		unicode.Is(unicode.Hangul, character)
 }
 
 // fuseByRRF 把两条召回路的结果按倒数排名融合（Reciprocal Rank Fusion）成一个排序。

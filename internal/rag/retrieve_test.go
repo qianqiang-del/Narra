@@ -45,7 +45,7 @@ func (s *fakeChunkSearcher) SearchLexical(ctx context.Context, query entity.Know
 	return s.lexicalRows, s.lexicalErr
 }
 
-// chunkView 造一行召回结果，得分由调用方给（向量路是相似度，词法路是命中词项数）。
+// chunkView 造一行召回结果，得分由调用方给（向量路是相似度，词法路是加权命中分）。
 func chunkView(chunkID uint64, score float64) entity.KnowledgeChunkView {
 	heading := "章节"
 	source := fmt.Sprintf("来源-%d.md", chunkID)
@@ -85,9 +85,24 @@ func newTestRetriever(search *fakeChunkSearcher, embedder Embedder) *Retriever {
 	return newRetrieverWith(search, newFakeModels(), embedder, testEmbeddingConfig())
 }
 
+// lexicalTexts 取一次词法计划里的词项文本（切分细节由 internal/rag/tokenize 的用例钉住，
+// 这里只验"接进检索链路之后"的口径）。
+func lexicalTexts(query string) []string {
+	return lexicalTermTexts(buildLexicalPlan(query).Terms)
+}
+
+// termTexts 把带权词项拼成逗号串，给断言用。
+func termTexts(terms []entity.KnowledgeLexicalTerm) string {
+	parts := make([]string, 0, len(terms))
+	for _, term := range terms {
+		parts = append(parts, term.Text)
+	}
+	return strings.Join(parts, ",")
+}
+
 // TestLexicalTermsSplitsRuns 校验英文标识与编号被整段保留、下划线被当作分隔符。
 func TestLexicalTermsSplitsRuns(t *testing.T) {
-	terms := lexicalTerms("P99 800ms knowledge_embeddings 索引")
+	terms := lexicalTexts("P99 800ms knowledge_embeddings 索引")
 
 	want := []string{"P99", "800ms", "knowledge", "embeddings", "索引"}
 	if strings.Join(terms, ",") != strings.Join(want, ",") {
@@ -95,35 +110,36 @@ func TestLexicalTermsSplitsRuns(t *testing.T) {
 	}
 }
 
-// TestLexicalTermsSplitsChineseIntoBigrams 校验中文长句拆成相邻二元组、
-// 二字词整段保留、单字丢弃 —— 这条规则决定了词法路对自然语言查询的召回形态。
-func TestLexicalTermsSplitsChineseIntoBigrams(t *testing.T) {
-	if terms := lexicalTerms("向量检索"); strings.Join(terms, ",") != "向量,量检,检索" {
-		t.Fatalf("四字词应拆成三个二元组: %v", terms)
+// TestLexicalTermsSegmentsChineseWithDictionary 校验中文走词典分词：
+// "向量检索"切成两个词，而不是改造前 向量/量检/检索 三个二元组；
+// 词典不认识的连续汉字才退回二元组（OOV 兜底，见 tokenize 包）。
+func TestLexicalTermsSegmentsChineseWithDictionary(t *testing.T) {
+	if terms := lexicalTexts("向量检索"); strings.Join(terms, ",") != "向量,检索" {
+		t.Fatalf("四字词应切成两个词典词: %v", terms)
 	}
 
-	if terms := lexicalTerms("索引"); strings.Join(terms, ",") != "索引" {
+	if terms := lexicalTexts("索引"); strings.Join(terms, ",") != "索引" {
 		t.Fatalf("二字词应整段保留: %v", terms)
 	}
 
-	if terms := lexicalTerms("a 的。"); len(terms) != 0 {
+	if terms := lexicalTexts("a 的。"); len(terms) != 0 {
 		t.Fatalf("单字词项全是噪声，应当丢干净: %v", terms)
 	}
 }
 
 // TestLexicalTermsDeduplicatesIgnoringCase 校验去重按大小写不敏感进行 ——
-// 同一个词项重复出现只值 1 分，留两份只会白白占掉名额。
+// 同一个词项重复出现只值一次权重，留两份只会白白占掉名额。
 func TestLexicalTermsDeduplicatesIgnoringCase(t *testing.T) {
-	terms := lexicalTerms("Go go GOLANG")
+	terms := lexicalTexts("Go go GOLANG")
 	if strings.Join(terms, ",") != "Go,GOLANG" {
 		t.Fatalf("去重不对: %v", terms)
 	}
 }
 
 // TestLexicalTermsPrefersExactTermsWhenTruncated 校验名额不够时先保精确词：
-// 编号与专名挑得动结果，长句的二元组之间彼此可以替代。
+// 编号与专名挑得动结果，词典词与二元组之间却彼此可以替代。
 func TestLexicalTermsPrefersExactTermsWhenTruncated(t *testing.T) {
-	terms := lexicalTerms("W38 P99 hnsw 向量检索调研的排序质量到底怎么保证")
+	terms := lexicalTexts("W38 P99 hnsw 向量检索调研的排序质量到底怎么保证")
 
 	if len(terms) != maxLexicalTerms {
 		t.Fatalf("词项应截断到 %d 个，实际 %d 个: %v", maxLexicalTerms, len(terms), terms)
@@ -132,6 +148,22 @@ func TestLexicalTermsPrefersExactTermsWhenTruncated(t *testing.T) {
 		if !containsTerm(terms, want) {
 			t.Fatalf("精确词 %q 应当优先保住，实际是 %v", want, terms)
 		}
+	}
+}
+
+// TestBuildLexicalPlanProducesPhrases 校验短语随词项一起进计划：
+// 整段"向量检索"在词典分词之外额外留一份，作为"原样出现"的打分信号。
+func TestBuildLexicalPlanProducesPhrases(t *testing.T) {
+	plan := buildLexicalPlan("向量检索")
+
+	if got := termTexts(plan.Terms); got != "向量,检索" {
+		t.Fatalf("词项不对: %v", got)
+	}
+	if len(plan.Phrases) != 1 || plan.Phrases[0].Text != "向量检索" {
+		t.Fatalf("短语不对: %+v", plan.Phrases)
+	}
+	if plan.Phrases[0].Weight <= plan.Terms[0].Weight {
+		t.Fatalf("短语权重应当高于词项权重: %+v", plan)
 	}
 }
 
@@ -237,8 +269,11 @@ func TestRetrieveFusesBothRoutes(t *testing.T) {
 		t.Fatalf("两路的候选上限应当一致且为过采样值: %d / %d（期望 %d）",
 			search.vectorQuery.Limit, search.lexicalQuery.Limit, want)
 	}
-	if strings.Join(search.lexicalQuery.Terms, ",") != "向量,量检,检索" {
-		t.Fatalf("词法路收到的词项不对: %v", search.lexicalQuery.Terms)
+	if got := termTexts(search.lexicalQuery.Terms); got != "向量,检索" {
+		t.Fatalf("词法路收到的词项不对: %v", got)
+	}
+	if len(search.lexicalQuery.Phrases) != 1 || search.lexicalQuery.Phrases[0].Text != "向量检索" {
+		t.Fatalf("词法路收到的短语不对: %+v", search.lexicalQuery.Phrases)
 	}
 }
 
@@ -331,9 +366,9 @@ func TestRetrieveCleansQueryBeforeRecall(t *testing.T) {
 	if len(embedder.batches) != 1 || len(embedder.batches[0]) != 1 || embedder.batches[0][0] != "讲义 令牌桶算法" {
 		t.Fatalf("向量路应当拿到剥壳后的文本，实际批次: %v", embedder.batches)
 	}
-	const wantTerms = "讲义,令牌,牌桶,桶算,算法"
-	if got := strings.Join(search.lexicalQuery.Terms, ","); got != wantTerms {
-		t.Fatalf("词法路应当拿到剥壳后的词项，实际: %v", search.lexicalQuery.Terms)
+	const wantTerms = "讲义,令牌,算法"
+	if got := termTexts(search.lexicalQuery.Terms); got != wantTerms {
+		t.Fatalf("词法路应当拿到剥壳后的词项，实际: %v", got)
 	}
 	if got := strings.Join(result.Terms, ","); got != wantTerms {
 		t.Fatalf("响应里的 terms 应当回显清洗后的词项，实际: %v", result.Terms)
@@ -387,6 +422,27 @@ func TestRetrieveReportsFailureWhenBothRoutesFail(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "上游 502") || !strings.Contains(err.Error(), "数据库查不动") {
 		t.Fatalf("两条路的失败原因都该在错误里: %v", err)
+	}
+}
+
+// TestRetrieveChecksVectorCensusOnce 校验"静默零召回"体检的接线与去重：
+// 向量召回零命中时体检一次；结论记账后，后续空结果不再重复跑统计查询。
+func TestRetrieveChecksVectorCensusOnce(t *testing.T) {
+	search := &fakeChunkSearcher{}
+	models := newFakeModels()
+	models.census = []entity.ModelVectorCount{
+		{ModelID: testModelID, Name: testModelName, Vectors: 0},
+		{ModelID: 6, Name: "旧模型", Vectors: 148},
+	}
+	retriever := newRetrieverWith(search, models, &stubEmbedder{dimension: testVectorDims}, testEmbeddingConfig())
+
+	for run := 0; run < 3; run++ {
+		if _, err := retriever.Retrieve(context.Background(), RetrieveInput{Text: "向量检索"}); err != nil {
+			t.Fatalf("检索失败: %v", err)
+		}
+	}
+	if models.censusCalls != 1 {
+		t.Fatalf("体检应当只做一次（没有向量的状态不会自己恢复），实际 %d 次", models.censusCalls)
 	}
 }
 

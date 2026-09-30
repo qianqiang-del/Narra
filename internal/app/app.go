@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -28,6 +29,7 @@ import (
 	"narra/pkg/documentparser"
 	"narra/pkg/embedding"
 	"narra/pkg/logger"
+	"narra/pkg/rerank"
 	"narra/pkg/tts"
 
 	"github.com/cloudwego/eino-ext/callbacks/langfuse"
@@ -162,10 +164,25 @@ func (a *App) initDatabase() error {
 		&entity.AgentTraceSpan{},
 		&entity.MCPServer{},
 		&entity.LLMProvider{},
+		&entity.RerankSetting{},
 	); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
 	}
 	logger.Info("数据库表结构迁移完成")
+
+	// 词法检索的表达式索引要等表建好之后再补（pg_bigm 优先、pg_trgm 兜底，幂等）。
+	// 与向量索引同一种立场：失败只让检索退化为顺序扫描、不影响正确性，所以不上抛；
+	// 但两类别混为一谈 —— 扩展都没装是**环境属性**（提示即可），其余失败（DDL 权限、
+	// 数据库故障）才留告警。
+	if kind, err := repository.EnsureLexicalIndex(context.Background(), a.postgresDB); err != nil {
+		if errors.Is(err, repository.ErrLexicalIndexUnavailable) {
+			logger.Info("数据库没有 pg_bigm / pg_trgm 扩展，词法检索走顺序扫描（结果不受影响，数据量大时会慢）")
+		} else {
+			logger.Warn("建立词法检索索引失败，词法检索将退化为顺序扫描", zap.Error(err))
+		}
+	} else {
+		logger.Info("词法检索索引就绪", zap.String("extension", string(kind)))
+	}
 
 	// 初始化 Redis（可选，失败不影响核心功能）
 	rs, err := database.InitRedis(&a.cfg.Database.Redis)
@@ -201,6 +218,10 @@ func (a *App) initDependencies() error {
 	embeddingModelRepo := repository.NewEmbeddingModelRepository(a.postgresDB)
 	mcpServerRepo := repository.NewMCPServerRepository(a.postgresDB)
 	llmProviderRepo := repository.NewLLMProviderRepository(a.postgresDB)
+	rerankSettingRepo := repository.NewRerankSettingRepository(a.postgresDB)
+	// 重排运行时：检索侧每次请求向它要"当前生效的精排客户端"，设置页保存/启停后
+	// 由服务层热更新（见 rerankSettingSvc 的 LoadActive 与 reload）；nil = 精排关闭。
+	rerankManager := rerank.NewManager()
 	classroomRepo := repository.NewClassroomRepository(a.postgresDB)
 	classroomAgentRepo := repository.NewClassroomAgentRepository(a.postgresDB)
 	txManager := repository.NewTransactionManager(a.postgresDB)
@@ -306,14 +327,30 @@ func (a *App) initDependencies() error {
 	// 编排在 rag.Retriever，服务层只做 DTO 映射。向量模型的登记与索引维护走
 	// embeddingModelRepo —— 检索只在同一模型下比向量，那个"默认模型"由它说了算。
 	knowledgeRetriever := rag.NewRetriever(knowledgeSearchRepo, embeddingModelRepo, embeddingManager)
+	// 词法路的中文分词器要加载秒级大小的词典：在启动时做掉，不让第一个检索请求承担这笔开销。
+	rag.WarmupLexicalTokenizer()
 	// 多查询门面：单查询直通 rag.Retriever；输入里带 queries 变体时，经 Eino 的
 	// multiquery 流程并发召回、RRF 融合（见 internal/rag/einoretriever）。
 	// 服务层认的是这一个接口，HTTP 与 MCP 工具两条入口同时受益。
-	knowledgeRetrieval, err := einoretriever.NewMultiQuery(knowledgeRetriever)
+	multiRetrieval, err := einoretriever.NewMultiQuery(knowledgeRetriever)
 	if err != nil {
 		return fmt.Errorf("创建多查询检索失败: %w", err)
 	}
-	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetrieval, uploadDir, knowledgeDir)
+	// 精排装饰器包在最外层：两层 RRF 融合后只精排一次、在截断到 top_k 之前完成。
+	// 是否生效由 rerankManager 决定（设置页保存/启停即时生效）；关闭时原样透传，
+	// 行为与"没包这一层"完全一致。
+	var knowledgeRetrieval rag.Searcher = multiRetrieval
+	reranked, err := rag.NewReranked(knowledgeRetrieval, func() rag.Reranker {
+		if client := rerankManager.Current(); client != nil {
+			return client
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("创建精排装饰器失败: %w", err)
+	}
+	knowledgeRetrieval = reranked
+	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetrieval, embeddingModelRepo, uploadDir, knowledgeDir)
 
 	// 内置工具 rag_retrieve：把知识库检索直接挂给 Eino agent（见 internal/mcp/knowledge_tool.go）。
 	// 注册点在这里而不是 NewManager 那边，是因为工具的实现依赖知识库服务 ——
@@ -328,6 +365,12 @@ func (a *App) initDependencies() error {
 	}
 
 	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey)
+	// 重排配置是「多存一条、同时只启用一条」：设置页增删改测，检索侧只读启用中的那条。
+	// 先做启动对齐（没有启用记录时关闭精排），之后的变动由服务层的 reload 热更新。
+	rerankSettingSvc := service.NewRerankSettingService(rerankSettingRepo, encryptionKey, rerankManager)
+	if err := rerankSettingSvc.LoadActive(context.Background()); err != nil {
+		return fmt.Errorf("加载重排配置失败: %w", err)
+	}
 	audioDir := a.cfg.Storage.AudioDir
 	if audioDir == "" {
 		audioDir = "data/audio"
@@ -430,7 +473,7 @@ func (a *App) initDependencies() error {
 	}
 
 	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo)
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, classroomSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, uploadDir, parser, knowledgeIngest)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, classroomSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, uploadDir, parser, knowledgeIngest)
 	return nil
 }
 

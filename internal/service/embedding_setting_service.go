@@ -15,11 +15,11 @@ import (
 	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
+	"narra/internal/rag"
 	"narra/internal/repository"
 	"narra/pkg/config"
 	"narra/pkg/embedding"
 	"narra/pkg/logger"
-	"narra/pkg/utils"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -186,11 +186,7 @@ func (s *embeddingSettingService) ensureDefaultModel(ctx context.Context, cfg co
 	}
 
 	model, err := s.modelRepo.EnsureDefault(ctx, entity.EmbeddingModel{
-		Name:     cfg.Model,
-		Provider: entity.EmbeddingProviderOpenAICompatible,
-		// base_url 为空表示"沿用应用的全局 embedding 配置"（见实体注释），
-		// 所以用 NULL 表达"没写"，而不是存一个空字符串把它变成"明确配成了空地址"。
-		BaseURL:    utils.OptionalString(cfg.BaseURL),
+		Name:       cfg.Model,
 		Dimensions: int32(cfg.Dimensions),
 	})
 	if err != nil {
@@ -205,6 +201,11 @@ func (s *embeddingSettingService) ensureDefaultModel(ctx context.Context, cfg co
 		}
 		return fmt.Errorf("登记向量模型失败: %w", err)
 	}
+
+	// 换默认模型是"向量召回静默为零"最常见的来源：新模型名下还没有向量，而检索只查
+	// 新模型名下的向量。保存配置的人正是刚刚做出这个动作的人，在这里立刻告警一次；
+	// 判定与检索侧的空命中体检共用（rag.VectorRecallHint），不各写一份。
+	s.warnIfDefaultModelLacksVectors(ctx, model)
 
 	// 默认模型定下来之后顺手把它的向量索引补上（幂等，维度或精度变了会自动重建）。
 	// 挂在这里是因为这段代码是"换模型 / 改维度"的唯一入口 —— 启动时对齐（LoadActive）
@@ -232,6 +233,21 @@ func (s *embeddingSettingService) ensureDefaultModel(ctx context.Context, cfg co
 		)
 	}
 	return nil
+}
+
+// warnIfDefaultModelLacksVectors 在默认模型名下没有任何向量、而其他模型下还有时告警。
+//
+// 与检索侧的空命中体检（rag.VectorRecallHint）共用一个判定，这里多一个时机：
+// 保存配置 / 启动对齐的当下 —— 错误刚被做出来的时候提示，比等到用户搜不出东西再查强。
+// 体检失败不喧哗：它是排障辅助，不该把"保存配置"判成失败。
+func (s *embeddingSettingService) warnIfDefaultModelLacksVectors(ctx context.Context, model *entity.EmbeddingModel) {
+	counts, err := s.modelRepo.CountVectorsByModel(ctx)
+	if err != nil {
+		return
+	}
+	if hint := rag.VectorRecallHint(model, counts); hint != "" {
+		logger.Warn(hint, zap.String("model", model.Name))
+	}
 }
 
 // resolveAPIKey 决定这次保存该用哪个密钥，优先级依次是：

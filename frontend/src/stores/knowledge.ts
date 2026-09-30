@@ -7,9 +7,11 @@ import {
   fetchKnowledgeDocumentPreview,
   fetchKnowledgeParserStatus,
   fetchKnowledgeUploadLimits,
+  fetchKnowledgeEmbeddingStatus,
   deleteKnowledgeDocument,
   deleteUploadRecord,
   fetchUploadRecords,
+  reembedKnowledgeDocuments,
   retryKnowledgeDocument,
   uploadKnowledgeFiles,
   ingestKnowledgeText,
@@ -17,7 +19,9 @@ import {
   watchKnowledgeDocument,
   DEFAULT_UPLOAD_LIMITS,
   type KnowledgeDocument,
+  type KnowledgeEmbeddingStatus,
   type KnowledgeParserStatus,
+  type KnowledgeReembedResult,
   type KnowledgeUploadLimits,
   type KnowledgeUploadRecord,
 } from '@/api/knowledge'
@@ -184,6 +188,28 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       uploadLimits.value = await fetchKnowledgeUploadLimits()
     } catch {
       /* 兜底默认值见 uploadLimits 的声明 */
+    }
+  }
+
+  /**
+   * 向量体检结果：仍缺当前默认模型向量的 ready 文档数。
+   *
+   * 失败静默（与 parserStatus 同一种兜底）：它只驱动一条提示，探测不到就当不知道，
+   * 不该因为一次状态探测失败影响整页。
+   */
+  const embeddingStatus = ref<KnowledgeEmbeddingStatus | null>(null)
+
+  /** "重新向量化"请求在飞；按钮据此置灰防连点。 */
+  const reembedding = ref(false)
+
+  /** 正在跟踪重新向量化的后台进度：提示条在跟踪期间保持可见并显示剩余篇数。 */
+  const reembedTracking = ref(false)
+
+  async function loadEmbeddingStatus() {
+    try {
+      embeddingStatus.value = await fetchKnowledgeEmbeddingStatus()
+    } catch {
+      /* 提示用，探测失败不影响页面 */
     }
   }
 
@@ -552,6 +578,66 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     }
   }
 
+  /** 重新向量化跟踪的轮询间隔；这个操作是分钟级的，不必像上传记录那样 1.5s 一次 */
+  const REEMBED_POLL_INTERVAL_MS = 3000
+
+  /** 连续这么久没有进展就停止跟踪（可能是有文档处理失败了，原因在上传记录里） */
+  const REEMBED_STALL_MS = 5 * 60 * 1000
+
+  /**
+   * 发起"重新向量化"并跟踪到收敛。
+   *
+   * 发起后这些文档立刻回到 pending，会暂时从主页（只列 ready）消失 —— 处理完逐批回来。
+   * 入队后"待修复"计数会立刻归零（它们不再是 ready），所以进度看的是体检里的
+   * "正在补"（stale + pending），两者都清空才算这一轮真正收敛。
+   * 连续几分钟没有进展就停止轮询（可能是有文档失败，留给用户去记录里看），
+   * 不让页面在后台空转到 15 分钟。
+   */
+  async function reembedStale(): Promise<KnowledgeReembedResult> {
+    reembedding.value = true
+    try {
+      const result = await reembedKnowledgeDocuments()
+      // 先对齐一次：文档已回到 pending，主页与提示条都该立刻反映出来。
+      await Promise.all([load(), loadEmbeddingStatus()])
+      if (result.queued > 0) void trackReembedProgress()
+      return result
+    } finally {
+      reembedding.value = false
+    }
+  }
+
+  async function trackReembedProgress(): Promise<void> {
+    reembedTracking.value = true
+    let lastChangeAt = Date.now()
+    let previousRemaining = -1
+
+    try {
+      while (Date.now() - lastChangeAt < REEMBED_STALL_MS) {
+        await new Promise((resolve) => setTimeout(resolve, REEMBED_POLL_INTERVAL_MS))
+
+        let next: KnowledgeEmbeddingStatus
+        try {
+          next = await fetchKnowledgeEmbeddingStatus()
+        } catch {
+          /* 网络抖动：下一轮再试，不打断跟踪 */
+          continue
+        }
+        embeddingStatus.value = next
+
+        // 待修复 + 正在补：入队后前者归零、后者顶上，两者都清空才算收敛。
+        const remaining = next.staleDocuments + next.pendingDocuments
+        if (remaining !== previousRemaining) {
+          previousRemaining = remaining
+          lastChangeAt = Date.now()
+          await load()
+        }
+        if (remaining === 0) return
+      }
+    } finally {
+      reembedTracking.value = false
+    }
+  }
+
   /** 清空本次会话的上传任务列表（弹层的"清空"按钮用）。 */
   function clearUploadTasks() {
     uploadTasks.value = []
@@ -688,11 +774,14 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     parserStatus,
     uploadTasks,
     uploadLimits,
+    embeddingStatus,
     // 界面状态
     loading,
     uploading,
     submitting,
     togglingIds,
+    reembedding,
+    reembedTracking,
     keyword,
     hasMore,
     isEmpty,
@@ -702,9 +791,11 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     loadMore,
     loadParserStatus,
     loadUploadLimits,
+    loadEmbeddingStatus,
     uploadBatch,
     clearUploadTasks,
     retry,
+    reembedStale,
     ingestText,
     setEnabled,
     preview,
