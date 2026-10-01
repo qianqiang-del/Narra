@@ -48,10 +48,13 @@ type EvidenceItem struct {
 	Confidence  string `json:"confidence,omitempty"`
 }
 
-// researchInput 是调研专家的输入：本页上下文与规划出的工具步骤。
+// researchInput 是调研专家的输入：本页上下文，加上页规划给出的调研建议。
 type researchInput struct {
 	Page  PageContext
 	Steps []ToolStep
+
+	// PlannerSkipped 表示页规划判了这一页不需要查资料。它只是参考——要不要查由调研 Agent 自己定。
+	PlannerSkipped bool
 }
 
 // researchEvidence 按页执行计划取证据并压成证据包。
@@ -64,7 +67,7 @@ func researchEvidence(ctx context.Context, rt *runtime, in *researchInput) (*Evi
 	if len(rt.tools) == 0 {
 		return &EvidenceBundle{}, ""
 	}
-	agentInstance, err := rt.researchAgent(ctx, plannedToolNames(in.Steps))
+	agentInstance, err := rt.researchAgent(ctx)
 	if err != nil {
 		logger.Warn("调研 Agent 构造失败，跳过资料检索", zap.Error(err))
 		return &EvidenceBundle{}, "调研 Agent 构造失败，这一页没有外部资料"
@@ -123,19 +126,26 @@ func parseEvidenceBundle(message *schema.Message) (*EvidenceBundle, error) {
 }
 
 // researchPrompt 拼调研专家的用户提示词。
+//
+// 页规划给的东西一律按建议写：它判「不用查」也不锁死这一页，因为判断要不要查的是本节点。
 func researchPrompt(in *researchInput) string {
 	var builder strings.Builder
 	builder.WriteString(in.Page.executionPagePrompt())
-	builder.WriteString("\n## 这一页定下的调研步骤\n")
-	if len(in.Steps) == 0 {
+	builder.WriteString("\n## 这一页的调研\n")
+	switch {
+	case len(in.Steps) > 0:
+		for index, step := range in.Steps {
+			fmt.Fprintf(&builder, "%d. 用 %s 查「%s」，目的是：%s\n", index+1, step.Tool, step.Query, step.Purpose)
+		}
+		builder.WriteString("\n上面是页规划的建议，你可以调整。\n")
+	case in.PlannerSkipped:
+		builder.WriteString("页规划判了这一页不需要查资料。那只是参考——你手里有工具，这一页要是会出现你拿不准的事实，就自己去查。\n")
+	default:
 		builder.WriteString("规划阶段没有给出具体步骤，请自行判断需要查什么。\n")
-	}
-	for index, step := range in.Steps {
-		fmt.Fprintf(&builder, "%d. 用 %s 查「%s」，目的是：%s\n", index+1, step.Tool, step.Query, step.Purpose)
 	}
 	builder.WriteString("\n先用工具把事实查准，再调用 ")
 	builder.WriteString(toolNameEmitEvidence)
-	builder.WriteString(" 交卷。资料查不到就交回空证据，不要编造。\n")
+	builder.WriteString(" 交卷。确实不需要查、或者查不到，就交回空证据，不要编造。\n")
 	return builder.String()
 }
 
@@ -185,14 +195,13 @@ func evidenceItemSchema() *jsonschema.Schema {
 	)
 }
 
-// researchAgent 建调研 Agent：挂白名单工具，交卷工具进 ToolReturnDirectly。
-func (r *runtime) researchAgent(ctx context.Context, planned []string) (*react.Agent, error) {
-	selected, err := r.selectResearchTools(ctx, planned)
-	if err != nil {
-		return nil, err
-	}
-	tools := make([]tool.BaseTool, 0, len(selected)+1)
-	tools = append(tools, selected...)
+// researchAgent 建调研 Agent：挂上全部可用工具，交卷工具进 ToolReturnDirectly。
+//
+// 不再按页规划挑工具。收窄工具集等于把「查不查」的决定权又还回给页规划，
+// 而它判断时手里没有工具；白名单本来就由 runtime 决定，这里只是把可用的都给出去。
+func (r *runtime) researchAgent(ctx context.Context) (*react.Agent, error) {
+	tools := make([]tool.BaseTool, 0, len(r.tools)+1)
+	tools = append(tools, r.tools...)
 	tools = append(tools, newEmitEvidenceTool())
 
 	agentInstance, err := react.NewAgent(ctx, &react.AgentConfig{
@@ -205,47 +214,6 @@ func (r *runtime) researchAgent(ctx context.Context, planned []string) (*react.A
 		return nil, fmt.Errorf("构造调研 Agent 失败: %w", err)
 	}
 	return agentInstance, nil
-}
-
-func plannedToolNames(steps []ToolStep) []string {
-	names := make([]string, 0, len(steps))
-	seen := make(map[string]struct{}, len(steps))
-	for _, step := range steps {
-		name := strings.TrimSpace(step.Tool)
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		names = append(names, name)
-	}
-	return names
-}
-
-func (r *runtime) selectResearchTools(ctx context.Context, planned []string) ([]tool.BaseTool, error) {
-	allowed := make(map[string]struct{}, len(planned))
-	for _, name := range planned {
-		allowed[name] = struct{}{}
-	}
-	selected := make([]tool.BaseTool, 0, len(allowed))
-	for _, candidate := range r.tools {
-		info, err := candidate.Info(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("读取调研工具信息失败: %w", err)
-		}
-		if info == nil {
-			continue
-		}
-		if _, ok := allowed[info.Name]; ok {
-			selected = append(selected, candidate)
-		}
-	}
-	if len(selected) != len(allowed) {
-		return nil, fmt.Errorf("调研计划中的工具与当前可用工具不一致")
-	}
-	return selected, nil
 }
 
 // toolNames 列出本次生成可用的工具名，供提示词与页规划使用。

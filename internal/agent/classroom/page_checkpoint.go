@@ -19,6 +19,7 @@ type pageCheckpoint struct {
 	Narration          []narrationSegment    `json:"narration,omitempty"`
 	Review             *ReviewResult         `json:"review,omitempty"`
 	ReviewArtifactHash string                `json:"review_artifact_hash,omitempty"`
+	RevisionReview     *ReviewResult         `json:"revision_review,omitempty"`
 	RevisionFallback   *reviewedPageSnapshot `json:"revision_fallback,omitempty"`
 	HTML               string                `json:"html,omitempty"`
 	ReviewNote         string                `json:"review_note,omitempty"`
@@ -58,6 +59,7 @@ func checkpointFromState(state *pageRunState, nextNode string) pageCheckpoint {
 		Narration:          state.Narration,
 		Review:             state.Review,
 		ReviewArtifactHash: state.ReviewArtifactHash,
+		RevisionReview:     state.RevisionReview,
 		RevisionFallback:   state.RevisionFallback,
 		HTML:               state.HTML,
 		ReviewNote:         state.ReviewNote,
@@ -87,6 +89,7 @@ func restorePageCheckpoint(state *pageRunState, raw json.RawMessage) bool {
 	state.Narration = checkpoint.Narration
 	state.Review = checkpoint.Review
 	state.ReviewArtifactHash = checkpoint.ReviewArtifactHash
+	state.RevisionReview = checkpoint.RevisionReview
 	state.RevisionFallback = checkpoint.RevisionFallback
 	state.HTML = checkpoint.HTML
 	state.ReviewNote = checkpoint.ReviewNote

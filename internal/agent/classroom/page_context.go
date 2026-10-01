@@ -132,6 +132,52 @@ func writeRevision(builder *strings.Builder, revision, feedback string) {
 	}
 }
 
+// writeContentRequirements 把这一页「必须包含」的内容要点写进提示词。
+//
+// 这份清单由页规划产出，此前只有审核看得见：审核拿着它逐条比对、逐条扣分，
+// 而写内容的人从没见过，等于在盲写。写在这里是让交付方在动手前就知道边界。
+func writeContentRequirements(builder *strings.Builder, plan *PageExecutionPlan) {
+	if plan == nil || len(plan.ContentRequirements) == 0 {
+		return
+	}
+	builder.WriteString("\n## 这一页必须包含\n")
+	for _, item := range plan.ContentRequirements {
+		fmt.Fprintf(builder, "- %s\n", item)
+	}
+}
+
+// writeAcceptanceCriteria 把这一页的验收条件写进提示词。
+//
+// 验收条件此前只出现在审核的提示词里，是审核逐条打回的依据；交给交付方，
+// 是让它交付前先照单自查一遍——缺一项就是一次白跑的打回与修订。
+func writeAcceptanceCriteria(builder *strings.Builder, plan *PageExecutionPlan) {
+	if plan == nil || len(plan.AcceptanceCriteria) == 0 {
+		return
+	}
+	builder.WriteString("\n## 本页验收条件（交付前逐条自查，少一条都不算完成）\n")
+	for _, item := range plan.AcceptanceCriteria {
+		fmt.Fprintf(builder, "- %s\n", item)
+	}
+}
+
+// writeNarrationReference 把上一版讲稿写进内容专家的提示词，只在修订时用得上。
+//
+// 审核反复指出「这个要点只讲在讲稿里、页面上没有」——而内容专家修订时看不到讲稿，
+// 只能靠审核意见的转述去猜要补什么。把讲稿原文给它，这类问题才改得动。
+func writeNarrationReference(builder *strings.Builder, items []narrationSegment) {
+	written := false
+	for _, item := range items {
+		if strings.TrimSpace(item.Text) == "" {
+			continue
+		}
+		if !written {
+			builder.WriteString("\n## 上一版讲稿\n审核指出下列要点只讲在讲稿里、页面上没有。请把它们补进内容块；页面已经覆盖的不必重复。\n")
+			written = true
+		}
+		fmt.Fprintf(builder, "- %s\n", strings.TrimSpace(item.Text))
+	}
+}
+
 // buildClassroomContext 组装课堂级上下文；受众把等级与背景并成一句。
 func buildClassroomContext(classroom *entity.Classroom, plan *ClassroomPlan) ClassroomContext {
 	audience := strings.TrimSpace(plan.Audience.Level)

@@ -12,9 +12,12 @@ import (
 	"narra/internal/agent"
 )
 
-// narrationInput 是讲稿专家的输入：本页分层上下文、已校验的内容块与修订反馈。
+// narrationInput 是讲稿专家的输入：本页分层上下文、页执行计划、已校验的内容块与修订反馈。
 type narrationInput struct {
-	Page     PageContext
+	Page PageContext
+	// Plan 只取其中的验收条件：讲稿要照着已定稿的内容块讲，不必再给「必须包含」，
+	// 否则容易把内容该讲的东西塞进讲稿，反而制造讲稿脱离页面的问题。
+	Plan     *PageExecutionPlan
 	Blocks   []contentBlock
 	Revision string
 	Feedback string
@@ -96,6 +99,7 @@ func narrationBlocks(blocks []contentBlock) []narrationBlockView {
 func narrationUserPrompt(in *narrationInput) string {
 	var builder strings.Builder
 	builder.WriteString(in.Page.executionPagePrompt())
+	writeAcceptanceCriteria(&builder, in.Plan)
 	raw, _ := json.Marshal(narrationBlocks(in.Blocks))
 	fmt.Fprintf(&builder, "\n## 已校验内容块\n%s\n每个块一段讲解，每段不超过 120 字。\n", raw)
 	writeRevision(&builder, in.Revision, in.Feedback)
