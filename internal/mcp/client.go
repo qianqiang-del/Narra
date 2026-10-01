@@ -13,7 +13,8 @@ import (
 	"narra/pkg/config"
 )
 
-const maxToolResultBytes = 256 * 1024
+// Raw responses need room for search results before the agent-facing compaction runs.
+const maxToolResultBytes = 8 * 1024 * 1024
 
 type session interface {
 	ListTools(context.Context, *sdk.ListToolsParams) (*sdk.ListToolsResult, error)
