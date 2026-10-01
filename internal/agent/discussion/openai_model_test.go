@@ -127,6 +127,19 @@ func testParticipant() Participant {
 	}
 }
 
+func TestGenerationPromptIncludesLessonMaterial(t *testing.T) {
+	request := GenerationRequest{
+		Participant:    testParticipant(),
+		Topic:          "第一页讲什么",
+		LessonMaterial: "第1页《认识 Agent》：Agent 能感知环境并采取行动。",
+	}
+	for _, messages := range [][]llm.Message{buildGenerationMessages(request), buildGenerationStreamMessages(request)} {
+		if !strings.Contains(messages[0].Content+messages[1].Content, "Agent 能感知环境并采取行动") {
+			t.Fatal("发言提示词没有实际课件正文")
+		}
+	}
+}
+
 // ---- 构造函数 ----
 
 // TestNewOpenAIModelsRejectsNilClient 验证没有客户端就装配不起来。

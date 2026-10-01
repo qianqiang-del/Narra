@@ -444,6 +444,8 @@ func (a *App) initDependencies() error {
 	discussionSvc := service.NewDiscussionService(service.DiscussionDeps{
 		Conversations: conversationRepo,
 		Classrooms:    classroomRepo,
+		Scenes:        sceneRepo,
+		Segments:      sceneSegmentRepo,
 		Agents:        classroomAgentRepo,
 		Roles:         roleRepo,
 		Messages:      messageRepo,

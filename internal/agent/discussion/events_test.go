@@ -211,7 +211,10 @@ func TestEventsPayloadsMatchFrontendContract(t *testing.T) {
 	if !ok {
 		t.Fatalf("run.started 的 participants[0] 不是对象：%v", participants[0])
 	}
-	assertPayloadKeys(t, "run.started.participants[0]", first, "agent_id", "name", "role")
+	assertPayloadKeys(t, "run.started.participants[0]", first, "agent_id", "agent_key", "name", "role", "role_type")
+	if first["agent_key"] != roundtable[0].AgentKey || first["role_type"] != roundtable[0].RoleType {
+		t.Fatalf("参与者标识与角色类型不匹配: %v", first)
+	}
 	if first["agent_id"] != float64(roundtable[0].ClassroomAgentID) {
 		t.Errorf("participants[0].agent_id = %v，期望 %d（应当是 classroom_agents.id，不是名次）",
 			first["agent_id"], roundtable[0].ClassroomAgentID)
