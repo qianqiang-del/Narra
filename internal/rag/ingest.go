@@ -106,7 +106,7 @@ type FileInput struct {
 // TextInput 是直接收录一段正文所需的输入。
 type TextInput struct {
 	Title      string // 调用方指定的标题；为空时依次回落到正文一级标题、首行
-	Content    string // 待收录的正文，已经是 Markdown，不需要解析
+	Content    string // 待收录的正文：可能是 Markdown，也可能是代码文本，由切分入口判定类型（见 classify.go）
 	SourceType string // manual / import；为空时按 manual 处理
 	SourceURI  string
 }
@@ -298,9 +298,9 @@ type FileTaskStore interface {
 
 // NewIngester 创建收录器。
 //
-// parser 可以是 nil —— 表示文档解析能力没启用，此时只有 md / txt 能收录，
-// 其它格式会收到一句明确的错误（见 documentparser.ParserFor）。这里不做 fail-fast，
-// 是因为"解析器没装好"不该拦住纯文本导入和整个服务的启动。
+// parser 可以是 nil —— 表示文档解析能力没启用，此时只有直读格式（md / txt 与源码、
+// 数据文件）能收录，其它格式会收到一句明确的错误（见 documentparser.ParserFor）。
+// 这里不做 fail-fast，是因为"解析器没装好"不该拦住纯文本导入和整个服务的启动。
 //
 // records 是上传记录的写入口，只在文件收录（SubmitFile）里用到。
 // options 里的 Tx 必须非 nil（见 IngestOptions）。
@@ -631,7 +631,7 @@ func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResul
 		"parser":   parserName(result),
 		"parse_ms": time.Since(started).Milliseconds(),
 	}
-	return i.ingestMarkdown(ctx, document, title, markdown, metadata)
+	return i.ingestMarkdown(ctx, document, title, markdown, DocumentHint{Path: path, SourceURI: sourceURI}, metadata)
 }
 
 // processExistingFile 处理一条已经建好行的文件收录任务，由 Worker 调用。
@@ -722,7 +722,7 @@ func (i *Ingester) processExistingFile(
 		}
 
 		chunkStarted := time.Now().UTC()
-		chunks, err := chunkMarkdown(ctx, markdown)
+		chunks, err := chunkDocument(ctx, markdown, DocumentHint{Path: input.Path, SourceURI: input.SourceURI})
 		if err != nil {
 			return i.failIngest(ctx, document, attempt, "chunk", err)
 		}
@@ -820,11 +820,13 @@ func (i *Ingester) IngestText(ctx context.Context, input TextInput) (IngestResul
 	if err != nil {
 		return IngestResult{}, err
 	}
-	return i.ingestMarkdown(ctx, document, title, content, map[string]any{"parser": "direct"})
+	return i.ingestMarkdown(ctx, document, title, content, DocumentHint{SourceURI: strings.TrimSpace(input.SourceURI)}, map[string]any{"parser": "direct"})
 }
 
 // ingestMarkdown 是同步链路的公共后半段：切分 → 向量化 → 一次事务落三张表。
 // 文件收录（IngestFile）与正文收录（IngestText）在这里合流，之后的处理完全一样。
+//
+// hint 是切分入口做文档类型判定的旁证（来源路径/文件名），可为空。
 //
 // 它不参与分阶段恢复：正文收录没有原文件可重试，同步文件收录也没有任务队列；
 // 两者都要"要么全成、要么全不成"，所以走 ReplaceChunks 的单事务。
@@ -834,6 +836,7 @@ func (i *Ingester) ingestMarkdown(
 	document *entity.KnowledgeDocument,
 	title string,
 	markdown string,
+	hint DocumentHint,
 	metadata map[string]any,
 ) (IngestResult, error) {
 	if strings.TrimSpace(markdown) == "" {
@@ -844,7 +847,7 @@ func (i *Ingester) ingestMarkdown(
 	}
 
 	chunkStarted := time.Now().UTC()
-	chunks, err := chunkMarkdown(ctx, markdown)
+	chunks, err := chunkDocument(ctx, markdown, hint)
 	if err != nil {
 		return i.failIngest(ctx, document, 0, "chunk", err)
 	}
@@ -1160,10 +1163,14 @@ func marshalMetadata(metadata map[string]any) json.RawMessage {
 	return payload
 }
 
-// chunkMarkdown 把正文切成切片，并做两道校验：切不出任何切片、超过单篇上限。
+// chunkDocument 把正文切成切片，并做两道校验：切不出任何切片、超过单篇上限。
 // 同步链路与异步文件链路共用它，保证两条路对"什么算合法切片"的判断一致。
-func chunkMarkdown(ctx context.Context, markdown string) ([]Chunk, error) {
-	chunks, err := splitMarkdown(ctx, markdown, ChunkOptions{})
+//
+// 它是切分链路的唯一入口：先由 splitDocument 判定内容类型（文档/普通文本/代码），
+// 再交给对应的切分器。判定放在这里而不是解析前，是因为重试与崩溃恢复只会从库里
+// 拿到 content —— 判定必须能离线重放（见 classify.go）。
+func chunkDocument(ctx context.Context, content string, hint DocumentHint) ([]Chunk, error) {
+	chunks, err := splitDocument(ctx, content, hint, ChunkOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -1199,8 +1206,30 @@ func buildStoredChunks(documentID uint64, chunks []Chunk) []entity.KnowledgeChun
 			sectionPath := chunk.SectionPath
 			stored[index].SectionPath = &sectionPath
 		}
+		stored[index].ContentType = optionalString(chunk.ContentType)
+		stored[index].Language = optionalString(chunk.Language)
+		stored[index].Symbol = optionalString(chunk.Symbol)
+		stored[index].SymbolType = optionalString(chunk.SymbolType)
 	}
 	return stored
+}
+
+// optionalString 把非空字符串折成可空列的值；空串写 NULL 而不是空串，
+// 让"有没有这项信息"在库里是一个明确的事实。
+func optionalString(value string) *string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	copied := value
+	return &copied
+}
+
+// stringValue 是可空列的回读：nil 一律折成空串，调用方不必到处判空。
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 // chunksFromEntities 把已落库的切片折回切分产物的形状，供 embed 阶段向量化使用。
@@ -1208,15 +1237,16 @@ func buildStoredChunks(documentID uint64, chunks []Chunk) []entity.KnowledgeChun
 func chunksFromEntities(stored []entity.KnowledgeChunk) []Chunk {
 	chunks := make([]Chunk, len(stored))
 	for index, row := range stored {
-		heading := ""
-		if row.Heading != nil {
-			heading = *row.Heading
+		chunks[index] = Chunk{
+			Index:       int(row.ChunkIndex),
+			Heading:     stringValue(row.Heading),
+			SectionPath: stringValue(row.SectionPath),
+			Content:     row.Content,
+			ContentType: stringValue(row.ContentType),
+			Language:    stringValue(row.Language),
+			Symbol:      stringValue(row.Symbol),
+			SymbolType:  stringValue(row.SymbolType),
 		}
-		sectionPath := ""
-		if row.SectionPath != nil {
-			sectionPath = *row.SectionPath
-		}
-		chunks[index] = Chunk{Index: int(row.ChunkIndex), Heading: heading, SectionPath: sectionPath, Content: row.Content}
 	}
 	return chunks
 }

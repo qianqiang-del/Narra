@@ -19,6 +19,14 @@ type KnowledgeChunk struct {
 	Content        string  `gorm:"column:content;type:text;not null;comment:参与向量化与检索的切片正文，是检索命中的最小单位" json:"content"`                                                                                                                                                                                    // 实际参与向量化和检索的切片文本
 	CharacterCount int32   `gorm:"column:character_count;not null;check:knowledge_chunks_character_count_check,character_count > 0;comment:切片字符数（按 rune 计），用于控制上下文长度、监测切分质量" json:"character_count"`                                                                                                     // 切片的字符数，用于切片质量和上下文长度控制
 
+	// 下面四列是切分入口的类型判定产物（见 internal/rag/classify.go），只对新收录的
+	// 切片有值：文档切片填 content_type，代码切片另填 language / symbol / symbol_type。
+	// 老数据与文档切片的部分列为 NULL，检索侧不依赖它们。
+	ContentType *string `gorm:"column:content_type;type:varchar(32);comment:切片内容类型：document（文档）/ plain_text（普通文本）/ code（代码）；老数据为空" json:"content_type"`
+	Language    *string `gorm:"column:language;type:varchar(32);comment:代码切片的语言（go/python/json 等）；非代码或未识别时为空；老数据为空" json:"language"`
+	Symbol      *string `gorm:"column:symbol;type:varchar(300);comment:代码切片对应的符号（函数名、方法名、类型名、JSON 路径等）；提不出来时为空；老数据为空" json:"symbol"`
+	SymbolType  *string `gorm:"column:symbol_type;type:varchar(32);comment:符号类型（function/method/struct/interface/class/type/constant/variable/json 等）；无符号时为空；老数据为空" json:"symbol_type"`
+
 	// Document 仅供 AutoMigrate 建外键 knowledge_chunks_document_id_fkey（ON DELETE CASCADE）。
 	// 业务代码禁止给它赋值或 Preload。
 	Document *KnowledgeDocument `gorm:"foreignKey:DocumentID;constraint:knowledge_chunks_document_id_fkey,OnDelete:CASCADE" json:"-"`

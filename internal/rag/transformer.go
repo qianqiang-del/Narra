@@ -19,8 +19,10 @@ import (
 // 输出用 schema.Document 表示每个切片：Content 是切片正文，MetaData 带上回填知识库
 // 需要的两个字段（见下面的键），DocumentsToChunks 是它的逆操作。
 //
-// ⚠️ 收录链路经 splitMarkdown 走这条路径（见下），所以它不是一个"写完没人用"的适配层：
-// 切分只有一条实现路径，与将来 Eino 流水线里消费的 Transformer 是同一个对象。
+// ⚠️ 收录链路的**文档类型**经 splitMarkdown 走这条路径（见下），所以它不是一个
+// "写完没人用"的适配层：文档切分只有一条实现路径，与将来 Eino 流水线里消费的
+// Transformer 是同一个对象。代码类型由 router.go 直接路由给 code.go，
+// 不经 Markdown 转换层。
 const (
 	// ChunkIndexMetaKey 是切片序号的元数据键（从 0 开始、同一父文档内连续）。
 	// 名字与 knowledge_chunks.chunk_index 对齐：排障时一眼能对上，也省得再想一套命名。
@@ -66,17 +68,17 @@ func (c *MarkdownChunker) Transform(
 			continue
 		}
 		for _, chunk := range Split(parent.Content, c.options) {
-			out = append(out, chunkDocument(parent, chunk))
+			out = append(out, chunkToDocument(parent, chunk))
 		}
 	}
 	return out, nil
 }
 
-// chunkDocument 把一块切片表示成 Eino 文档。
+// chunkToDocument 把一块切片表示成 Eino 文档。
 //
 // 父文档的 MetaData 原样带上：Eino 对 Transformer 的约定是"保留既有元数据、只做合并"，
 // 丢掉它会让下游（例如按来源过滤的检索）拿不到本该一路传下去的字段。
-func chunkDocument(parent *schema.Document, chunk Chunk) *schema.Document {
+func chunkToDocument(parent *schema.Document, chunk Chunk) *schema.Document {
 	metadata := make(map[string]any, len(parent.MetaData)+2)
 	for key, value := range parent.MetaData {
 		metadata[key] = value
@@ -128,8 +130,9 @@ func DocumentsToChunks(documents []*schema.Document) ([]Chunk, error) {
 	return chunks, nil
 }
 
-// splitMarkdown 是收录链路用的切分入口：走 Eino 的 document.Transformer 切一遍，
-// 再折回本模块的 Chunk。
+// splitMarkdown 是"文档类型"的切分入口：走 Eino 的 document.Transformer 切一遍，
+// 再折回本模块的 Chunk。它由 router.go 的 splitDocument 调用（判定为文档/普通文本时），
+// 代码类型不走这里。
 //
 // 为什么不直接调 Split：切分只留一条实现路径（见文件注释），适配器也就不会成为
 // "写完没人调用"的死代码 —— 那种代码在真需要它的那天，往往已经和调用方的期待对不上了。
