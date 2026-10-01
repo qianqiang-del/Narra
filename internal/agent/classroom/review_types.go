@@ -44,6 +44,12 @@ type pageReviewRecord struct {
 	Note         string `json:"note,omitempty"`
 	ResearchNote string `json:"research_note,omitempty"`
 	ArtifactHash string `json:"artifact_hash,omitempty"`
+	// RevisionReview 是修订后的复审结论，只在这一页被修订过时才有。
+	//
+	// 上面那份 ReviewResult 是最终留下来的那一版——回滚会把它换回修订前的首审结论，
+	// 所以单看它分不清「修订把分数改成了什么样」。复审单独留一份，判修订有没有起效、
+	// 二审的问题清单换成了什么，事后都能查。
+	RevisionReview *ReviewResult `json:"revision_review,omitempty"`
 }
 
 // normalizeReview 归一化审核结论并就地丢弃无法定位的空问题。
@@ -114,6 +120,30 @@ func reviewFeedback(review *ReviewResult) string {
 		fmt.Fprintf(&builder, "【%s】%s", issue.Code, issue.Message)
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+// blockerCount 数一份审核结论里的 blocker。
+func blockerCount(review *ReviewResult) int {
+	count := 0
+	for _, issue := range review.Issues {
+		if issue.Severity == reviewSeverityBlocker {
+			count++
+		}
+	}
+	return count
+}
+
+// preferRevised 判断修订版是否真的比修订前版本好。
+//
+// 先比 blocker 再比分数：同一版内容上审核给的分数会有几分的抖动，而 blocker 是硬事实——
+// 分数涨了却多出一个 blocker 的修订版不能留。blocker 数相同且分数没有更高，视为「没变好」，
+// 维持回滚：回滚那一版有明确的首审结论，而且与线上内容对得上。
+func preferRevised(first, revised *ReviewResult) bool {
+	firstBlockers, revisedBlockers := blockerCount(first), blockerCount(revised)
+	if firstBlockers != revisedBlockers {
+		return revisedBlockers < firstBlockers
+	}
+	return revised.Score > first.Score
 }
 
 // isReviewTarget 判断问题归属是否合法。

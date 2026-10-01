@@ -85,16 +85,18 @@ func parsePagePlan(arguments string) (*PageExecutionPlan, error) {
 	return &plan, nil
 }
 
+// validatePagePlanTools 校验工具步骤的条数与工具名。
+//
+// requires_tools 不再是闸门（有没有工具看 planBranch，查不查由调研 Agent 定），
+// 所以这里不再按它清空 tool_steps：模型说不需要查、却写了具体步骤，这个「口手不一」
+// 本身就是该交给调研 Agent 的信号，清掉就没了。
 func validatePagePlanTools(plan *PageExecutionPlan, available []string) error {
-	if !plan.RequiresTools {
-		plan.ToolSteps = nil
-		return nil
-	}
-	if len(plan.ToolSteps) == 0 {
-		return fmt.Errorf("requires_tools 为 true 时至少要规划一个工具步骤")
-	}
 	if len(plan.ToolSteps) > maxPlannedToolSteps {
 		return fmt.Errorf("工具步骤最多 %d 个，实际 %d 个", maxPlannedToolSteps, len(plan.ToolSteps))
+	}
+	// 本次没有可用工具时这些步骤无处可去（调研节点不会执行），不校验名字，也不清空。
+	if len(available) == 0 {
+		return nil
 	}
 	allowed := make(map[string]struct{}, len(available))
 	for _, name := range available {

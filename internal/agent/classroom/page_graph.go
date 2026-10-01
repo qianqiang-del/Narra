@@ -33,6 +33,10 @@ type pageRunState struct {
 	Context PageContext
 	Budget  *pageBudget
 
+	// ToolsAvailable 表示本次生成挂到了工具。有工具时规划之后的下一节点永远是调研——
+	// 查不查由调研 Agent 拿着工具自己判断，不由页规划的 requires_tools 决定。
+	ToolsAvailable bool
+
 	Plan               *PageExecutionPlan
 	Evidence           *EvidenceBundle
 	Blocks             []contentBlock
@@ -40,6 +44,10 @@ type pageRunState struct {
 	Review             *ReviewResult
 	ReviewArtifactHash string
 	RevisionFallback   *reviewedPageSnapshot
+
+	// RevisionReview 是修订后的复审结论，在修订轮的审核节点之后由 route 记下。
+	// 最终落库的 Review 可能是回滚换回来的首审结论，留着这一份才知道修订把分数改成了什么样。
+	RevisionReview *ReviewResult
 
 	// HTML 是交互页的完整文档，其余场景类型为空串。
 	HTML string
@@ -144,12 +152,25 @@ func buildPageGraph(ctx context.Context, nodes pageNodes) (compose.Runnable[*pag
 	return graph.Compile(ctx, compose.WithMaxRunSteps(maxPageGraphSteps))
 }
 
-// planBranch 决定规划之后要不要先去调研。
+// planBranch 决定规划之后要不要先去调研：有工具就必进调研节点。
+//
+// 页规划的 requires_tools 不当闸门用。它判断时手里一个工具都没有（那次调用只下发了交卷工具），
+// 依据只有标题与一句话摘要，判错也不会有任何环节发现——内容专家拿到的就是空证据，
+// 它连"这一页本来可以查"都不知道。把「查不查」交给拿着工具的调研 Agent，
+// 判错的方向就从「静默漏查」变成「多查一次」。
 func planBranch(_ context.Context, state *pageRunState) (string, error) {
-	if state.Plan != nil && state.Plan.RequiresTools {
-		return pageNodeResearch, nil
+	return nextAfterPlan(state), nil
+}
+
+// nextAfterPlan 返回规划之后的下一节点。
+//
+// 断点里存的下一节点必须与图上实走的边一致，否则续跑时会跳过调研节点，
+// 而它换来的证据也一并跳过——两个地方共用这一个判断，就不会各写各的。
+func nextAfterPlan(state *pageRunState) string {
+	if state.ToolsAvailable {
+		return pageNodeResearch
 	}
-	return pageNodeContent, nil
+	return pageNodeContent
 }
 
 // routeBranch 按修订路由节点算出的出口决定下一步。

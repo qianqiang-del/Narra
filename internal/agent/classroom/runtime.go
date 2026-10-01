@@ -120,6 +120,9 @@ func newRuntime(ctx context.Context, deps Deps, providerID uint64, modelID strin
 	return &runtime{chatModel: chatModel, tools: tools}, nil
 }
 
+// hasTools 报告本次运行时有没有挂到工具；没有工具时调研节点无从下手，图上也会跳过它。
+func (r *runtime) hasTools() bool { return r != nil && len(r.tools) > 0 }
+
 // plannerAgent 建规划 Agent：工具集是调研工具加交卷工具。
 //
 // 交卷工具进 ToolReturnDirectly，模型一调它 Agent 就返回，返回值即计划 JSON。
@@ -159,11 +162,11 @@ func (r *runtime) generateToolCall(ctx context.Context, messages []*schema.Messa
 	if !r.allowForcedToolChoice() {
 		choice = schema.ToolChoiceAllowed
 	}
-	message, err := r.chatModel.Generate(ctx, messages, model.WithTools(tools), model.WithToolChoice(choice))
+	message, err := r.generateOnce(ctx, messages, tools, choice)
 	if err != nil && choice == schema.ToolChoiceForced && isToolChoiceRejected(err) {
 		logger.Warn("Provider 不支持强制工具调用，改用自动选择", zap.String("tool", info.Name), zap.Error(err))
 		r.markForcedUnsupported()
-		message, err = r.chatModel.Generate(ctx, messages, model.WithTools(tools), model.WithToolChoice(schema.ToolChoiceAllowed))
+		message, err = r.generateOnce(ctx, messages, tools, schema.ToolChoiceAllowed)
 	}
 	if err != nil {
 		return "", err
@@ -173,6 +176,32 @@ func (r *runtime) generateToolCall(ctx context.Context, messages []*schema.Messa
 		return "", fmt.Errorf("模型没有调用 %s 交卷", info.Name)
 	}
 	return arguments, nil
+}
+
+// generateOnce 调一次模型并把这次调用登记进观测。
+//
+// 与 streamCompletion 同理：本函数跑在图节点（Lambda）内部，框架只在图节点上自动注入回调，
+// 手动调模型不会被登记，得用 ReuseHandlers 把 RunInfo 换成 ChatModel 身份。
+// tools 与 tool_choice 一并写进 CallbackInput —— 页规划这一次调用里一个工具都没下发，
+// 复现"这一页为什么没查资料"时，请求侧只有这两个字段说得清。
+func (r *runtime) generateOnce(ctx context.Context, messages []*schema.Message, tools []*schema.ToolInfo, choice schema.ToolChoice) (*schema.Message, error) {
+	runCtx := callbacks.ReuseHandlers(ctx, &callbacks.RunInfo{
+		Type:      "NarraOpenAI",
+		Component: components.ComponentOfChatModel,
+	})
+	runCtx = callbacks.OnStart(runCtx, &model.CallbackInput{
+		Messages:   messages,
+		Tools:      tools,
+		ToolChoice: &choice,
+	})
+
+	message, err := r.chatModel.Generate(runCtx, messages, model.WithTools(tools), model.WithToolChoice(choice))
+	if err != nil {
+		callbacks.OnError(runCtx, err)
+		return nil, err
+	}
+	callbacks.OnEnd(runCtx, &model.CallbackOutput{Message: message})
+	return message, nil
 }
 
 // streamCompletion 调一次流式生成，把整段增量拼成完整文本。

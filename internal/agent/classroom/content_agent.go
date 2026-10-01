@@ -13,12 +13,18 @@ import (
 	"narra/internal/model/entity"
 )
 
-// contentInput 是内容专家的输入：本页分层上下文、证据包与修订反馈。
+// contentInput 是内容专家的输入：本页分层上下文、页执行计划、证据包与修订反馈。
 type contentInput struct {
-	Page     PageContext
+	Page PageContext
+	// Plan 是这一页的执行计划，带着「必须包含」与「验收条件」两份清单。
+	// 它们本来只发给审核，内容专家看不到，等于在盲写被扣分的答卷。
+	Plan     *PageExecutionPlan
 	Evidence *EvidenceBundle
 	Revision string
 	Feedback string
+	// Narration 是上一版讲稿，只在修订时有值：审核常指出某些要点只讲在讲稿里、
+	// 页面上没有，看不到讲稿就没法把它们补进页面。
+	Narration []narrationSegment
 }
 
 // blocksOutput 是内容专家的原始输出结构。
@@ -180,10 +186,18 @@ func checkContentSize(blocks []contentBlock) error {
 }
 
 // contentUserPrompt 拼内容专家的用户提示词。
+//
+// 顺序有意义：先给这一页的边界（必须包含什么、按什么验收），再给参考资料与上一版讲稿，
+// 最后才放审核意见——修订时它是最要紧的一段，放在末尾最不容易被忽略。
 func contentUserPrompt(in *contentInput) string {
 	var builder strings.Builder
 	builder.WriteString(in.Page.executionPagePrompt())
+	writeContentRequirements(&builder, in.Plan)
+	writeAcceptanceCriteria(&builder, in.Plan)
 	writeEvidence(&builder, in.Evidence)
+	if strings.TrimSpace(in.Revision) != "" {
+		writeNarrationReference(&builder, in.Narration)
+	}
 	writeRevision(&builder, in.Revision, in.Feedback)
 	return builder.String()
 }

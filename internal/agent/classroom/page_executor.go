@@ -115,10 +115,11 @@ func (e *pageExecutor) execute(ctx context.Context, task pageTask) error {
 	}
 
 	state := &pageRunState{
-		Scene:   task.Scene,
-		Page:    task.Page,
-		Context: e.pageContext(task),
-		Budget:  &pageBudget{},
+		Scene:          task.Scene,
+		Page:           task.Page,
+		Context:        e.pageContext(task),
+		Budget:         &pageBudget{},
+		ToolsAvailable: e.rt.hasTools(),
 	}
 	checkpointRestored := restorePageCheckpoint(state, task.Scene.GenerationCheckpoint)
 	resumed, err := e.resumeSynthesis(ctx, task.Scene)
@@ -296,11 +297,7 @@ func (e *pageExecutor) plan(ctx context.Context, state *pageRunState) error {
 		return err
 	}
 	state.Plan = plan
-	nextNode := pageNodeContent
-	if plan.RequiresTools {
-		nextNode = pageNodeResearch
-	}
-	return e.saveCheckpoint(ctx, state, nextNode)
+	return e.saveCheckpoint(ctx, state, nextAfterPlan(state))
 }
 
 // research 节点：按执行计划取证据，取不到就用空证据继续。
@@ -312,8 +309,10 @@ func (e *pageExecutor) research(ctx context.Context, state *pageRunState) error 
 		return err
 	}
 	var steps []ToolStep
+	plannerSkipped := false
 	if state.Plan != nil {
 		steps = state.Plan.ToolSteps
+		plannerSkipped = !state.Plan.RequiresTools
 	}
 	// 修订回到调研时，若执行计划没变（工具步骤指纹一致），上一轮的证据仍然成立，直接沿用：
 	// 重查一遍只会多付一次联网和一次模型调用，拿回同一份结论。
@@ -329,7 +328,11 @@ func (e *pageExecutor) research(ctx context.Context, state *pageRunState) error 
 		state.ReviewNote = "模型调用预算已用尽，跳过资料调研"
 		return e.saveCheckpoint(ctx, state, pageNodeContent)
 	}
-	bundle, note := researchEvidence(ctx, e.rt, &researchInput{Page: state.Context, Steps: steps})
+	bundle, note := researchEvidence(ctx, e.rt, &researchInput{
+		Page:           state.Context,
+		Steps:          steps,
+		PlannerSkipped: plannerSkipped,
+	})
 	state.Evidence = bundle
 	state.ResearchNote = note
 	state.ResearchSteps = signature
@@ -357,10 +360,12 @@ func (e *pageExecutor) content(ctx context.Context, state *pageRunState) error {
 		return err
 	}
 	content, err := generateContent(ctx, e.rt, state.Budget, &contentInput{
-		Page:     state.Context,
-		Evidence: state.Evidence,
-		Revision: state.Revision,
-		Feedback: state.ContentFeedback,
+		Page:      state.Context,
+		Plan:      state.Plan,
+		Evidence:  state.Evidence,
+		Revision:  state.Revision,
+		Feedback:  state.ContentFeedback,
+		Narration: state.Narration,
 	}, state.Scene.Type)
 	if err != nil {
 		return err
@@ -382,6 +387,7 @@ func (e *pageExecutor) narration(ctx context.Context, state *pageRunState) error
 	}
 	items, err := generateNarration(ctx, e.rt, state.Budget, &narrationInput{
 		Page:     state.Context,
+		Plan:     state.Plan,
 		Blocks:   state.Blocks,
 		Revision: state.Revision,
 		Feedback: state.NarrationFeedback,
@@ -435,6 +441,11 @@ func (e *pageExecutor) route(ctx context.Context, state *pageRunState) error {
 		return nil
 	}
 	review := state.Review
+	// Rounds > 0 说明这一轮审核看的是修订后的产物，单独留一份复审结论：
+	// 最终落库的那份可能是回滚换回来的首审结论，不留就看不出修订把分数改成了什么样。
+	if state.Rounds > 0 {
+		state.RevisionReview = review
+	}
 	if review == nil {
 		restoreRevisionFallback(state, "修订后审核未完成，已恢复修订前版本")
 		state.Route = pageRouteDone
@@ -446,7 +457,7 @@ func (e *pageExecutor) route(ctx context.Context, state *pageRunState) error {
 		return e.saveCheckpoint(ctx, state, pageRouteDone)
 	}
 	if state.Rounds >= maxRevisionRounds || state.Budget.exhausted() {
-		if !restoreRevisionFallback(state, "修订后仍未通过审核，已恢复修订前版本") {
+		if !keepBetterRevision(state) {
 			state.ReviewNote = "达到修订上限，按代码校验结果落库"
 		}
 		state.Route = pageRouteDone
@@ -473,7 +484,12 @@ func (e *pageExecutor) route(ctx context.Context, state *pageRunState) error {
 
 // persistResult 落库这一页的内容、讲稿与审核摘要，然后合成语音。
 func (e *pageExecutor) persistResult(ctx context.Context, state *pageRunState) error {
-	record := pageReviewRecord{Rounds: state.Rounds, Note: state.ReviewNote, ResearchNote: state.ResearchNote}
+	record := pageReviewRecord{
+		Rounds:         state.Rounds,
+		Note:           state.ReviewNote,
+		ResearchNote:   state.ResearchNote,
+		RevisionReview: state.RevisionReview,
+	}
 	artifactHash := pageArtifactHash(state)
 	if state.Review != nil && state.ReviewArtifactHash == artifactHash {
 		record.ReviewResult = *state.Review
@@ -580,6 +596,28 @@ func restoreRevisionFallback(state *pageRunState, note string) bool {
 	state.ReviewArtifactHash = fallback.ArtifactHash
 	state.ReviewNote = appendReviewNote(fallback.ReviewNote, note)
 	state.RevisionFallback = nil
+	return true
+}
+
+// keepBetterRevision 修订到底仍未过审时，在修订版与修订前版本之间择优保留。
+//
+// 修订的模型调用已经花掉，无条件回滚等于整个丢掉；只有修订真的更差才回滚。
+// 比不出高下的一律回滚——回滚那一版有明确的首审结论，且与线上内容对得上。
+// 返回 false 表示没有可比的修订前版本（首审没留下快照），调用方按原来的兜底写法落库。
+func keepBetterRevision(state *pageRunState) bool {
+	fallback := state.RevisionFallback
+	if fallback == nil {
+		return false
+	}
+	if state.Review != nil && preferRevised(&fallback.Review, state.Review) {
+		state.ReviewNote = appendReviewNote(state.ReviewNote, fmt.Sprintf(
+			"修订后仍未通过审核，修订版更优（首审 %d 分 → 复审 %d 分，blocker %d → %d），保留修订版",
+			fallback.Review.Score, state.Review.Score,
+			blockerCount(&fallback.Review), blockerCount(state.Review)))
+		state.RevisionFallback = nil
+		return true
+	}
+	restoreRevisionFallback(state, "修订后仍未通过审核，已恢复修订前版本")
 	return true
 }
 
