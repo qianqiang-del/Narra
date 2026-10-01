@@ -2,7 +2,8 @@
 //
 // 按职责分文件，各管一段：
 //   - ingest.go   收录门面：解析 → 切分 → 向量化 → 一个事务落三张表
-//   - chunker.go  Markdown 切分，纯函数、零依赖（本文件）
+//   - sections.go Markdown 结构识别：goldmark 解析出节树（取舍见该文件顶部）
+//   - chunker.go  装填：预算、句子边界、重叠、节路径（本文件）
 //   - embedder.go 向量化的最小依赖面与批量编排
 //   - errors.go   收录链路的哨兵错误
 //
@@ -15,17 +16,17 @@
 // 知识库的文档列表与详情归 knowledge_service.go。那里是 HTTP 面，只碰 DTO；
 // 本包只碰 entity —— 两边各说各的话，谁也不迁就谁。
 //
-// ⚠️ 纯函数部分（本文件）刻意保持零依赖：不读文件、不认识数据库、不发网络请求。
-// 切片的字符预算、章节归属、相邻切片的重叠这些策略全部收敛在纯函数里，
-// 因为切片质量的问题几乎都能用一段文本复现 —— 放进纯函数里测，
+// ⚠️ 切分链路（本文件 + sections.go）只做纯内存的事：不读文件、不认识数据库、
+// 不发网络请求。结构识别交给 goldmark（纯内存解析库），装填策略仍是手写的纯函数 ——
+// 切片质量的问题几乎都能用一段 Markdown 复现，放进这条链路里测，
 // 比起连上数据库和向量服务再去调要快得多。
-// 改动本文件时别把 IO 引进来：测试成本会立刻从毫秒变成"看上游今天通不通"。
 //
 // 切分的三个约束来自数据库本身（见 entity.KnowledgeChunk 的字段 tag），它们不是
 // 建议而是硬约束，违反会直接被 PostgreSQL 拒绝：
 //   - character_count > 0    —— 绝不能产出空白切片；
 //   - chunk_index >= 0       —— 序号从 0 开始，且在同一篇文章内唯一；
-//   - heading varchar(300)   —— 标题按字符截断，中文一个字符占三个字节，按字节截会爆。
+//   - heading / section_path varchar(300) —— 标题与路径都按字符截断，
+//     中文一个字符占三个字节，按字节截会爆。
 package rag
 
 import (
@@ -33,7 +34,8 @@ import (
 	"unicode/utf8"
 )
 
-// MaxHeadingRunes 是标题的长度上限，与 knowledge_chunks.heading 的 varchar(300) 对齐。
+// MaxHeadingRunes 是标题的长度上限，与 knowledge_chunks.heading（以及 section_path）
+// 的 varchar(300) 对齐。
 //
 // 超长标题在这里直接截断而不是报错：标题只是检索时给人和模型看的上下文线索，
 // 为了它让整篇文档入库失败不划算。
@@ -41,9 +43,10 @@ const MaxHeadingRunes = 300
 
 // Chunk 是一个切片。Index 从 0 开始连续，直接对应 knowledge_chunks.chunk_index。
 type Chunk struct {
-	Index   int    // 在原文中的顺序
-	Heading string // 所在章节标题；正文开头没有标题时为空
-	Content string // 实际参与向量化和检索的文本
+	Index       int    // 在原文中的顺序
+	Heading     string // 所在节的标题；前言切片为空
+	SectionPath string // 从顶层到本级的标题路径（用 / 连接）；前言切片为空
+	Content     string // 实际参与向量化和检索的文本
 }
 
 // ChunkOptions 是切分参数。零值由 withDefaults 补成 DefaultXxx。
@@ -115,24 +118,41 @@ func (o ChunkOptions) contentLimit() int {
 // Split 把 Markdown 切成切片。返回的切片序号从 0 开始连续，
 // 空白内容一律丢弃 —— 数据库的 character_count > 0 不接受空切片。
 //
-// 切片长度以 ChunkOptions.MaxChars 为目标，只有两种情况会略超：代码块与表格为了
-// 保持完整而整块保留，以及过短的收尾并回上一片。预算是给检索质量用的软目标，
-// 不是数据库约束，这两种例外都比"为了凑数切碎"更值。
+// 切法是"结构优先"的递归：sections.go 解析出节树后，一个节的**整棵子树**
+// 不超过预算就整块出一片（哪怕里面还有子标题）；超预算才按它的子节递归，
+// 一直递归到没有子节的叶子，才回到句子边界与预算来分。短小节的碎片因此自然消失，
+// 长小节才被切开，切点也尽量落在标题这种语义边界上。
+//
+// 切片长度以 ChunkOptions.MaxChars 为目标，只有三种情况会略超：
+// 整棵子树出的块、代码块与表格为保持完整而整块保留、以及过短的收尾并回上一片。
+// 预算是给检索质量用的软目标，不是数据库约束，这些例外都比"为了凑数切碎"更值。
 func Split(markdown string, options ChunkOptions) []Chunk {
 	options = options.withDefaults()
 
-	sections := splitSections(strings.Split(normalize(markdown), "\n"))
+	sections := parseSections(normalize(markdown))
 
-	chunks := make([]Chunk, 0, len(sections))
+	groups := make([][]emittedChunk, 0, len(sections))
 	for _, section := range sections {
-		heading := truncateHeading(section.heading)
-		for _, packed := range packSection(section, options) {
-			content := packed.content()
-			if content == "" {
-				continue
-			}
-			chunks = append(chunks, Chunk{Heading: heading, Content: content})
+		if chunks := emitSection(section, options); len(chunks) > 0 {
+			groups = append(groups, chunks)
 		}
+	}
+	// 顶层不做"接缝重叠"、也不把文档前言并进第一章：两者与改造前的语义不同
+	// （那时每个节独立打包，节与节之间不重叠、前言自成一节），保持原样更稳；
+	// 过小的一级节仍会并进上一块，见 mergeTinyGroups。
+	emitted := joinSiblingGroups(groups, options, false, false)
+
+	chunks := make([]Chunk, 0, len(emitted))
+	for _, item := range emitted {
+		content := item.chunk.content()
+		if content == "" {
+			continue
+		}
+		chunks = append(chunks, Chunk{
+			Heading:     truncateHeading(item.heading),
+			SectionPath: truncateHeading(item.path),
+			Content:     content,
+		})
 	}
 
 	// 序号在最后统一编：中间任何一步丢弃了切片，这里都能保证仍然连续，
@@ -159,121 +179,246 @@ type block struct {
 	atomic bool
 }
 
-// section 是一个章节：一级标题及其下属正文。
-type section struct {
-	heading string
-	blocks  []block
-}
-
-// splitSections 把 Markdown 按标题切成分节，并把正文归成段落、代码块和表格三种块。
-//
-// 只认 # 开头的 ATX 标题（CommonMark 要求 # 后面必须有空格，"#标签" 不算标题）。
-// Setext 标题（下划线式）不认：`---` 同时也是分隔线和 YAML 头，误判的代价比漏认高。
-func splitSections(lines []string) []section {
-	sections := []section{{}}
-
-	current := func() *section { return &sections[len(sections)-1] }
-
-	for index := 0; index < len(lines); index++ {
-		line := lines[index]
-		trimmed := strings.TrimSpace(line)
-
-		if title, ok := headingTitle(trimmed); ok {
-			sections = append(sections, section{heading: title})
-			continue
-		}
-
-		// 围栏代码块：整块吃进来，中途的 # 和空行都不算结构。
-		if fence := fenceMarker(trimmed); fence != "" {
-			block := []string{line}
-			for index++; index < len(lines); index++ {
-				block = append(block, lines[index])
-				if strings.HasPrefix(strings.TrimSpace(lines[index]), fence) {
-					break
-				}
-			}
-			current().blocks = append(current().blocks, blockOf(strings.Join(block, "\n"), true))
-			continue
-		}
-
-		// 表格：连续的 | 行算一块。表格从中间断开就失去对齐关系，所以整块不切。
-		if isTableRow(trimmed) {
-			block := []string{line}
-			for index+1 < len(lines) && isTableRow(strings.TrimSpace(lines[index+1])) {
-				index++
-				block = append(block, lines[index])
-			}
-			current().blocks = append(current().blocks, blockOf(strings.Join(block, "\n"), true))
-			continue
-		}
-
-		if trimmed == "" {
-			continue
-		}
-
-		// 普通段落：一直吃到空行、标题、代码块或表格为止。
-		paragraph := []string{line}
-		for index+1 < len(lines) {
-			next := strings.TrimSpace(lines[index+1])
-			if next == "" || fenceMarker(next) != "" || isTableRow(next) {
-				break
-			}
-			if _, ok := headingTitle(next); ok {
-				break
-			}
-			index++
-			paragraph = append(paragraph, lines[index])
-		}
-		current().blocks = append(current().blocks, blockOf(strings.Join(paragraph, "\n"), false))
-	}
-
-	return sections
-}
-
 // blockOf 构造一个块，text 统一去掉首尾空白 —— 否则后面的字符预算会把空行也算进去。
 func blockOf(text string, atomic bool) block {
 	return block{text: strings.TrimSpace(text), atomic: atomic}
 }
 
-// headingTitle 判断一行是否是 ATX 标题，返回标题文字。
-func headingTitle(line string) (string, bool) {
-	level := 0
-	for level < len(line) && line[level] == '#' {
-		level++
-	}
-	// CommonMark 只认 1~6 级；"########" 是普通段落。
-	if level == 0 || level > 6 {
-		return "", false
-	}
-	if level < len(line) && line[level] != ' ' {
-		return "", false
-	}
-
-	title := strings.TrimSpace(line[level:])
-	// 闭合式标题（"# 标题 #"）要求结尾的 # 前面有空格，否则 "C#" 这类会被误伤。
-	if index := strings.LastIndex(title, " #"); index >= 0 && strings.Trim(title[index+1:], "#") == "" {
-		title = strings.TrimSpace(title[:index])
-	}
-	return title, true
+// emittedChunk 是一条已经装填好、但还没统一编号的切片：它记得自己属于哪个节。
+type emittedChunk struct {
+	heading string
+	path    string
+	chunk   pendingChunk
 }
 
-// fenceMarker 返回围栏代码块的标记（"```" 或 "~~~"），不是围栏则返回空串。
-func fenceMarker(line string) string {
-	switch {
-	case strings.HasPrefix(line, "```"):
-		return "```"
-	case strings.HasPrefix(line, "~~~"):
-		return "~~~"
-	default:
-		return ""
+// emitSection 产出一个节（含子树）的全部切片。规则见 Split 的注释。
+//
+// 返回的列表内部已经按"相邻兄弟组"补好重叠；对上层而言它是一个整体，
+// 只会在组与组的接缝处被上层再补一次前缀 —— 每个接缝只补一次，不会重复。
+func emitSection(node *sectionNode, options ChunkOptions) []emittedChunk {
+	size := subtreeRunes(node)
+	if size == 0 {
+		return nil
+	}
+	// 整棵子树装得下：一块出。子标题不再开新片 —— 短小节合成一片，
+	// 比按标题切成一堆碎片更适合检索。
+	if size <= options.MaxChars {
+		return []emittedChunk{wholeSectionChunk(node)}
+	}
+	// 叶子：没有更细的标题可用，回到句子边界与预算。
+	if len(node.children) == 0 {
+		return wrapChunks(node, packBlocks(node.blocks, options))
+	}
+
+	groups := make([][]emittedChunk, 0, len(node.children)+1)
+	if len(node.blocks) > 0 {
+		groups = append(groups, wrapChunks(node, packBlocks(node.blocks, options)))
+	}
+	for _, child := range node.children {
+		if chunks := emitSection(child, options); len(chunks) > 0 {
+			groups = append(groups, chunks)
+		}
+	}
+	return joinSiblingGroups(groups, options, true, true)
+}
+
+// wholeSectionChunk 把整棵子树拼成一条切片（不再分预算，由调用方保证它装得下）。
+func wholeSectionChunk(node *sectionNode) emittedChunk {
+	pieces := make([]piece, 0, 4)
+	collectPieces(node, &pieces)
+	return emittedChunk{
+		heading: node.heading,
+		path:    node.path,
+		chunk:   pendingChunk{parts: pieces},
 	}
 }
 
-// isTableRow 判断一行是不是表格行。只看是否以 | 开头：
-// 严格的表格判定还要连着看表头分隔行，而这里只需要一个"别把表格从中间切开"的信号，
-// 放宽标准的代价（把以 | 开头的普通段落当成表格）只是让它不被拆开，不会出错。
-func isTableRow(line string) bool {
-	return strings.HasPrefix(line, "|")
+// collectPieces 按文档顺序把子树里所有块翻成片段（块之间用空行分隔）。
+func collectPieces(node *sectionNode, pieces *[]piece) {
+	for _, item := range node.blocks {
+		text := strings.TrimSpace(item.text)
+		if text == "" {
+			continue
+		}
+		separator := "\n\n"
+		if len(*pieces) == 0 {
+			separator = ""
+		}
+		*pieces = append(*pieces, piece{text: text, sep: separator})
+	}
+	for _, child := range node.children {
+		collectPieces(child, pieces)
+	}
+}
+
+// wrapChunks 给一个节自己产出的切片贴上节归属。
+func wrapChunks(node *sectionNode, chunks []pendingChunk) []emittedChunk {
+	out := make([]emittedChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		out = append(out, emittedChunk{heading: node.heading, path: node.path, chunk: chunk})
+	}
+	return out
+}
+
+// subtreeRunes 统计一棵子树的内容长度（按字符计，块之间的空行也算 ——
+// 它是"整块出"的判据，口径要与最终拼出来的文本尽量一致）。
+func subtreeRunes(node *sectionNode) int {
+	total, count := 0, 0
+	var walk func(current *sectionNode)
+	walk = func(current *sectionNode) {
+		for _, item := range current.blocks {
+			text := strings.TrimSpace(item.text)
+			if text == "" {
+				continue
+			}
+			total += utf8.RuneCountInString(text)
+			count++
+		}
+		for _, child := range current.children {
+			walk(child)
+		}
+	}
+	walk(node)
+	if count > 1 {
+		total += 2 * (count - 1)
+	}
+	return total
+}
+
+// joinSiblingGroups 把同一层下若干兄弟组的切片按文档顺序拼成一条链。
+//
+// 先并掉过小的小组（mergeTinyGroups），再按需在组与组的接缝处补重叠：
+// 只给每一组的**第一片**补前缀，组内部的接缝在产出该组的那一层已经补过，
+// 这里再补就会让同一段文字重复三遍。两个开关都由调用方按层级决定：
+// 顶层既不补跨章节重叠也不把文档前言并进第一章（保持改造前的语义）。
+func joinSiblingGroups(groups [][]emittedChunk, options ChunkOptions, seedAcrossGroups, mergeHead bool) []emittedChunk {
+	merged := mergeTinyGroups(groups, options, mergeHead)
+
+	out := make([]emittedChunk, 0, len(merged))
+	for _, group := range merged {
+		if len(group) == 0 {
+			continue
+		}
+		if seedAcrossGroups && len(out) > 0 {
+			budget := options.MaxChars - utf8.RuneCountInString(group[0].chunk.content())
+			group[0].chunk.seed = overlapSeed(out[len(out)-1].chunk.content(), options.Overlap, budget)
+		}
+		out = append(out, group...)
+	}
+	return out
+}
+
+// mergeTinyGroups 把过小的兄弟组并进相邻的组。
+//
+// 一节的子树太小（< MinChars）时单独成片没有检索价值，还会让它在向量空间里随机地飘；
+// 幻灯片式的文档（每页一个小标题）正是靠这条规则合出像样的切片。
+// 只并"单块的小组"，且合并后不超过 MaxChars；合并后保留接收块的标题与路径 ——
+// 合并块横跨两节，保留接收方的归属是简单且可预期的选择。
+//
+// 两个方向都要处理：后组并进前组（常见），以及**第一组**（节的引言）过小时
+// 并进紧随其后的组 —— 它没有"前一组"可并，见 mergeTinyHead。
+// mergeHead 由调用方按层级给：文档前言（顶层第一组）不参与，保持改造前的独立切片。
+func mergeTinyGroups(groups [][]emittedChunk, options ChunkOptions, mergeHead bool) [][]emittedChunk {
+	out := make([][]emittedChunk, 0, len(groups))
+	for _, group := range groups {
+		if len(group) == 0 {
+			continue
+		}
+		if len(group) == 1 && len(out) > 0 {
+			small := group[0].chunk.content()
+			previousGroup := out[len(out)-1]
+			previousChunk := &previousGroup[len(previousGroup)-1]
+			// 不把有节归属的内容埋进"没有节"的前言块里：前言自成一片是改造前的语义，
+			// 归属也更可读；有标题的相邻小节之间照常合并（幻灯片式文档靠这条）。
+			canMerge := previousChunk.path != "" || group[0].path == ""
+			if canMerge && utf8.RuneCountInString(small) < options.MinChars {
+				previous := &previousChunk.chunk
+				if utf8.RuneCountInString(previous.content())+2+utf8.RuneCountInString(small) <= options.MaxChars {
+					previous.parts = append(previous.parts, piece{text: small, sep: "\n\n"})
+					continue
+				}
+			}
+		}
+		out = append(out, group)
+	}
+	if !mergeHead {
+		return out
+	}
+	return mergeTinyHead(out, options)
+}
+
+// mergeTinyHead 处理"第一组过小"：把它并进下一组的第一个块。
+// 前言与引言都坐在这个位置 —— 后面紧跟着正文，单独立片只是碎片。
+func mergeTinyHead(groups [][]emittedChunk, options ChunkOptions) [][]emittedChunk {
+	if len(groups) < 2 || len(groups[0]) != 1 {
+		return groups
+	}
+	small := groups[0][0].chunk.content()
+	if utf8.RuneCountInString(small) >= options.MinChars {
+		return groups
+	}
+	target := &groups[1][0]
+	if utf8.RuneCountInString(small)+2+utf8.RuneCountInString(target.chunk.content()) > options.MaxChars {
+		return groups
+	}
+
+	// 插到目标块最前面，并给目标块原来的首个片段补一个段落分隔符：
+	// content() 会忽略"首片且无前缀"那个片段的分隔符，不补就贴在一起了。
+	pieces := make([]piece, 0, len(target.chunk.parts)+1)
+	pieces = append(pieces, piece{text: small})
+	for index, part := range target.chunk.parts {
+		if index == 0 {
+			part.sep = "\n\n"
+		}
+		pieces = append(pieces, part)
+	}
+	target.chunk.parts = pieces
+	return groups[1:]
+}
+
+// packBlocks 把一个节直属的块打包成切片：先按句子拆片段，再按预算装填，
+// 最后处理过短的收尾与相邻重叠。
+func packBlocks(blocks []block, options ChunkOptions) []pendingChunk {
+	pieces := blockPieces(blocks, options)
+	if len(pieces) == 0 {
+		return nil
+	}
+
+	packed := pack(pieces, options)
+	packed = mergeTail(packed, options)
+
+	out := make([]pendingChunk, 0, len(packed))
+	for _, chunk := range packed {
+		if strings.TrimSpace(chunk.content()) == "" {
+			continue
+		}
+		out = append(out, chunk)
+	}
+	return out
+}
+
+// blockPieces 把一个节直属的块拆成不超过预算的片段。
+func blockPieces(blocks []block, options ChunkOptions) []piece {
+	var pieces []piece
+	for index, current := range blocks {
+		// 首块的首片不需要前导分隔符，其余块之间用空行隔开。
+		separator := "\n\n"
+		if index == 0 {
+			separator = ""
+		}
+		for position, text := range splitBlock(current, options) {
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			// 同一个块被切开后的后续片段，是同一段话的延续，拼接时不留空行。
+			useSeparator := separator
+			if position > 0 || len(pieces) == 0 {
+				useSeparator = ""
+			}
+			pieces = append(pieces, piece{text: text, sep: useSeparator})
+		}
+	}
+	return pieces
 }
 
 // piece 是切片内部的一个片段。sep 是把它接到前一片段后面时用的分隔符：
@@ -312,50 +457,6 @@ func (c pendingChunk) content() string {
 	}
 	// 片段是按句子边界切开的，两端可能带着空格和换行。
 	return strings.TrimSpace(builder.String())
-}
-
-// packSection 把一个章节打包成若干切片。
-func packSection(section section, options ChunkOptions) []pendingChunk {
-	pieces := sectionPieces(section, options)
-	if len(pieces) == 0 {
-		return nil
-	}
-
-	packed := pack(pieces, options)
-	packed = mergeTail(packed, options)
-
-	out := make([]pendingChunk, 0, len(packed))
-	for _, chunk := range packed {
-		if strings.TrimSpace(chunk.content()) == "" {
-			continue
-		}
-		out = append(out, chunk)
-	}
-	return out
-}
-
-// sectionPieces 把章节的每个块拆成不超过预算的片段。
-func sectionPieces(section section, options ChunkOptions) []piece {
-	var pieces []piece
-	for index, current := range section.blocks {
-		// 首块的首片不需要前导分隔符，其余块之间用空行隔开。
-		separator := "\n\n"
-		if index == 0 {
-			separator = ""
-		}
-		for position, text := range splitBlock(current, options) {
-			if strings.TrimSpace(text) == "" {
-				continue
-			}
-			// 同一个块被切开后的后续片段，是同一段话的延续，拼接时不留空行。
-			useSeparator := separator
-			if position > 0 || len(pieces) == 0 {
-				useSeparator = ""
-			}
-			pieces = append(pieces, piece{text: text, sep: useSeparator})
-		}
-	}
-	return pieces
 }
 
 // splitBlock 把一个块拆成若干不超过正文预算的片段。
@@ -581,7 +682,7 @@ func mergeTail(chunks []pendingChunk, options ChunkOptions) []pendingChunk {
 	return out
 }
 
-// truncateHeading 按字符截断标题，与 varchar(300) 的语义一致。
+// truncateHeading 按字符截断标题/节路径，与 varchar(300) 的语义一致。
 func truncateHeading(heading string) string {
 	heading = strings.TrimSpace(heading)
 	runes := []rune(heading)

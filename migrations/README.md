@@ -150,6 +150,23 @@ AutoMigrate 只加不减，存量库要手动删；脚本幂等，新环境不�
 `provider` / `enabled`，而它们在旧表上是 `NOT NULL` 且没有默认值（不删列会违反非空
 约束，设置页保存与启动对齐都会失败）。迁移与新版代码必须一起上。
 
+**第九步（2026-10-01 之前收录过文档的老环境，一次性），重建旧切法的切片**：
+
+```bash
+psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0008_rechunk_legacy_chunks.sql
+```
+
+切分在 2026-10-01 改为"结构优先"（goldmark 认节树、按子树预算递归，见
+`docs/rag-database.md`「切分：结构优先」）。升级只对新收录生效——「重新向量化」
+只重算向量、不重切（worker 看到切片还在就直接进 embed 阶段）。本脚本把"还带旧切法
+切片"的 ready 文档清掉切片、改回 `pending` + `chunk` 阶段，由 worker 用
+`documents.content` 重新切分并向量化。判据 `section_path IS NULL` 幂等，新环境跑命中
+0 篇；失败的行照常是"失败可重试"形态。
+
+⚠️ **顺序：先用新代码重启服务 → 再跑脚本。** 没重启时 `section_path` 列还不存在，
+脚本会直接报错中止（不会误删）；服务若还是旧代码，旧 worker 会用旧切法重建，等于
+白跑。重嵌入要花时间与上游额度、处理期间文档暂不可检索，建议低峰执行。
+
 ## 约束全部归实体 tag（2026-09-17 大迁移）
 
 历史上约束分两处：AutoMigrate 建表和单列 UNIQUE，SQL 文件补 CHECK / 外键 /

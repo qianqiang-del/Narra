@@ -84,9 +84,12 @@ func TestMarkdownChunkerWritesMetadataAndIDs(t *testing.T) {
 		}
 	}
 
-	// 标题归属来自正文里的 Markdown 标题。
+	// 标题归属来自正文里的 Markdown 标题；节路径同样要写到元数据里。
 	if heading, _ := documents[0].MetaData[HeadingMetaKey].(string); heading != "让检索更快" {
 		t.Fatalf("第一片应当归属一级标题，实际 %+v", documents[0].MetaData)
+	}
+	if path, _ := documents[0].MetaData[SectionPathMetaKey].(string); path != "让检索更快" {
+		t.Fatalf("第一片应当带节路径，实际 %+v", documents[0].MetaData)
 	}
 }
 

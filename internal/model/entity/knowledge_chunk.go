@@ -4,6 +4,9 @@ package entity
 // 所属文章标识指向原文章；切片序号从 0 开始，保证重组引用内容时仍保持原文顺序。
 // 字符数用于控制上下文窗口及监测切分质量。
 //
+// section_path 是切片的"节身份"：同一篇文档里路径相同即同一个节，
+// 供检索侧按节去重、拼装上下文与展示引用路径；老数据的这一列是 NULL。
+//
 // knowledge_chunks_document_id_idx 与 UNIQUE (document_id, chunk_index) 的伴生索引
 // 功能重复，保留是沿用原 0002 SQL 的行为，代价只是多一份索引。
 type KnowledgeChunk struct {
@@ -12,6 +15,7 @@ type KnowledgeChunk struct {
 	DocumentID     uint64  `gorm:"column:document_id;not null;uniqueIndex:knowledge_chunks_document_id_chunk_index_key;index:knowledge_chunks_document_id_idx;comment:所属文档 ID，指向 knowledge_documents.id；文档删除时本切片级联删除" json:"document_id"`                                                                // 所属原文章 ID；删除文章时级联删除
 	ChunkIndex     int32   `gorm:"column:chunk_index;not null;uniqueIndex:knowledge_chunks_document_id_chunk_index_key;index:knowledge_chunks_document_id_idx;check:knowledge_chunks_chunk_index_check,chunk_index >= 0;comment:切片在原文中的顺序号，从 0 开始；与 document_id 组成唯一约束，检索后按它还原上下文顺序" json:"chunk_index"` // 在原文章中的顺序，从 0 开始
 	Heading        *string `gorm:"column:heading;type:varchar(300);comment:切片所在章节的标题（取自 Markdown 标题）；无章节归属时为空" json:"heading"`                                                                                                                                                                           // 切片所在章节标题；没有章节时为空
+	SectionPath    *string `gorm:"column:section_path;type:varchar(300);comment:切片所属节的完整标题路径（从顶层标题用 / 连接，如 第三章/3.1 细节）；前言切片为空；老数据为 NULL，重新切分后才有" json:"section_path"`                                                                                                                                    // 切片所属节的路径身份；老数据为空
 	Content        string  `gorm:"column:content;type:text;not null;comment:参与向量化与检索的切片正文，是检索命中的最小单位" json:"content"`                                                                                                                                                                                    // 实际参与向量化和检索的切片文本
 	CharacterCount int32   `gorm:"column:character_count;not null;check:knowledge_chunks_character_count_check,character_count > 0;comment:切片字符数（按 rune 计），用于控制上下文长度、监测切分质量" json:"character_count"`                                                                                                     // 切片的字符数，用于切片质量和上下文长度控制
 

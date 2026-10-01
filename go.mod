@@ -14,11 +14,15 @@ require (
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/spf13/viper v1.21.0
 	github.com/wk8/go-ordered-map/v2 v2.1.8
+	github.com/yuin/goldmark v1.8.6
+	github.com/yuin/goldmark-meta v1.1.0
 	go.uber.org/zap v1.28.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.2
 )
+
+require gopkg.in/yaml.v2 v2.3.0 // indirect
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect

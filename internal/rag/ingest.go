@@ -1195,6 +1195,10 @@ func buildStoredChunks(documentID uint64, chunks []Chunk) []entity.KnowledgeChun
 			heading := chunk.Heading
 			stored[index].Heading = &heading
 		}
+		if chunk.SectionPath != "" {
+			sectionPath := chunk.SectionPath
+			stored[index].SectionPath = &sectionPath
+		}
 	}
 	return stored
 }
@@ -1208,7 +1212,11 @@ func chunksFromEntities(stored []entity.KnowledgeChunk) []Chunk {
 		if row.Heading != nil {
 			heading = *row.Heading
 		}
-		chunks[index] = Chunk{Index: int(row.ChunkIndex), Heading: heading, Content: row.Content}
+		sectionPath := ""
+		if row.SectionPath != nil {
+			sectionPath = *row.SectionPath
+		}
+		chunks[index] = Chunk{Index: int(row.ChunkIndex), Heading: heading, SectionPath: sectionPath, Content: row.Content}
 	}
 	return chunks
 }
@@ -1274,8 +1282,13 @@ func truncateTitle(title string) string {
 	return string(runes[:maxTitleRunes])
 }
 
-// preferHeadingTitle 在调用方没指定标题时，用正文里的首个一级标题代替文件名。
+// preferHeadingTitle 在调用方没指定标题时，用正文里的标题代替文件名：
+// front matter 的 title 优先（它是作者显式写下的文档名），其次正文里的首个一级标题。
+// 两者都取不到才退回 fallback（文件名 / 首行）。
 func preferHeadingTitle(fallback, markdown string) string {
+	if title := FrontMatterTitle(markdown); title != "" {
+		return truncateTitle(title)
+	}
 	heading := firstHeading(markdown)
 	if heading == "" {
 		return truncateTitle(fallback)
@@ -1283,12 +1296,14 @@ func preferHeadingTitle(fallback, markdown string) string {
 	return truncateTitle(heading)
 }
 
-// firstHeading 取正文的第一个一级标题。
-//
-// 只看第一行：一级标题本来就该出现在文档开头，往下找只会把正文里引用到的
+// firstHeading 取正文的第一个一级标题。front matter 整块跳过（那是元数据不是正文）；
+// 开头孤立的一条 --- 也先删掉（它会把整篇吞成纯文本块，见 sections.go 的说明）；
+// 只看第一行有效内容：一级标题本来就该出现在文档开头，往下找只会把正文里引用到的
 // 别处标题当成这篇文档的标题。
 func firstHeading(markdown string) string {
-	for _, line := range strings.Split(markdown, "\n") {
+	markdown = dropUnclosedFrontMatterDelimiter(markdown)
+	lines := strings.Split(markdown, "\n")
+	for _, line := range lines[frontMatterRange(lines):] {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue

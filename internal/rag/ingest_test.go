@@ -682,11 +682,16 @@ func TestIngestFileStoresChunksAndVectors(t *testing.T) {
 				index, chunk.CharacterCount, got)
 		}
 		// 标题要一路带到入库结构里：正文全部落在标题之下，丢了这个字段，
-		// 检索命中后就再也说不出"这段来自哪一节"。
+		// 检索命中后就再也说不出"这段来自哪一节"。节路径同理（供按节去重与展示）。
 		if chunk.Heading == nil {
 			t.Errorf("第 %d 片缺少章节标题", index)
 		} else if index == 0 && *chunk.Heading != "数据库设计" {
 			t.Errorf("第一片的章节标题 = %q，期望 %q", *chunk.Heading, "数据库设计")
+		}
+		if chunk.SectionPath == nil {
+			t.Errorf("第 %d 片缺少节路径", index)
+		} else if index == 0 && *chunk.SectionPath != "数据库设计" {
+			t.Errorf("第一片的节路径 = %q，期望 %q", *chunk.SectionPath, "数据库设计")
 		}
 
 		vectorRow := replacement.Embeddings[index]
