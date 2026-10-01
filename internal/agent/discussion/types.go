@@ -51,10 +51,15 @@ type Participant struct {
 
 // Request 是一次编排的输入。
 type Request struct {
-	ConversationID   uint64        // 讨论发生在哪个对话里
-	TriggerMessageID uint64        // 哪条用户消息触发了这次讨论
-	Participants     []Participant // 圆桌上有谁，顺序即默认发言顺序
-	MaxTurns         int           // 最多几轮，0 表示用默认值
+	guidance             string
+	safetyRefusal        bool
+	ConversationID       uint64        // 讨论发生在哪个对话里
+	TriggerMessageID     uint64        // 哪条用户消息触发了这次讨论
+	Participants         []Participant // 圆桌上有谁，顺序即默认发言顺序
+	MaxTurns             int           // 最多几轮，0 表示用默认值
+	ClassroomTitle       string
+	ClassroomRequirement string
+	LessonMaterial       string
 }
 
 // Result 是一次编排的结果，供调用方展示与日志使用。

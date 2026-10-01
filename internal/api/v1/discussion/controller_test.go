@@ -26,6 +26,7 @@ import (
 type fakeDiscussionService struct {
 	gotConversationID uint64
 	gotContent        string
+	gotSceneID        uint64
 	called            bool
 
 	result *responsedto.DiscussionStart
@@ -33,9 +34,14 @@ type fakeDiscussionService struct {
 }
 
 func (f *fakeDiscussionService) Start(ctx context.Context, conversationID uint64, content string) (*responsedto.DiscussionStart, error) {
+	return f.StartAtScene(ctx, conversationID, content, 0)
+}
+
+func (f *fakeDiscussionService) StartAtScene(ctx context.Context, conversationID uint64, content string, sceneID uint64) (*responsedto.DiscussionStart, error) {
 	f.called = true
 	f.gotConversationID = conversationID
 	f.gotContent = content
+	f.gotSceneID = sceneID
 	return f.result, f.err
 }
 
@@ -106,7 +112,7 @@ func TestStartPassesContentAndReturnsIDs(t *testing.T) {
 	}
 	engine := newTestEngine(svc)
 
-	_, envelope := doStart(t, engine, "/api/v1/conversations/7/discussions", `{"content":"为什么操作前要先确认枪口安全？"}`)
+	_, envelope := doStart(t, engine, "/api/v1/conversations/7/discussions", `{"content":"为什么操作前要先确认枪口安全？","scene_id":42}`)
 
 	if code := envelope["code"]; code != float64(apperrors.CodeSuccess) {
 		t.Fatalf("响应码 = %v，期望 %d", code, apperrors.CodeSuccess)
@@ -119,6 +125,9 @@ func TestStartPassesContentAndReturnsIDs(t *testing.T) {
 	}
 	if svc.gotContent != "为什么操作前要先确认枪口安全？" {
 		t.Errorf("交给业务层的正文 = %q，与请求里的不一致", svc.gotContent)
+	}
+	if svc.gotSceneID != 42 {
+		t.Errorf("交给业务层的课件页 ID = %d，期望 42", svc.gotSceneID)
 	}
 
 	data, ok := envelope["data"].(map[string]any)

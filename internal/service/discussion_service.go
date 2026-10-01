@@ -54,6 +54,8 @@ type DiscussionModelFactory interface {
 type DiscussionDeps struct {
 	Conversations repository.ConversationRepository
 	Classrooms    repository.ClassroomRepository
+	Scenes        repository.SceneRepository
+	Segments      repository.SceneSegmentRepository
 	Agents        repository.ClassroomAgentRepository
 	Roles         repository.RoleRepository
 	Messages      repository.MessageRepository
@@ -80,6 +82,8 @@ type DiscussionDeps struct {
 type discussionService struct {
 	conversations repository.ConversationRepository
 	classrooms    repository.ClassroomRepository
+	scenes        repository.SceneRepository
+	segments      repository.SceneSegmentRepository
 	agents        repository.ClassroomAgentRepository
 	roles         repository.RoleRepository
 	messages      repository.MessageRepository
@@ -111,6 +115,10 @@ func NewDiscussionService(deps DiscussionDeps) DiscussionService {
 		panic("讨论入口缺少对话仓储")
 	case deps.Classrooms == nil:
 		panic("讨论入口缺少课程仓储")
+	case deps.Scenes == nil:
+		panic("讨论入口缺少课件页仓储")
+	case deps.Segments == nil:
+		panic("讨论入口缺少讲解段落仓储")
 	case deps.Agents == nil:
 		panic("讨论入口缺少课堂角色仓储")
 	case deps.Roles == nil:
@@ -139,6 +147,8 @@ func NewDiscussionService(deps DiscussionDeps) DiscussionService {
 	return &discussionService{
 		conversations: deps.Conversations,
 		classrooms:    deps.Classrooms,
+		scenes:        deps.Scenes,
+		segments:      deps.Segments,
 		agents:        deps.Agents,
 		roles:         deps.Roles,
 		messages:      deps.Messages,
@@ -161,6 +171,10 @@ func NewDiscussionService(deps DiscussionDeps) DiscussionService {
 // 用户得到的是一句明确的话，库里也不会留下一条"发了消息却没人理"的记录
 // —— 更不会留下一个已经建好、却注定跑不起来的运行。
 func (s *discussionService) Start(ctx context.Context, conversationID uint64, content string) (*responsedto.DiscussionStart, error) {
+	return s.StartAtScene(ctx, conversationID, content, 0)
+}
+
+func (s *discussionService) StartAtScene(ctx context.Context, conversationID uint64, content string, sceneID uint64) (*responsedto.DiscussionStart, error) {
 	text := strings.TrimSpace(content)
 	if text == "" {
 		return nil, apperrors.New(apperrors.CodeMissingParam, "消息内容不能为空")
@@ -226,6 +240,27 @@ func (s *discussionService) Start(ctx context.Context, conversationID uint64, co
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "装配本次讨论的模型失败", err)
 	}
 
+	classroom, classroomErr := s.classrooms.FindByID(ctx, conversation.ClassroomID)
+	if classroomErr != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂主题失败", classroomErr)
+	}
+	scenes, err := s.scenes.ListByClassroom(ctx, conversation.ClassroomID)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂课件失败", err)
+	}
+	selected, err := selectLessonScene(scenes, sceneID, text)
+	if err != nil {
+		return nil, apperrors.New(apperrors.CodeInvalidParam, err.Error())
+	}
+	var narration []entity.SceneSegment
+	if selected != nil && selected.Status == entity.SceneStatusReady {
+		narration, err = s.segments.ListByScene(ctx, selected.ID)
+		if err != nil {
+			return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课件讲解失败", err)
+		}
+	}
+	lessonMaterial := formatLessonMaterial(scenes, selected, narration)
+
 	message, err := s.appendUserMessage(ctx, conversationID, text)
 	if err != nil {
 		return nil, err
@@ -234,7 +269,7 @@ func (s *discussionService) Start(ctx context.Context, conversationID uint64, co
 	// 交出去：讨论在后台跑，这个请求立刻返回。
 	// 用独立的 context（不接请求的 ctx）——请求一返回，它的 ctx 就被取消了，
 	// 而讨论才刚开始。
-	go s.run(orchestrator, conversationID, message.ID, participants)
+	go s.run(orchestrator, conversationID, message.ID, participants, classroom.Title, classroom.Requirement, lessonMaterial)
 
 	handedOver = true
 	s.logger.Info("讨论已受理",
@@ -259,7 +294,7 @@ func (s *discussionService) Start(ctx context.Context, conversationID uint64, co
 // 这是唯一一处"结果没人接收"的调用：它返回时 HTTP 请求早已结束，所以成败只能靠
 // 日志和事件表说话 —— 讨论失败时编排器会自己往事件表写一条 run.failed，
 // 前端据此把等待结束掉，不会一直转圈。
-func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversationID uint64, triggerMessageID uint64, participants []discussion.Participant) {
+func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversationID uint64, triggerMessageID uint64, participants []discussion.Participant, classroomTitle string, classroomRequirement string, lessonMaterial string) {
 	// 无论怎么结束都要放锁，否则这条对话只能讨论一次。
 	defer s.release(conversationID)
 
@@ -278,9 +313,12 @@ func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversat
 	defer cancel()
 
 	result, err := orchestrator.Run(ctx, discussion.Request{
-		ConversationID:   conversationID,
-		TriggerMessageID: triggerMessageID,
-		Participants:     participants,
+		ConversationID:       conversationID,
+		TriggerMessageID:     triggerMessageID,
+		Participants:         participants,
+		ClassroomTitle:       classroomTitle,
+		ClassroomRequirement: classroomRequirement,
+		LessonMaterial:       lessonMaterial,
 		// MaxTurns 留 0：轮数由后端定（默认值在编排器里），前端不参与。
 	})
 	if err != nil {

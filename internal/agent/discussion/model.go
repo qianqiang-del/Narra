@@ -57,11 +57,15 @@ type Summarizer interface {
 // 只带"角色现在需要知道的"：他是谁、大家在聊什么、之前谁说过什么。
 // 不带 trace_id、库句柄这类东西 —— 那些是编排层的事，模型不需要也不该看到。
 type GenerationRequest struct {
-	Participant  Participant      // 这次轮到谁
-	Participants []Participant    // 本场圆桌的完整成员，供模型决定是否换人
-	Topic        string           // 讨论主题（触发消息的正文）
-	TurnNo       int16            // 这是第几轮发言
-	History      []HistoryMessage // 此前的发言，按时间升序
+	Guidance             string
+	ClassroomTitle       string
+	ClassroomRequirement string
+	LessonMaterial       string
+	Participant          Participant      // 这次轮到谁
+	Participants         []Participant    // 本场圆桌的完整成员，供模型决定是否换人
+	Topic                string           // 讨论主题（触发消息的正文）
+	TurnNo               int16            // 这是第几轮发言
+	History              []HistoryMessage // 此前的发言，按时间升序
 }
 
 // HistoryMessage 是喂给历史上下文的一条发言。

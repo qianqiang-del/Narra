@@ -115,6 +115,8 @@ type discussionFixture struct {
 
 	conversations repository.ConversationRepository
 	classrooms    repository.ClassroomRepository
+	scenes        repository.SceneRepository
+	segments      repository.SceneSegmentRepository
 	agents        repository.ClassroomAgentRepository
 	roles         repository.RoleRepository
 	messages      repository.MessageRepository
@@ -231,6 +233,8 @@ func newDiscussionFixture(t *testing.T) *discussionFixture {
 		linkIDs:       linkIDs,
 		conversations: repository.NewConversationRepository(db),
 		classrooms:    repository.NewClassroomRepository(db),
+		scenes:        repository.NewSceneRepository(db),
+		segments:      repository.NewSceneSegmentRepository(db),
 		agents:        repository.NewClassroomAgentRepository(db),
 		roles:         repository.NewRoleRepository(db),
 		messages:      repository.NewMessageRepository(db),
@@ -338,6 +342,8 @@ func (f *discussionFixture) newServiceWithFactory(t *testing.T, model discussion
 	return NewDiscussionService(DiscussionDeps{
 		Conversations: f.conversations,
 		Classrooms:    f.classrooms,
+		Scenes:        f.scenes,
+		Segments:      f.segments,
 		Agents:        f.agents,
 		Roles:         f.roles,
 		Messages:      f.messages,
@@ -400,6 +406,19 @@ type slowModel struct {
 type markedModel struct {
 	discussion.FakeModel
 	marker string
+}
+
+type lessonRecordingModel struct {
+	discussion.FakeModel
+	materials chan string
+}
+
+func (m lessonRecordingModel) Generate(ctx context.Context, request discussion.GenerationRequest) (discussion.GenerationResponse, error) {
+	select {
+	case m.materials <- request.LessonMaterial:
+	default:
+	}
+	return m.FakeModel.Generate(ctx, request)
 }
 
 // Generate 在假回复前面盖上记号。
@@ -851,5 +870,66 @@ func TestDiscussionRunsWithBuiltModel(t *testing.T) {
 		if !strings.Contains(message.Content, "工厂出品") {
 			t.Errorf("第 %d 条角色发言不是工厂建的模型说的：%q", index+1, message.Content)
 		}
+	}
+}
+
+func TestDiscussionStartPassesGeneratedSceneToModel(t *testing.T) {
+	f := newDiscussionFixture(t)
+	defer f.cleanup()
+
+	scene := &entity.Scene{
+		ClassroomID: f.classroom.ID,
+		SortOrder:   0,
+		Type:        entity.SceneTypeSlide,
+		Title:       "认识 Agent",
+		Status:      entity.SceneStatusReady,
+		Content:     json.RawMessage(`{"blocks":[{"key":"agent-definition","type":"paragraph","content":"Agent 会观察环境反馈并调整行动。"}]}`),
+	}
+	if err := f.db.Create(scene).Error; err != nil {
+		t.Fatalf("写入测试课件失败: %v", err)
+	}
+	materials := make(chan string, 1)
+	model := lessonRecordingModel{materials: materials}
+	svc := f.newService(t, model)
+	if _, err := svc.StartAtScene(context.Background(), f.conversation.ID, "第一页讲什么？", scene.ID); err != nil {
+		t.Fatalf("发起课件讨论失败: %v", err)
+	}
+	select {
+	case material := <-materials:
+		if !strings.Contains(material, "Agent 会观察环境反馈并调整行动") {
+			t.Fatalf("模型没有收到真实课件正文: %s", material)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("讨论模型没有收到课件请求")
+	}
+	waitUntil(t, 20*time.Second, func() bool {
+		var count int64
+		f.db.Model(&entity.OrchestrationRun{}).Where("conversation_id = ? AND status <> ?", f.conversation.ID, entity.RunStatusRunning).Count(&count)
+		return count > 0
+	}, "等待讨论结束后清理测试课堂")
+}
+
+func TestDiscussionStartRejectsSceneOutsideClassroom(t *testing.T) {
+	f := newDiscussionFixture(t)
+	defer f.cleanup()
+	other := newDiscussionFixture(t)
+	defer other.cleanup()
+	foreignScene := &entity.Scene{
+		ClassroomID: other.classroom.ID,
+		SortOrder:   0,
+		Type:        entity.SceneTypeSlide,
+		Title:       "另一堂课的第一页",
+		Status:      entity.SceneStatusReady,
+		Content:     json.RawMessage(`{"blocks":[]}`),
+	}
+	if err := other.db.Create(foreignScene).Error; err != nil {
+		t.Fatalf("写入另一堂课的课件失败: %v", err)
+	}
+	svc := f.newService(t, discussion.FakeModel{})
+	if _, err := svc.StartAtScene(context.Background(), f.conversation.ID, "当前页讲什么？", foreignScene.ID); err == nil {
+		t.Fatal("其他课堂的课件页 ID 应被拒绝")
+	}
+	if count := f.countMessages(t); count != 0 {
+		t.Fatalf("无效课件页不应落用户消息，实际有 %d 条", count)
 	}
 }

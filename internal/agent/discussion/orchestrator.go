@@ -251,6 +251,38 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (result Result,
 		})
 
 	log.Info("讨论开始", zap.Int16("max_turns", run.MaxTurns), zap.Int("participants", len(request.Participants)))
+	director := o.deps.Director
+	var planned *plannedDirector
+	if planner, ok := o.deps.Model.(ResponsePlanner); ok {
+		history, historyErr := o.history(ctx, conversation.ClassroomID, request.ConversationID)
+		if historyErr != nil {
+			return o.abandon(run, historyErr, nil, log, rootSpanID, rootSpanStartedAt)
+		}
+		planRequest := GenerationRequest{Topic: trigger.Content, Participants: request.Participants, History: history, ClassroomTitle: request.ClassroomTitle, ClassroomRequirement: request.ClassroomRequirement, LessonMaterial: request.LessonMaterial}
+		plan, planErr := planner.Plan(ctx, planRequest)
+		if ctx.Err() != nil {
+			return o.abandon(run, ctx.Err(), nil, log, rootSpanID, rootSpanStartedAt)
+		}
+		if planErr == nil {
+			plan, planErr = normalizeResponsePlan(plan, request.Participants)
+		}
+		if planErr != nil {
+			log.Warn("讨论安排失败，改为单人直接回答", zap.Error(planErr))
+			plan = fallbackResponsePlan(request.Participants)
+		}
+		if safetyPlan, unsafe := safetyOverride(trigger.Content); unsafe {
+			plan = safetyPlan
+			plan.Speakers = []string{fallbackResponsePlan(request.Participants).Speakers[0]}
+			request.safetyRefusal = true
+		}
+		limit := len(plan.Speakers)
+		if plan.Mode == "discussion" && limit > 1 {
+			limit++
+		}
+		planned = &plannedDirector{plan: plan, maxTurns: min(maxTurns, limit)}
+		director = planned
+		log.Info("已安排回答", zap.String("mode", plan.Mode), zap.String("length", plan.Length), zap.Strings("speakers", plan.Speakers))
+	}
 
 	spoken := make([]int, len(request.Participants))
 	outcomes := make([]TurnOutcome, 0, maxTurns)
@@ -260,7 +292,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (result Result,
 	stopReason := ""
 
 	for turnNo := int16(1); turnNo <= run.MaxTurns; turnNo++ {
-		decision := o.deps.Director.Decide(DiscussionState{
+		decision := director.Decide(DiscussionState{
 			Participants:        request.Participants,
 			Spoken:              spoken,
 			LastSpeaker:         lastSpeaker,
@@ -297,6 +329,9 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (result Result,
 				Reason:    decision.Reason,
 			})
 
+		if planned != nil {
+			request.guidance = planned.guidance(turnNo, decision.Closing)
+		}
 		outcome, err := o.speak(ctx, request, run, conversation.ClassroomID, participant, turnNo, trigger.Content, rootSpanID, log)
 		if err != nil {
 			return o.abandon(run, err, outcomes, log, rootSpanID, rootSpanStartedAt)
@@ -318,6 +353,11 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (result Result,
 
 	if stopReason == "" {
 		stopReason = entity.RunStopMaxTurns
+		if lastAction == entity.AgentTurnActionAskUser {
+			stopReason = entity.RunStopWaiting
+		} else if lastAction == entity.AgentTurnActionEnd {
+			stopReason = entity.RunStopCompleted
+		}
 	}
 
 	// 终态由停止原因决定：只有"要问用户"是挂起，其余都是正常收尾。
@@ -459,17 +499,26 @@ func (o *Orchestrator) speak(
 		o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusError, "", err)
 		return TurnOutcome{}, err
 	}
-	if streamingModel, ok := o.deps.Model.(StreamingModel); ok {
+	if streamingModel, ok := o.deps.Model.(StreamingModel); ok && !request.safetyRefusal {
 		return o.speakStreaming(o.observationContext(ctx, run, turn), request, run, turn, classroomID, participant, turnNo, topic, rootSpanID, log, agentSpanID, agentSpanStartedAt, history, streamingModel)
 	}
 
-	response, err := o.callModel(o.observationContext(ctx, run, turn), run, turn, agentSpanID, GenerationRequest{
-		Participant:  participant,
-		Participants: request.Participants,
-		Topic:        topic,
-		TurnNo:       turnNo,
-		History:      history,
-	})
+	var response GenerationResponse
+	if request.safetyRefusal {
+		response = GenerationResponse{Content: "我不能提供制造武器、爆炸物或伤害他人的具体步骤、材料和参数。可以改为了解相关法规、历史背景、风险防范或安全的基础原理。", NextAction: entity.AgentTurnActionEnd}
+	} else {
+		response, err = o.callModel(o.observationContext(ctx, run, turn), run, turn, agentSpanID, GenerationRequest{
+			Participant:          participant,
+			Participants:         request.Participants,
+			Topic:                topic,
+			TurnNo:               turnNo,
+			History:              history,
+			Guidance:             request.guidance,
+			ClassroomTitle:       request.ClassroomTitle,
+			ClassroomRequirement: request.ClassroomRequirement,
+			LessonMaterial:       request.LessonMaterial,
+		})
+	}
 	if err != nil {
 		o.abandonTurn(turn, err)
 		o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusError, "", err)
@@ -575,7 +624,7 @@ func (o *Orchestrator) speakStreaming(
 	history []HistoryMessage,
 	model StreamingModel,
 ) (TurnOutcome, error) {
-	modelRequest := GenerationRequest{Participant: participant, Participants: request.Participants, Topic: topic, TurnNo: turnNo, History: history}
+	modelRequest := GenerationRequest{Participant: participant, Participants: request.Participants, Topic: topic, TurnNo: turnNo, History: history, Guidance: request.guidance, ClassroomTitle: request.ClassroomTitle, ClassroomRequirement: request.ClassroomRequirement, LessonMaterial: request.LessonMaterial}
 	message := &entity.ConversationMessage{
 		ConversationID:   request.ConversationID,
 		SenderType:       entity.MessageSenderAgent,

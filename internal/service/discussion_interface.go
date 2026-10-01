@@ -24,4 +24,5 @@ type DiscussionService interface {
 	// 用户会对着一个转圈的请求等上几十秒，而且中途看不到任何进展。
 	// 过程与结果都落在事件表里，由 SSE 那条流带给前端。
 	Start(ctx context.Context, conversationID uint64, content string) (*responsedto.DiscussionStart, error)
+	StartAtScene(ctx context.Context, conversationID uint64, content string, sceneID uint64) (*responsedto.DiscussionStart, error)
 }

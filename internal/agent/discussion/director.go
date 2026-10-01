@@ -29,6 +29,7 @@ type DiscussionState struct {
 
 // Decision 是"下一步怎么走"的结论。
 type Decision struct {
+	Closing      bool
 	SpeakerIndex int    // 下一位发言人的下标；Stop 为 true 时无意义
 	Stop         bool   // 是否就此停下
 	StopReason   string // 停止原因，取值见 entity.RunStop*
