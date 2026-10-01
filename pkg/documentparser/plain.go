@@ -21,19 +21,39 @@ const plainParserName = "plain"
 // 设上限是为了让"传错了文件"变成一句明确的报错，而不是把内存吃满。
 const plainTextMaxBytes = 32 << 20
 
-// PlainTextParser 直接读取已经是纯文本的文档（.md / .markdown / .txt / .text）。
+// PlainTextParser 直接读取已经是纯文本的文档（.md / .markdown / .txt / .text），
+// 以及本质就是文本的源码与数据文件（.go / .py / .json 等，见 codeTextExtensions）。
 //
 // 它存在的理由是 PythonParser 的一条硬边界：python/parse_document.py 只处理
 // docx / pptx / xlsx / pdf 和图片，其它后缀一律抛 PARSER_UNSUPPORTED_TYPE。
-// 而知识库导入最常见的格式恰恰是 Markdown 与纯文本 —— 为了这两种格式去起一个
+// 而知识库导入最常见的格式恰恰是 Markdown、纯文本与代码 —— 为了这些格式去起一个
 // Python 子进程（首次运行还要下载解释器和 docling，分钟级）既慢又没必要：
 // 它们的正文本来就是解析的目标产物，读出来即可，没有"解析"这一步可做。
+// 代码文件（.go 等）同样直读：切分入口会再判定一次内容类型，按代码结构切
+// （见 internal/rag/classify.go）。
 type PlainTextParser struct{}
 
 var _ Parser = (*PlainTextParser)(nil)
 
 // plainTextExtensions 是本实现负责的后缀（全小写，含点）。
 var plainTextExtensions = []string{".md", ".markdown", ".txt", ".text"}
+
+// codeTextExtensions 是"本质上是文本"的源码与数据文件后缀。
+//
+// 这份清单与 internal/rag/classify.go 的 codeLanguageByExtension 对齐：解析路由
+// 负责把它们放进来，切分判定负责按语言切。加新语言时两处都要看一眼（这里是
+// "能不能直读"，那里是"按什么语言切"）。
+var codeTextExtensions = []string{
+	".go", ".py", ".pyw",
+	".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx",
+	".java", ".kt", ".kts", ".cs",
+	".c", ".h", ".cc", ".cpp", ".cxx", ".hpp",
+	".rs", ".rb", ".php", ".swift", ".scala", ".lua", ".pl", ".pm", ".r", ".dart",
+	".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd",
+	".sql", ".json", ".jsonl", ".ndjson",
+	".yaml", ".yml", ".toml", ".xml", ".html", ".htm",
+	".css", ".scss", ".less", ".vue", ".svelte",
+}
 
 // NewPlainTextParser 创建纯文本解析器。它无状态，可以长期复用。
 func NewPlainTextParser() Parser { return &PlainTextParser{} }
@@ -56,14 +76,26 @@ func IsPlainTextPath(path string) bool {
 	return false
 }
 
-// ParserFor 按文件后缀挑一个能读它的解析器：纯文本格式走 PlainTextParser，
-// 其余交给 python（通常是 PythonParser，也可能为 nil —— 表示文档解析能力没启用）。
+// isCodeTextPath 判断路径是不是可以直接读取的源码/数据文件。
+func isCodeTextPath(path string) bool {
+	extension := strings.ToLower(filepath.Ext(path))
+	for _, candidate := range codeTextExtensions {
+		if extension == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// ParserFor 按文件后缀挑一个能读它的解析器：Markdown、纯文本与源码/数据文件走
+// PlainTextParser，其余交给 python（通常是 PythonParser，也可能为 nil —— 表示
+// 文档解析能力没启用）。
 //
 // 把"哪些格式不用真解析"这个判断放在解析器包而不是调用方，是因为它属于解析器的知识：
 // 调用方只该说"给我一个能读这个文件的解析器"，不该自己维护一份格式清单，
 // 否则将来支持新格式时，漏改的一定是调用方那一份。
 func ParserFor(path string, python Parser) (Parser, error) {
-	if IsPlainTextPath(path) {
+	if IsPlainTextPath(path) || isCodeTextPath(path) {
 		return &PlainTextParser{}, nil
 	}
 	if python == nil {

@@ -2,8 +2,11 @@
 //
 // 按职责分文件，各管一段：
 //   - ingest.go   收录门面：解析 → 切分 → 向量化 → 一个事务落三张表
+//   - classify.go 切分入口的文档类型判定：扩展名、解析器验证、语言特征
+//   - router.go   切分路由：判定结论 → 文档切分或代码切分
 //   - sections.go Markdown 结构识别：goldmark 解析出节树（取舍见该文件顶部）
 //   - chunker.go  装填：预算、句子边界、重叠、节路径（本文件）
+//   - code.go     代码切分：Go AST、JSON 结构、其他语言的结构兜底
 //   - embedder.go 向量化的最小依赖面与批量编排
 //   - errors.go   收录链路的哨兵错误
 //
@@ -16,9 +19,10 @@
 // 知识库的文档列表与详情归 knowledge_service.go。那里是 HTTP 面，只碰 DTO；
 // 本包只碰 entity —— 两边各说各的话，谁也不迁就谁。
 //
-// ⚠️ 切分链路（本文件 + sections.go）只做纯内存的事：不读文件、不认识数据库、
-// 不发网络请求。结构识别交给 goldmark（纯内存解析库），装填策略仍是手写的纯函数 ——
-// 切片质量的问题几乎都能用一段 Markdown 复现，放进这条链路里测，
+// ⚠️ 切分链路（本文件 + sections.go + classify.go + code.go）只做纯内存的事：
+// 不读文件、不认识数据库、不发网络请求。结构识别交给 goldmark（文档）或
+// go/parser、encoding/json（代码），装填策略仍是手写的纯函数 ——
+// 切片质量的问题几乎都能用一段 Markdown 或一段源码复现，放进这条链路里测，
 // 比起连上数据库和向量服务再去调要快得多。
 //
 // 切分的三个约束来自数据库本身（见 entity.KnowledgeChunk 的字段 tag），它们不是
@@ -47,6 +51,14 @@ type Chunk struct {
 	Heading     string // 所在节的标题；前言切片为空
 	SectionPath string // 从顶层到本级的标题路径（用 / 连接）；前言切片为空
 	Content     string // 实际参与向量化和检索的文本
+
+	// ContentType / Language / Symbol / SymbolType 是切分入口判定的产物（见 classify.go）：
+	// 文档切片只填 ContentType（document / plain_text），代码切片还会带上语言与符号。
+	// 它们落库到 knowledge_chunks 的同名列，老数据为空。
+	ContentType string // 内容类型：document / plain_text / code
+	Language    string // 代码语言；非代码为空
+	Symbol      string // 代码符号（函数/方法/类型/JSON 路径等）；提不出来为空
+	SymbolType  string // 符号类型：function / method / struct / interface / json 等
 }
 
 // ChunkOptions 是切分参数。零值由 withDefaults 补成 DefaultXxx。
@@ -424,9 +436,14 @@ func blockPieces(blocks []block, options ChunkOptions) []piece {
 // piece 是切片内部的一个片段。sep 是把它接到前一片段后面时用的分隔符：
 // 同一段落被句子切开的片段用空串拼接（拼回去还是原来那段话），
 // 不同段落之间用空行。
+//
+// symbol / symbolType 是代码切片才用的：一个片段属于哪个函数/类型/JSON 路径。
+// 文档链路不填；装填时同一片里出现多个不同符号，chunkSymbol 会把它清空。
 type piece struct {
-	text string
-	sep  string
+	text       string
+	sep        string
+	symbol     string
+	symbolType string
 }
 
 // pendingChunk 是一个尚未定稿的切片。
@@ -538,6 +555,12 @@ func isSentenceEnd(symbol rune) bool {
 
 // hardSplit 在没有任何可用语义边界时按行、再按字符硬切。
 func hardSplit(text string, maxChars int) []string {
+	if maxChars < 1 {
+		// 防御 maxChars == 0 这类非法入参：下面的 rune 循环在 maxChars <= 0 时
+		// 每次切出空串且游标不前进，会无限追加直到内存耗尽。生产调用方都保证
+		// 预算为正（withDefaults 之后），这里只是不让一个笔误变成 OOM。
+		maxChars = 1
+	}
 	if utf8.RuneCountInString(text) <= maxChars {
 		return []string{text}
 	}

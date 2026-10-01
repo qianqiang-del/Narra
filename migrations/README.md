@@ -167,6 +167,27 @@ psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0008_rech
 脚本会直接报错中止（不会误删）；服务若还是旧代码，旧 worker 会用旧切法重建，等于
 白跑。重嵌入要花时间与上游额度、处理期间文档暂不可检索，建议低峰执行。
 
+**第十步（2026-10-01 启用文档类型判定之前收录过文档的老环境，一次性），重建旧切片并补类型元数据**：
+
+```bash
+psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0009_rechunk_pre_type_detection.sql
+```
+
+切分入口现在会先做**文档类型判定**（Go/JSON 用解析器验证，代码按结构切，文档不变，
+见 `docs/rag-database.md`「切分入口先判类型」），代码切片还带 `content_type` / `language` /
+`symbol` / `symbol_type` 四列。升级只对新收录生效，本脚本把"旧切法切出的 ready 文档"
+清掉切片、改回 `pending + chunk`，由 worker 用 `documents.content` 重新切分并向量化。
+判据 `content_type IS NULL` 幂等（新切法产出的每一片都带 `content_type`），
+新环境跑命中 0 篇；失败的行照常是"失败可重试"形态。
+
+⚠️ **0008 已被本脚本取代，不要再重跑。** 0008 的判据 `section_path IS NULL` 对
+"代码 / 无标题文本"永远成立（新切法同样不写 section_path），重复执行会反复把这些
+文档重新入队、白烧向量化额度。要从更老的版本升级，直接跑 0009 即可。
+
+⚠️ **顺序：先用新代码重启服务 → 再跑脚本。** 没重启时 `content_type` 列还不存在，
+脚本会直接报错中止（不会误删）；服务若还是旧代码，旧 worker 不会写 `content_type`，
+脚本会反复命中。重嵌入要花时间与上游额度、处理期间文档暂不可检索，建议低峰执行。
+
 ## 约束全部归实体 tag（2026-09-17 大迁移）
 
 历史上约束分两处：AutoMigrate 建表和单列 UNIQUE，SQL 文件补 CHECK / 外键 /

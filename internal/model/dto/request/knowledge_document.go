@@ -30,7 +30,7 @@ type KnowledgeIngestFile struct {
 // 请求返回时文档已经是 ready 或 failed，不存在 pending 中间态。
 type KnowledgeIngestText struct {
 	Title      string `json:"title"`                      // 文档标题；留空时取正文首个一级标题，再回落到首行
-	Content    string `json:"content" binding:"required"` // 待收录的正文，本身已经是 Markdown
+	Content    string `json:"content" binding:"required"` // 待收录的正文：Markdown 或代码文本，由收录链路判定类型
 	SourceType string `json:"source_type"`                // 来源类型；留空按 manual 处理
 	SourceURI  string `json:"source_uri"`                 // 来源标识，可为空
 }
