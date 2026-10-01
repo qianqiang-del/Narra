@@ -29,6 +29,10 @@ const (
 	// HeadingMetaKey 是切片所属章节标题的元数据键。无章节归属时**不写这个键**
 	// （而不是写空串）：调用方用"键在不在"判断有没有标题，不必再判一次空。
 	HeadingMetaKey = "heading"
+
+	// SectionPathMetaKey 是切片所属节的完整路径元数据键（用 / 连接，如 第三章/3.1），
+	// 与 knowledge_chunks.section_path 对齐。前言切片不写这个键，理由同 heading。
+	SectionPathMetaKey = "section_path"
 )
 
 // MarkdownChunker 把 Markdown 文档切成切片文档，实现 Eino 的 document.Transformer。
@@ -81,6 +85,9 @@ func chunkDocument(parent *schema.Document, chunk Chunk) *schema.Document {
 	if chunk.Heading != "" {
 		metadata[HeadingMetaKey] = chunk.Heading
 	}
+	if chunk.SectionPath != "" {
+		metadata[SectionPathMetaKey] = chunk.SectionPath
+	}
 	return &schema.Document{
 		ID:       chunkDocumentID(parent.ID, chunk.Index),
 		Content:  chunk.Content,
@@ -112,9 +119,10 @@ func DocumentsToChunks(documents []*schema.Document) ([]Chunk, error) {
 			return nil, err
 		}
 		chunks = append(chunks, Chunk{
-			Index:   index,
-			Heading: chunkHeadingFrom(item),
-			Content: item.Content,
+			Index:       index,
+			Heading:     chunkHeadingFrom(item),
+			SectionPath: chunkSectionPathFrom(item),
+			Content:     item.Content,
 		})
 	}
 	return chunks, nil
@@ -182,6 +190,14 @@ func normalizeChunkIndex(raw any) (int, bool) {
 func chunkHeadingFrom(item *schema.Document) string {
 	if heading, ok := item.MetaData[HeadingMetaKey].(string); ok {
 		return heading
+	}
+	return ""
+}
+
+// chunkSectionPathFrom 读节路径，口径与标题一致：没有或不是字符串按"没有"处理。
+func chunkSectionPathFrom(item *schema.Document) string {
+	if path, ok := item.MetaData[SectionPathMetaKey].(string); ok {
+		return path
 	}
 	return ""
 }

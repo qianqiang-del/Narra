@@ -47,7 +47,7 @@ func TestSplitNeverProducesEmptyContent(t *testing.T) {
 
 // chunk_index 在同一篇文章内唯一且从 0 连续，序号必须由切分器自己保证。
 func TestSplitNumbersChunksContiguously(t *testing.T) {
-	input := "# 一\n\n" + strings.Repeat("甲。", 400) + "\n\n# 二\n\n" + strings.Repeat("乙。", 400)
+	input := "# 一\n\n" + strings.Repeat("甲。", 600) + "\n\n# 二\n\n" + strings.Repeat("乙。", 600)
 
 	chunks := Split(input, ChunkOptions{})
 	if len(chunks) < 3 {
@@ -60,6 +60,8 @@ func TestSplitNumbersChunksContiguously(t *testing.T) {
 	}
 }
 
+// 小节内容不大时整节合成一片：标题归属到整棵子树上（结构优先的切法），
+// 标题之前的前言仍然独立成片、归属为空。
 func TestSplitCarriesHeadingToItsSection(t *testing.T) {
 	input := strings.Join([]string{
 		"开场白，没有标题。",
@@ -74,17 +76,21 @@ func TestSplitCarriesHeadingToItsSection(t *testing.T) {
 	}, "\n")
 
 	chunks := Split(input, ChunkOptions{})
-	if len(chunks) != 3 {
-		t.Fatalf("期望 3 片，实际 %d 片", len(chunks))
+	if len(chunks) != 2 {
+		t.Fatalf("期望 2 片（前言 + 整节），实际 %d 片", len(chunks))
 	}
-	if chunks[0].Heading != "" {
-		t.Errorf("标题之前的内容不该有章节归属，实际 %q", chunks[0].Heading)
+	if chunks[0].Heading != "" || chunks[0].SectionPath != "" {
+		t.Errorf("标题之前的内容不该有章节归属，实际 heading=%q path=%q",
+			chunks[0].Heading, chunks[0].SectionPath)
 	}
-	if chunks[1].Heading != "第一章 背景" {
-		t.Errorf("第 2 片的章节 = %q，期望 第一章 背景", chunks[1].Heading)
+	if chunks[1].Heading != "第一章 背景" || chunks[1].SectionPath != "第一章 背景" {
+		t.Errorf("整节合成的一片应归属一级标题，实际 heading=%q path=%q",
+			chunks[1].Heading, chunks[1].SectionPath)
 	}
-	if chunks[2].Heading != "1.1 细节" {
-		t.Errorf("第 3 片的章节 = %q，期望 1.1 细节", chunks[2].Heading)
+	for _, want := range []string{"第一章的正文。", "细节的正文。"} {
+		if !strings.Contains(chunks[1].Content, want) {
+			t.Errorf("整节内容丢了 %q: %q", want, chunks[1].Content)
+		}
 	}
 }
 
@@ -277,5 +283,157 @@ func TestSplitDoesNotInsertBlankLinesInsideParagraph(t *testing.T) {
 	}
 	if chunks[0].Content != paragraph {
 		t.Errorf("内容被改动了\n期望: %q\n实际: %q", paragraph, chunks[0].Content)
+	}
+}
+
+// 缩进四格以上的 # 是缩进代码块里的注释，不是标题（扫描器的老 bug：先 Trim 再用 # 判标题）。
+func TestSplitTreatsIndentedHeadingAsCode(t *testing.T) {
+	input := strings.Join([]string{
+		"# 配置",
+		"",
+		"示例：",
+		"",
+		"    # 启动命令",
+		"    python parse.py --input a.pdf",
+		"",
+		"说明文字继续。",
+	}, "\n")
+
+	chunks := Split(input, ChunkOptions{})
+	if len(chunks) != 1 {
+		t.Fatalf("示例不该切出新的节，实际 %d 片", len(chunks))
+	}
+	if chunks[0].Heading != "配置" || chunks[0].SectionPath != "配置" {
+		t.Errorf("缩进代码不该开新节，实际 heading=%q path=%q",
+			chunks[0].Heading, chunks[0].SectionPath)
+	}
+	for _, want := range []string{"# 启动命令", "python parse.py", "说明文字继续。"} {
+		if !strings.Contains(chunks[0].Content, want) {
+			t.Errorf("内容丢了 %q: %q", want, chunks[0].Content)
+		}
+	}
+}
+
+// 下划线式标题识别但不当作节边界：降级为普通段落，下划线行不保留。
+func TestSplitTreatsSetextHeadingAsText(t *testing.T) {
+	input := strings.Join([]string{
+		"文档标题",
+		"========",
+		"",
+		"正文段落。",
+		"",
+		"小节标题",
+		"--------",
+		"",
+		"小节的正文。",
+	}, "\n")
+
+	chunks := Split(input, ChunkOptions{})
+	if len(chunks) != 1 {
+		t.Fatalf("setext 不当节，应当整段 1 片，实际 %d 片", len(chunks))
+	}
+	if chunks[0].Heading != "" {
+		t.Errorf("setext 不该产生章节归属，实际 %q", chunks[0].Heading)
+	}
+	for _, want := range []string{"文档标题", "正文段落。", "小节标题", "小节的正文。"} {
+		if !strings.Contains(chunks[0].Content, want) {
+			t.Errorf("内容丢了 %q: %q", want, chunks[0].Content)
+		}
+	}
+	if strings.Contains(chunks[0].Content, "====") || strings.Contains(chunks[0].Content, "----") {
+		t.Errorf("下划线行是排版符号，不该留在正文里: %q", chunks[0].Content)
+	}
+}
+
+// 引用块里的 # 是引用内容里的文字，不是顶层标题，不该开新节。
+func TestSplitIgnoresHeadingInsideBlockquote(t *testing.T) {
+	input := "# 主标题\n\n> # 引用里的标题\n> 引用正文。\n\n正常正文。\n"
+
+	chunks := Split(input, ChunkOptions{})
+	if len(chunks) != 1 {
+		t.Fatalf("引用里的标题不该开新节，实际 %d 片", len(chunks))
+	}
+	if chunks[0].Heading != "主标题" {
+		t.Errorf("节归属应当是主标题，实际 %q", chunks[0].Heading)
+	}
+	for _, want := range []string{"引用里的标题", "正常正文。"} {
+		if !strings.Contains(chunks[0].Content, want) {
+			t.Errorf("内容丢了 %q: %q", want, chunks[0].Content)
+		}
+	}
+}
+
+// 节超预算时按子标题递归，路径带上完整层级；叶子才回到句子边界。
+func TestSplitRecursesIntoSubsectionsWithPaths(t *testing.T) {
+	input := strings.Join([]string{
+		"# 第一章",
+		"",
+		strings.Repeat("章首甲。", 75), // 300 字
+		"",
+		"## 1.1 小节甲",
+		"",
+		strings.Repeat("乙。", 450), // 900 字，超预算
+		"",
+		"## 1.2 小节乙",
+		"",
+		strings.Repeat("丙。", 75), // 150 字
+	}, "\n")
+
+	chunks := Split(input, ChunkOptions{})
+	if len(chunks) < 4 {
+		t.Fatalf("超预算的节应当递归切出多片，实际 %d 片", len(chunks))
+	}
+
+	// 第 0 片是第一章自己的引文；1.1 超预算被切成两片；1.2 自成一片。
+	if chunks[0].Heading != "第一章" || chunks[0].SectionPath != "第一章" {
+		t.Errorf("第 0 片归属不对: heading=%q path=%q", chunks[0].Heading, chunks[0].SectionPath)
+	}
+	if !strings.Contains(chunks[0].Content, "章首甲。") {
+		t.Errorf("第 0 片内容不对: %q", chunks[0].Content)
+	}
+	if chunks[1].SectionPath != "第一章/1.1 小节甲" || chunks[2].SectionPath != "第一章/1.1 小节甲" {
+		t.Errorf("1.1 的两片路径不对: %q / %q", chunks[1].SectionPath, chunks[2].SectionPath)
+	}
+	last := chunks[len(chunks)-1]
+	if last.Heading != "1.2 小节乙" || last.SectionPath != "第一章/1.2 小节乙" {
+		t.Errorf("末片归属不对: heading=%q path=%q", last.Heading, last.SectionPath)
+	}
+	// 小节之间可以补重叠（同一父节内的相邻组），但重叠前缀必须从句首开始。
+	for index := 1; index < len(chunks); index++ {
+		if strings.HasPrefix(chunks[index].Content, "\n") {
+			t.Errorf("第 %d 片以换行开头: %q", index, chunks[index].Content)
+		}
+	}
+}
+
+// 幻灯片式文档（每页一个小标题、内容一两行）应当把小节并成一片，
+// 而不是每个小标题各出一个碎片。
+func TestSplitMergesTinySiblingSections(t *testing.T) {
+	input := strings.Join([]string{
+		"# 第一页",
+		"",
+		"要点一。",
+		"",
+		"# 第二页",
+		"",
+		"要点二。",
+		"",
+		"# 第三页",
+		"",
+		"要点三。",
+	}, "\n")
+
+	chunks := Split(input, ChunkOptions{})
+	if len(chunks) != 1 {
+		t.Fatalf("三页都过小，应当并成 1 片，实际 %d 片", len(chunks))
+	}
+	if chunks[0].Heading != "第一页" || chunks[0].SectionPath != "第一页" {
+		t.Errorf("合并后的归属应当是接收片（第一页），实际 heading=%q path=%q",
+			chunks[0].Heading, chunks[0].SectionPath)
+	}
+	for _, want := range []string{"要点一。", "要点二。", "要点三。"} {
+		if !strings.Contains(chunks[0].Content, want) {
+			t.Errorf("合并后丢了 %q: %q", want, chunks[0].Content)
+		}
 	}
 }
