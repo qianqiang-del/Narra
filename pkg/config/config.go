@@ -31,12 +31,13 @@ type Config struct {
 // （逐项预检与请求体上限）、服务层（队列容量）与 rag.Worker（解析与向量化并发）使用，
 // 写死在任何一处都会让"前端提示的上限"与"服务端真正执行的上限"漂移。
 type KnowledgeIngestConfig struct {
-	MaxFiles             int   `mapstructure:"max_files"`             // 单次批量上传的文件数上限
-	MaxFileBytes         int64 `mapstructure:"max_file_bytes"`        // 单个文件的字节数上限
-	MaxBatchBytes        int64 `mapstructure:"max_batch_bytes"`       // 单次请求所有文件的总字节数上限
-	QueueCapacity        int   `mapstructure:"queue_capacity"`        // pending + processing 任务数的硬上限
-	ParseConcurrency     int   `mapstructure:"parse_concurrency"`     // 后台同时处理的收录任务数
-	EmbeddingConcurrency int   `mapstructure:"embedding_concurrency"` // 全局同时向量化的文档数
+	MaxFiles             int           `mapstructure:"max_files"`             // 单次批量上传的文件数上限
+	MaxFileBytes         int64         `mapstructure:"max_file_bytes"`        // 单个文件的字节数上限
+	MaxBatchBytes        int64         `mapstructure:"max_batch_bytes"`       // 单次请求所有文件的总字节数上限
+	QueueCapacity        int           `mapstructure:"queue_capacity"`        // pending + processing 任务数的硬上限
+	ParseConcurrency     int           `mapstructure:"parse_concurrency"`     // 后台同时处理的收录任务数
+	EmbeddingConcurrency int           `mapstructure:"embedding_concurrency"` // 全局同时向量化的文档数
+	MaterialTTL          time.Duration `mapstructure:"material_ttl"`          // 课程材料未关联课堂时的保留时长，到期自动清理
 }
 
 // knowledgeIngestMultipartOverheadBytes 是 multipart 边界、分段头部等非文件内容预留的余量。
@@ -55,6 +56,8 @@ const (
 	DefaultKnowledgeQueueCapacity        = 100
 	DefaultKnowledgeParseConcurrency     = 2
 	DefaultKnowledgeEmbeddingConcurrency = 1
+	// DefaultKnowledgeMaterialTTL 是课程材料未关联课堂时的默认保留时长（7 天）。
+	DefaultKnowledgeMaterialTTL = 7 * 24 * time.Hour
 )
 
 // BodyLimitBytes 是请求体（含 multipart 边界与头部）的字节上限。
@@ -85,6 +88,9 @@ func (c KnowledgeIngestConfig) WithDefaults() KnowledgeIngestConfig {
 	if c.EmbeddingConcurrency <= 0 {
 		c.EmbeddingConcurrency = DefaultKnowledgeEmbeddingConcurrency
 	}
+	if c.MaterialTTL <= 0 {
+		c.MaterialTTL = DefaultKnowledgeMaterialTTL
+	}
 	return c
 }
 
@@ -113,6 +119,9 @@ func (c KnowledgeIngestConfig) Validate() error {
 	}
 	if c.QueueCapacity < c.ParseConcurrency {
 		return fmt.Errorf("knowledge_ingest.queue_capacity 不能小于 parse_concurrency")
+	}
+	if c.MaterialTTL < 0 {
+		return fmt.Errorf("knowledge_ingest.material_ttl 不能为负数")
 	}
 	return nil
 }

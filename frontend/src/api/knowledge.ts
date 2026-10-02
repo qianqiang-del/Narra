@@ -20,6 +20,8 @@ interface KnowledgeDocumentDTO {
   source_uri?: string
   enabled: boolean
   status: string
+  kind: string
+  expires_at?: string
   stage?: string
   failed_stage?: string
   parser?: string
@@ -41,6 +43,15 @@ interface PageDTO<T> {
 
 /** 文档处理状态，对应后端 knowledge_documents.status */
 export type KnowledgeDocumentStatus = 'pending' | 'processing' | 'ready' | 'failed'
+
+/**
+ * 文档类型，对应后端 knowledge_documents.kind。
+ *
+ * knowledge = 知识库文档（默认，永久保留）；material = 课程材料（首页随建课上传，
+ * 未关联课堂时带 expiresAt，到期自动清理；关联后 expiresAt 为空、长期保留）。
+ * 材料不参与全局检索，只被它关联的课堂定向取用。
+ */
+export type KnowledgeDocumentKind = 'knowledge' | 'material'
 
 /**
  * 收录阶段，对应后端 knowledge_documents.ingest_stage。
@@ -79,6 +90,10 @@ export interface KnowledgeDocument {
    */
   enabled: boolean
   status: KnowledgeDocumentStatus
+  /** 文档类型：知识库文档或课程材料 */
+  kind: KnowledgeDocumentKind
+  /** 临时材料的清理时间；为空表示长期保留（知识库文档或已关联课堂的材料） */
+  expiresAt: string
   /** 收录阶段；ready 或后端没给时为空串 */
   stage: KnowledgeDocumentStage | ''
   /**
@@ -322,6 +337,8 @@ function toDocument(d: KnowledgeDocumentDTO): KnowledgeDocument {
     sourceUri: d.source_uri ?? '',
     enabled: d.enabled,
     status: d.status as KnowledgeDocumentStatus,
+    kind: (d.kind as KnowledgeDocumentKind) || 'knowledge',
+    expiresAt: d.expires_at ?? '',
     stage: toStage(d.stage),
     failedStage: d.failed_stage ?? '',
     parser: d.parser ?? '',
@@ -333,7 +350,7 @@ function toDocument(d: KnowledgeDocumentDTO): KnowledgeDocument {
   }
 }
 
-/** 列表查询条件；四项都可省略，省略就是不限。 */
+/** 列表查询条件；都可省略，省略就是不限（kind 省略时后端按 knowledge 处理）。 */
 export interface KnowledgeListParams {
   /** 页码，从 1 起（与后端 page 对齐） */
   page?: number
@@ -344,6 +361,8 @@ export interface KnowledgeListParams {
    * 空数组或不传表示不限状态。
    */
   status?: KnowledgeDocumentStatus[]
+  /** 只看这类文档：knowledge 知识库 / material 课程材料；不传按 knowledge */
+  kind?: KnowledgeDocumentKind
   /** 在标题与来源文件名上做模糊匹配（后端不区分大小写）；空串或不传表示不限 */
   keyword?: string
 }
@@ -361,6 +380,7 @@ export async function fetchKnowledgeDocuments(
   search.set('page', String(params.page ?? 1))
   search.set('size', String(params.size ?? 20))
   if (params.status?.length) search.set('status', params.status.join(','))
+  if (params.kind) search.set('kind', params.kind)
   const keyword = params.keyword?.trim()
   if (keyword) search.set('keyword', keyword)
 
@@ -567,11 +587,14 @@ export interface KnowledgeIngestBatch {
 export async function uploadKnowledgeFiles(
   files: File[],
   title?: string,
+  purpose?: string,
 ): Promise<KnowledgeIngestBatch> {
   const form = new FormData()
   for (const file of files) form.append('files', file)
   const trimmed = title?.trim()
   if (trimmed) form.append('title', trimmed)
+  // purpose=material 表示课程材料：后端按临时文档入库，未关联课堂时到期清理。
+  if (purpose) form.append('purpose', purpose)
 
   const d = await request<KnowledgeIngestBatchDTO>('/knowledge/documents', {
     method: 'POST',

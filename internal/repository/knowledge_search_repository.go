@@ -369,6 +369,12 @@ func chunkFilterClause(filter entity.KnowledgeChunkFilter) (string, []any) {
 	clauses := make([]string, 0, 4)
 	args := make([]any, 0, 4)
 
+	// 材料不参与全局检索：没有显式点名文档时只搜知识库文档。带了 document_ids
+	// （课程生成时对本课材料的定向检索）就按名单搜，名单里的材料放行。
+	if len(filter.DocumentIDs) == 0 {
+		clauses = append(clauses, "d.kind = ?")
+		args = append(args, entity.KnowledgeDocumentKindKnowledge)
+	}
 	if len(filter.SourceTypes) > 0 {
 		clauses = append(clauses, "d.source_type IN ("+sqlPlaceholders(len(filter.SourceTypes))+")")
 		for _, sourceType := range filter.SourceTypes {

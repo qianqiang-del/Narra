@@ -125,6 +125,7 @@ const model = computed<RowModel>(() => {
   }
 
   const document = props.document as KnowledgeDocument
+  const isMaterial = document.kind === 'material'
   return {
     title: document.title,
     subtitle: document.sourceUri,
@@ -136,11 +137,17 @@ const model = computed<RowModel>(() => {
     badge: document.enabled
       ? null
       : { label: t('knowledge.status.disabled'), class: badgeStyles.removed },
-    tag: t(`knowledge.source.${document.sourceType === 'manual' ? 'manual' : 'import'}`),
+    // 课程材料显示"待使用 / 已关联"（由 expiresAt 是否为空区分），知识库文档显示来源类型
+    tag: isMaterial
+      ? t(document.expiresAt ? 'knowledge.material.pending' : 'knowledge.material.associated')
+      : t(`knowledge.source.${document.sourceType === 'manual' ? 'manual' : 'import'}`),
     meta: [
       document.parser,
       `${t('knowledge.col.chunks')} ${formatNumber(document.chunks)}`,
       `${t('knowledge.col.characters')} ${formatNumber(document.characters)}`,
+      isMaterial && document.expiresAt
+        ? t('knowledge.material.expiresAt', { date: formatDate(document.expiresAt) })
+        : '',
       `${t('knowledge.col.updatedAt')} ${formatDate(document.updatedAt)}`,
     ].filter(Boolean),
   }

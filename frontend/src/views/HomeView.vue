@@ -24,7 +24,7 @@ import RecentSection from '@/components/home/RecentSection.vue'
 import SettingsDialog from '@/components/home/SettingsDialog.vue'
 import TopPillToolbar from '@/components/home/TopPillToolbar.vue'
 import UiTooltip from '@/components/ui/UiTooltip.vue'
-import { type SelectedMaterial } from '@/lib/materials'
+import { MATERIAL_PURPOSE, type SelectedMaterial } from '@/lib/materials'
 import { cn } from '@/lib/utils'
 import { useLlmStore } from '@/stores/llm'
 import { useProfileStore } from '@/stores/profile'
@@ -132,19 +132,27 @@ function pickedRoleVoices(): Record<string, string> {
 /** 材料等待收录的上限：超时就跳过该材料，不把提交无限期挂住。 */
 const MATERIAL_WAIT_MS = 10 * 60 * 1000
 
+/** 材料上传的共享 Promise：上传进行中时，提交与 watcher 都等同一轮，不重复发请求。 */
+let materialUploadPromise: Promise<void> | null = null
+
 /**
- * 提交前的材料准备：把待上传的文件送进知识库，再等它们收录完成。
+ * 把待上传的材料送进知识库（选中即上传，不等到提交）。
  *
- * 返回真正能带进建课请求的材料（ready）；失败/被拒/超时的材料留在列表里由用户
- * 处置，本次跳过并提示。材料出问题不该把"生成课堂"整个拦死。
+ * 失败/被拒的材料留在列表里由用户处置（重试会退回 queued、再次触发这里）；
+ * 上传只负责入库，等收录完成是 waitForPendingMaterials 的事。
  */
-async function prepareMaterials(): Promise<SelectedMaterial[]> {
-  const queued = materials.value.filter((m) => m.status === 'queued')
-  if (queued.length > 0) {
-    prepareStage.value = 'uploading'
+async function runMaterialUpload(): Promise<void> {
+  // 循环而不是只跑一轮：上传期间用户可能又选了文件（watcher 拿到的是同一个 Promise）。
+  for (;;) {
+    const queued = materials.value.filter((m) => m.status === 'queued')
+    if (queued.length === 0) break
     for (const material of queued) material.status = 'uploading'
     try {
-      const batch = await uploadKnowledgeFiles(queued.map((m) => m.file))
+      const batch = await uploadKnowledgeFiles(
+        queued.map((m) => m.file),
+        undefined,
+        MATERIAL_PURPOSE,
+      )
       batch.items.forEach((item, index) => {
         const material = queued[index]
         if (!material) return
@@ -164,6 +172,9 @@ async function prepareMaterials(): Promise<SelectedMaterial[]> {
           material.error = t('toolbar.materialUploadFailed')
         }
       }
+      // 传完立刻开始后台等待收录：状态实时收敛，不必等用户点生成
+      // （与知识库页批量上传的效果一致，只是这里逐篇轮询文档状态）。
+      void waitPendingMaterials()
     } catch (error) {
       for (const material of queued) {
         material.status = 'failed'
@@ -171,10 +182,21 @@ async function prepareMaterials(): Promise<SelectedMaterial[]> {
       }
     }
   }
+}
 
-  const pending = materials.value.filter((m) => m.status === 'pending' && m.documentId !== null)
-  if (pending.length > 0) {
-    prepareStage.value = 'waiting'
+/** 材料收录等待的共享 Promise：后台轮询与提交前等待复用同一轮。 */
+let materialWaitPromise: Promise<void> | null = null
+
+/**
+ * 后台轮询待收录材料直到终态（ready / failed），把状态实时刷到列表上。
+ *
+ * 与知识库页的批量上传同一个效果：不用等用户点生成，材料自己从「处理中」
+ * 收敛到「已就绪 / 失败」。失败项点重试会退回 queued，重新上传后再进这一轮。
+ */
+async function runMaterialWait(): Promise<void> {
+  for (;;) {
+    const pending = materials.value.filter((m) => m.status === 'pending' && m.documentId !== null)
+    if (pending.length === 0) break
     await Promise.all(
       pending.map(async (material) => {
         try {
@@ -194,6 +216,50 @@ async function prepareMaterials(): Promise<SelectedMaterial[]> {
         }
       }),
     )
+  }
+}
+
+function waitPendingMaterials(): Promise<void> {
+  if (!materialWaitPromise) {
+    materialWaitPromise = runMaterialWait().finally(() => {
+      materialWaitPromise = null
+    })
+  }
+  return materialWaitPromise
+}
+
+function uploadQueuedMaterials(): Promise<void> {
+  if (!materialUploadPromise) {
+    materialUploadPromise = runMaterialUpload().finally(() => {
+      materialUploadPromise = null
+    })
+  }
+  return materialUploadPromise
+}
+
+// 选中文件（或点重试退回 queued）后立刻上传：解析与向量化在用户写需求的这段时间里
+// 就已经在跑，点生成时大多已经 ready，不必再等。
+watch(
+  () => materials.value.filter((m) => m.status === 'queued').length,
+  (count) => {
+    if (count > 0) void uploadQueuedMaterials()
+  },
+)
+
+/**
+ * 提交前的材料准备：确保都上传过，再等它们收录完成。
+ *
+ * 返回真正能带进建课请求的材料（ready）；失败/被拒/超时的材料留在列表里由用户
+ * 处置，本次跳过并提示。材料出问题不该把"生成课堂"整个拦死。
+ */
+async function prepareMaterials(): Promise<SelectedMaterial[]> {
+  if (materialUploadPromise) prepareStage.value = 'uploading'
+  await uploadQueuedMaterials()
+
+  // 后台轮询可能已经在跑（上传完成就开始了）；这里复用同一轮，通常无需再等。
+  if (materials.value.some((m) => m.status === 'pending' && m.documentId !== null)) {
+    prepareStage.value = 'waiting'
+    await waitPendingMaterials()
   }
   prepareStage.value = 'idle'
 

@@ -32,3 +32,9 @@ export interface SelectedMaterial {
 export function materialFingerprint(file: File): string {
   return `${file.name}:${file.size}:${file.lastModified}`
 }
+
+/**
+ * 上传用途标记：课程材料（与后端 entity.KnowledgeDocumentKindMaterial 同值）。
+ * 普通知识库上传不传它，文档默认是 knowledge、永久保留。
+ */
+export const MATERIAL_PURPOSE = 'material'

@@ -382,6 +382,16 @@ export default {
     title: '知识库',
     back: '返回首页',
     refresh: '刷新',
+    tabs: {
+      knowledge: '知识库',
+      material: '课程材料',
+    },
+    material: {
+      pending: '待使用',
+      associated: '已关联',
+      expiresAt: '到期 {date}',
+      empty: '还没有课程材料——在首页生成课堂时上传的文件会出现在这里。',
+    },
     search: {
       placeholder: '搜索标题或原文件名…',
       clear: '清空',

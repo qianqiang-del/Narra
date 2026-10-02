@@ -303,6 +303,7 @@ func (a *App) initDependencies() error {
 			QueueCapacity:        knowledgeIngest.QueueCapacity,
 			EmbeddingConcurrency: knowledgeIngest.EmbeddingConcurrency,
 			Images:               imageStore,
+			MaterialTTL:          knowledgeIngest.MaterialTTL,
 		})
 	uploadDir := a.cfg.Storage.UploadDir
 	if uploadDir == "" {
@@ -477,9 +478,16 @@ func (a *App) initDependencies() error {
 
 	// 过程数据的过期清理：expires_at 在写入时就按各自保留期算好了（事件 7 天），
 	// 清理侧只认这一列。没有它事件表会一直涨，而它记录的事实另有更长的生命周期。
+	// 课程材料同挂在这条循环上：到期未关联的材料逐篇走 KnowledgeService.Delete，
+	// 连带清理归档原件与文档图片（见 service.ExpiredMaterialCleaner）。
+	materialCleaner, err := service.NewExpiredMaterialCleaner(knowledgeDocumentRepo, knowledgeSvc)
+	if err != nil {
+		return fmt.Errorf("创建课程材料清理器失败: %w", err)
+	}
 	a.retention = retention.New(
 		retention.Table{Name: "conversation_events", Store: conversationEventRepo},
 		retention.Table{Name: "agent_trace_spans", Store: traceSpanRepo},
+		retention.Table{Name: "course_materials", Store: materialCleaner},
 	)
 	if count, err := bootstrap.ReconcileDiscussions(context.Background(), txManager, runRepo, turnRepo, messageRepo, conversationEventRepo); err != nil {
 		return fmt.Errorf("讨论运行启动对账失败: %w", err)

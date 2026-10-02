@@ -211,6 +211,53 @@ func (r *knowledgeDocumentRepository) SetEnabled(ctx context.Context, id uint64,
 	return result.RowsAffected > 0, result.Error
 }
 
+// AssociateMaterials 把一批待用课程材料关联到课堂：expires_at 置空，此后长期保留。
+//
+// 条件（kind = material、expires_at 非空、ready 且启用）是"材料不共享"的原子闸门：
+// 并发的第二个建课请求、或校验通过后材料被删/停用/过期的竞态，都会在这里影响 0 行，
+// 由调用方核对行数后回滚整个建课事务。返回实际关联的行数。
+func (r *knowledgeDocumentRepository) AssociateMaterials(ctx context.Context, ids []uint64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := conn(ctx, r.db).
+		Model(&entity.KnowledgeDocument{}).
+		Where("id IN ? AND kind = ? AND expires_at IS NOT NULL AND status = ? AND enabled",
+			ids, entity.KnowledgeDocumentKindMaterial, entity.KnowledgeDocumentStatusReady).
+		Update("expires_at", nil)
+	return result.RowsAffected, result.Error
+}
+
+// ExpireMaterials 给一批课程材料重设清理时间（删课堂时回收）。
+//
+// 只处理 kind = material 的行；不存在的行静默跳过（用户可能已手动删掉），
+// 所以调用方不能拿"命中行数 < 入参数量"当错误。返回实际命中行数。
+func (r *knowledgeDocumentRepository) ExpireMaterials(ctx context.Context, ids []uint64, expiresAt time.Time) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := conn(ctx, r.db).
+		Model(&entity.KnowledgeDocument{}).
+		Where("id IN ? AND kind = ?", ids, entity.KnowledgeDocumentKindMaterial).
+		Update("expires_at", expiresAt)
+	return result.RowsAffected, result.Error
+}
+
+// ListExpiredMaterials 取到期且未关联课堂的课程材料 ID（升序），供后台清理逐个删除。
+//
+// 只返回 ID：删除必须走服务层的 Delete（连带清理失败原件归档目录与文档图片），
+// 仓储不做逐行删除。清理方在删之前要重读确认 —— 这份名单是快照，行可能已被关联。
+func (r *knowledgeDocumentRepository) ListExpiredMaterials(ctx context.Context, before time.Time) ([]uint64, error) {
+	var ids []uint64
+	err := conn(ctx, r.db).
+		Model(&entity.KnowledgeDocument{}).
+		Where("kind = ? AND expires_at IS NOT NULL AND expires_at < ?",
+			entity.KnowledgeDocumentKindMaterial, before).
+		Order("id ASC").
+		Pluck("id", &ids).Error
+	return ids, err
+}
+
 // List 按创建时间倒序分页，条件来自 entity.KnowledgeDocumentQuery。
 //
 // id 也参与排序，因为同一批导入的文档 created_at 可能相同，只按时间排会让翻页时
@@ -278,6 +325,9 @@ func documentConditions(query entity.KnowledgeDocumentQuery) func(*gorm.DB) *gor
 	return func(tx *gorm.DB) *gorm.DB {
 		if len(query.Statuses) > 0 {
 			tx = tx.Where("status IN ?", query.Statuses)
+		}
+		if query.Kind != "" {
+			tx = tx.Where("kind = ?", query.Kind)
 		}
 		if keyword := strings.TrimSpace(query.Keyword); keyword != "" {
 			pattern := likePattern(keyword)
@@ -500,7 +550,11 @@ func (r *knowledgeDocumentRepository) RequeueForReembed(ctx context.Context, id 
 // 即可短路；状态过滤在外层，调用方给 ready 就是"待修复"，给 pending / processing
 // 就是"正在补"。谓词里的 ? 依次是状态列表与模型 ID，计数与取 ID 共用同一份，
 // 免得"计数"和"取 ID"在边界上分叉。
-const missingModelVectorsPredicate = `d.status IN ?
+//
+// 只算知识库文档（kind = knowledge）：课程材料不在知识库页展示，不该出现在
+// "缺向量"提示与一键重新向量化的名单里。
+const missingModelVectorsPredicate = `d.kind = 'knowledge'
+	  AND d.status IN ?
 	  AND EXISTS (
 		SELECT 1 FROM knowledge_chunks c
 		WHERE c.document_id = d.id

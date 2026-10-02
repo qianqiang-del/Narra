@@ -386,6 +386,16 @@ export default {
     title: 'Knowledge Base',
     back: 'Back to home',
     refresh: 'Refresh',
+    tabs: {
+      knowledge: 'Knowledge',
+      material: 'Course materials',
+    },
+    material: {
+      pending: 'Pending',
+      associated: 'In use',
+      expiresAt: 'Expires {date}',
+      empty: 'No course materials yet — files attached when creating a classroom will show up here.',
+    },
     search: {
       placeholder: 'Search titles or original file names…',
       clear: 'Clear',

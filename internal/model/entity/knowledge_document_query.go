@@ -14,6 +14,10 @@ type KnowledgeDocumentQuery struct {
 	// 取值见 KnowledgeDocumentStatusXxx，合法性的校验在服务层。
 	Statuses []string
 
+	// Kind 只看这类文档：knowledge 或 material；空串表示不限。
+	// 知识库页固定给 knowledge，课程材料页签给 material；合法性的校验在服务层。
+	Kind string
+
 	// Keyword 在标题与来源标识上做不区分大小写的模糊匹配；空串表示不限。
 	Keyword string
 

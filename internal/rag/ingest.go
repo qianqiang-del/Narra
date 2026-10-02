@@ -101,6 +101,9 @@ type FileInput struct {
 	SourceType string // manual / import；为空时按 import 处理
 	SourceURI  string // 用户看到的来源标识；为空时取 Path 的文件名部分
 	SizeBytes  int64  // 原始文件的字节数，只写进上传记录供界面显示；0 表示调用方没提供
+	// Purpose 是入库用途标记。空 = 普通知识库文档；material = 课程材料（临时，
+	// 未关联课堂时带 expires_at，到期由后台清理）。取值见 entity.KnowledgeDocumentKindXxx。
+	Purpose string
 }
 
 // TextInput 是直接收录一段正文所需的输入。
@@ -131,6 +134,9 @@ type IngestResult struct {
 // 但额度这条约束并没有消失：600 片相当于 38 个批次。要放宽应做成配置项，
 // 而不是直接删掉上限。
 const ingestMaxChunks = 600
+
+// defaultMaterialTTL 是课程材料未关联课堂时的默认保留时长，与 config 的默认值一致。
+const defaultMaterialTTL = 7 * 24 * time.Hour
 
 // maxTitleRunes 标题长度上限，与 knowledge_documents.title 的 varchar(300) 对齐。
 const maxTitleRunes = 300
@@ -169,6 +175,10 @@ type IngestOptions struct {
 	// （IngestText、纯文本解析）可以不依赖它 —— 解析出图片却没接发布器时收录会
 	// 明确失败，而不是等临时目录一删、正文里的引用全变成死链（见 backfillImages）。
 	Images ImagePublisher
+
+	// MaterialTTL 是课程材料（Purpose = material）未关联课堂时的保留时长。
+	// <= 0 按默认 7 天处理；只在上传建行时用来算 expires_at。
+	MaterialTTL time.Duration
 }
 
 // Ingester 是收录链路的门面：把一份原文变成库里可检索的切片与向量。
@@ -201,6 +211,8 @@ type Ingester struct {
 	// 还有没有空位，再落三张表的行。
 	tx            TxRunner
 	queueCapacity int
+	// materialTTL 是课程材料未关联课堂时的保留时长；上传建行时算 expires_at 用。
+	materialTTL time.Duration
 
 	// embeddingSem 是全局向量化名额（见 IngestOptions.EmbeddingConcurrency）。
 	// nil 表示不限（只在不走 Ingester 的同步测试路径里可能出现）。
@@ -316,6 +328,10 @@ func NewIngester(
 	if limit < 1 {
 		limit = 1
 	}
+	materialTTL := options.MaterialTTL
+	if materialTTL <= 0 {
+		materialTTL = defaultMaterialTTL
+	}
 	return &Ingester{
 		store:         store,
 		records:       records,
@@ -325,6 +341,7 @@ func NewIngester(
 		images:        options.Images,
 		tx:            options.Tx,
 		queueCapacity: options.QueueCapacity,
+		materialTTL:   materialTTL,
 		embeddingSem:  make(chan struct{}, limit),
 		newEmbedder:   newModelEmbedderFactory(embeddingManager),
 	}
@@ -424,7 +441,7 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 			return err
 		}
 
-		created, err := i.createDocument(ctx, title, sourceType, sourceURI)
+		created, err := i.createDocument(ctx, title, sourceType, sourceURI, input.Purpose)
 		if err != nil {
 			return err
 		}
@@ -583,7 +600,7 @@ func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResul
 		title = sourceURI
 	}
 
-	document, err := i.createDocument(ctx, title, sourceType, sourceURI)
+	document, err := i.createDocument(ctx, title, sourceType, sourceURI, input.Purpose)
 	if err != nil {
 		return IngestResult{}, err
 	}
@@ -816,7 +833,7 @@ func (i *Ingester) IngestText(ctx context.Context, input TextInput) (IngestResul
 		title = preferHeadingTitle(firstLineTitle(content), content)
 	}
 
-	document, err := i.createDocument(ctx, title, sourceType, strings.TrimSpace(input.SourceURI))
+	document, err := i.createDocument(ctx, title, sourceType, strings.TrimSpace(input.SourceURI), "")
 	if err != nil {
 		return IngestResult{}, err
 	}
@@ -951,15 +968,24 @@ func (i *Ingester) cleanupUnusedModels(ctx context.Context) {
 }
 
 // createDocument 建文档行，此时正文还是空的，状态是 pending。
-func (i *Ingester) createDocument(ctx context.Context, title, sourceType, sourceURI string) (*entity.KnowledgeDocument, error) {
+//
+// purpose = material 时按课程材料入库：kind 标 material 并带上 expires_at（未关联
+// 课堂时到期由 retention 清理）；普通知识库文档 kind = knowledge、expires_at 为空。
+func (i *Ingester) createDocument(ctx context.Context, title, sourceType, sourceURI, purpose string) (*entity.KnowledgeDocument, error) {
 	document := &entity.KnowledgeDocument{
 		Title:      truncateTitle(title),
 		SourceType: sourceType,
 		Enabled:    true,
 		Status:     entity.KnowledgeDocumentStatusPending,
+		Kind:       entity.KnowledgeDocumentKindKnowledge,
 		// metadata 是 NOT NULL 的 jsonb，必须写 '{}' 而不是留空：
 		// 留空在 GORM 里会变成 NULL，被列约束直接拒掉。
 		Metadata: json.RawMessage(`{}`),
+	}
+	if purpose == entity.KnowledgeDocumentKindMaterial {
+		document.Kind = entity.KnowledgeDocumentKindMaterial
+		expiresAt := time.Now().UTC().Add(i.materialTTL)
+		document.ExpiresAt = &expiresAt
 	}
 	if sourceURI != "" {
 		document.SourceURI = &sourceURI
