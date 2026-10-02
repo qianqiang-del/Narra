@@ -38,6 +38,7 @@ export function createDiscussionDisplay(history: Pick<ConversationMessage, 'id' 
         id: `message-${message.id}`,
         from: speaker.agentKey === 'teacher' || speaker.roleType === 'teacher' || speaker.role === 'teacher' || speaker.role === '主讲' ? 'teacher' : 'agent',
         name: speaker.name,
+        ...(speaker.agentKey ? { agentKey: speaker.agentKey } : {}),
         text: message.content,
       }
     }),
@@ -76,7 +77,7 @@ export function applyDiscussionEvent(display: DiscussionDisplay, event: Conversa
       if (existing && display.streamingIds.has(id)) existing.text += event.payload.delta
       else if (!existing) {
         const speaker = display.turns.get(event.payload.turn_id) ?? { name: 'Agent', role: '' }
-        display.bubbles.push({ id, from: speaker.agentKey === 'teacher' || speaker.roleType === 'teacher' ? 'teacher' : 'agent', name: speaker.name, text: event.payload.delta })
+        display.bubbles.push({ id, from: speaker.agentKey === 'teacher' || speaker.roleType === 'teacher' ? 'teacher' : 'agent', name: speaker.name, ...(speaker.agentKey ? { agentKey: speaker.agentKey } : {}), text: event.payload.delta })
         display.streamingIds.add(id)
       }
       break
@@ -87,7 +88,7 @@ export function applyDiscussionEvent(display: DiscussionDisplay, event: Conversa
       if (existing) existing.text = event.payload.content
       else {
         const speaker = display.turns.get(event.payload.turn_id) ?? { name: 'Agent', role: '' }
-        display.bubbles.push({ id, from: speaker.agentKey === 'teacher' || speaker.roleType === 'teacher' ? 'teacher' : 'agent', name: speaker.name, text: event.payload.content })
+        display.bubbles.push({ id, from: speaker.agentKey === 'teacher' || speaker.roleType === 'teacher' ? 'teacher' : 'agent', name: speaker.name, ...(speaker.agentKey ? { agentKey: speaker.agentKey } : {}), text: event.payload.content })
       }
       display.streamingIds.delete(id)
       break

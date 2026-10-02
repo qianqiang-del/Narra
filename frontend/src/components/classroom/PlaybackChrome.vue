@@ -36,6 +36,7 @@ import {
   type Conversation,
 } from '@/api/conversation'
 import { applyDiscussionEvent, createDiscussionDisplay } from '@/lib/classroomDiscussion'
+import { nextVisibleText } from '@/lib/typewriter'
 import { cn } from '@/lib/utils'
 import { getActiveAudio, pauseActiveAudio, registerAudio, setActiveRate, setActiveVolume, stopActiveAudio, unregisterAudio } from '@/lib/audioPlayback'
 
@@ -133,10 +134,14 @@ const discussionRunning = ref(false)
 const loadingConversations = ref(false)
 const loadingMessages = ref(false)
 const sending = ref(false)
-const discussionBusy = computed(() => discussionRunning.value || sending.value || loadingConversations.value || loadingMessages.value)
+const closingDiscussion = ref(false)
+const streamingMessageIds = ref(new Set<string>())
+const discussionBusy = computed(() => discussionRunning.value || sending.value || closingDiscussion.value || loadingConversations.value || loadingMessages.value)
 const discussionActive = computed(() => activeConversationId.value !== null && (discussionRunning.value || sending.value || display.bubbles.length > 0))
 let display = createDiscussionDisplay([])
 let eventController: AbortController | null = null
+let typewriterTimer: number | null = null
+const displayedTextById = new Map<string, string>()
 let conversationGeneration = 0
 let pendingSequence = 0
 const lastSequenceByConversation = new Map<number, number>()
@@ -146,11 +151,54 @@ function conversationSession(item: Conversation): ChatSession {
 }
 
 function syncDiscussion() {
-  discussionBubbles.value = [...display.bubbles]
+  streamingMessageIds.value = new Set(display.streamingIds)
+  syncDisplayedBubbles()
   thinking.value = display.thinking
   speaking.value = display.speaking
   speakingAgentKey.value = display.speakingAgentKey
   yourTurn.value = display.yourTurn
+}
+
+function syncDisplayedBubbles() {
+  let waiting = false
+  discussionBubbles.value = display.bubbles.map((bubble) => {
+    const isStreaming = display.streamingIds.has(bubble.id)
+    const previous = displayedTextById.get(bubble.id) ?? ''
+    const visible = isStreaming
+      ? previous.length < bubble.text.length ? previous : bubble.text
+      : bubble.text
+    displayedTextById.set(bubble.id, visible)
+    if (isStreaming && visible.length < bubble.text.length) waiting = true
+    return { ...bubble, text: visible }
+  })
+  if (waiting) startTypewriter()
+}
+
+function startTypewriter() {
+  if (typewriterTimer !== null) return
+  typewriterTimer = window.setInterval(() => {
+    let waiting = false
+    for (const bubble of display.bubbles) {
+      if (!display.streamingIds.has(bubble.id)) continue
+      const visible = displayedTextById.get(bubble.id) ?? ''
+      const next = nextVisibleText(visible, bubble.text)
+      displayedTextById.set(bubble.id, next)
+      waiting ||= next.length < bubble.text.length
+    }
+    syncDisplayedBubbles()
+    if (!waiting && typewriterTimer !== null) {
+      window.clearInterval(typewriterTimer)
+      typewriterTimer = null
+    }
+  }, 24)
+}
+
+function stopTypewriter() {
+  if (typewriterTimer !== null) {
+    window.clearInterval(typewriterTimer)
+    typewriterTimer = null
+  }
+  displayedTextById.clear()
 }
 
 function pauseLectureForDiscussion() {
@@ -164,6 +212,7 @@ function pauseLectureForDiscussion() {
 function disconnectEvents() {
   eventController?.abort()
   eventController = null
+  stopTypewriter()
 }
 
 async function consumeEvents(conversationId: number, controller: AbortController) {
@@ -553,6 +602,8 @@ async function sendMessage(text: string) {
   sending.value = true
   discussionError.value = ''
   chatDraft.value = ''
+  const sceneId = Number(activeScene.value.id)
+  const askedSceneId = activeScene.value.type !== 'complete' && Number.isSafeInteger(sceneId) && sceneId > 0 ? sceneId : undefined
   pauseLectureForDiscussion()
   const pendingId = `pending-${++pendingSequence}`
   try {
@@ -568,7 +619,7 @@ async function sendMessage(text: string) {
     display.thinking = true
     syncDiscussion()
 
-    const started = await startDiscussion(conversationId, text)
+    const started = await startDiscussion(conversationId, text, askedSceneId)
     const pending = display.bubbles.find((item) => item.id === pendingId)
     if (pending) pending.id = `message-${started.messageId}`
     discussionRunning.value = true
@@ -592,7 +643,8 @@ async function sendMessage(text: string) {
 
 async function stopDiscussion() {
   const conversationId = activeConversationId.value
-  if (!conversationId || sending.value) return
+  if (!conversationId || sending.value || closingDiscussion.value) return
+  closingDiscussion.value = true
   try {
     await closeConversation(conversationId)
     disconnectEvents()
@@ -606,6 +658,8 @@ async function stopDiscussion() {
     toast(t('roundtable.discussionEnded'))
   } catch (error) {
     toast(error instanceof Error ? error.message : String(error))
+  } finally {
+    closingDiscussion.value = false
   }
 }
 
@@ -798,6 +852,9 @@ onBeforeUnmount(() => {
       :thinking="thinking"
       :your-turn="yourTurn"
       :speaking-name="speakingName"
+      :participants="participants"
+      :streaming-ids="streamingMessageIds"
+      :closing="closingDiscussion"
       @update:tab="chatTab = $event"
       @toggle-collapse="toggleChat"
       @resize-start="startChatResize"
@@ -810,6 +867,7 @@ onBeforeUnmount(() => {
       @back="backToConversationList"
       @retry="retryDiscussion"
       @input-activate="pauseLectureForDiscussion"
+      @end-session="stopDiscussion"
     />
 
     <!-- 白板占位入口（完整白板后续补） -->

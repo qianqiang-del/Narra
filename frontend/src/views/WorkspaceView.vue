@@ -39,6 +39,7 @@ import {
   getSessionMessages,
   type ChatMessage,
 } from '@/data/workspace'
+import { nextVisibleText } from '@/lib/typewriter'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -79,6 +80,9 @@ const loading = ref(false)
 const loadError = ref<string | null>(null)
 const sending = ref(false)
 let streamController: AbortController | null = null
+let typewriterTimer: number | null = null
+let typewriterList: ChatMessage[] | null = null
+const typewriterTargets = new Map<string, string>()
 let streamedConversationId: number | null = null
 let loadGeneration = 0
 let sendInFlight = false
@@ -106,6 +110,33 @@ function abortStream() {
   streamController?.abort()
   streamController = null
   streamedConversationId = null
+  stopTypewriter()
+}
+
+function startTypewriter(list: ChatMessage[]) {
+  typewriterList = list
+  if (typewriterTimer !== null) return
+  typewriterTimer = window.setInterval(() => {
+    const currentList = typewriterList
+    if (!currentList) return
+    let waiting = false
+    for (const message of currentList) {
+      const target = typewriterTargets.get(message.id)
+      if (target == null) continue
+      message.text = nextVisibleText(message.text, target)
+      waiting ||= message.text.length < target.length
+    }
+    if (!waiting) stopTypewriter()
+  }, 24)
+}
+
+function stopTypewriter() {
+  if (typewriterTimer !== null) {
+    window.clearInterval(typewriterTimer)
+    typewriterTimer = null
+  }
+  typewriterList = null
+  typewriterTargets.clear()
 }
 
 async function loadConversation(item: Conversation, generation: number) {
@@ -170,17 +201,22 @@ async function consumeEvents(
           const existing = list.find((item) => item.id === String(message.message_id))
           if (existing) existing.text = message.content
           else list.push({ id: String(message.message_id), role: 'assistant', text: message.content })
+          typewriterTargets.delete(String(message.message_id))
           streamingMessageIds.delete(String(message.message_id))
         }
         if (event.eventType === 'message.delta') {
           const message = event.payload
           const messageId = String(message.message_id)
           const existing = list.find((item) => item.id === messageId)
-          if (existing && streamingMessageIds.has(messageId)) existing.text += message.delta
+          if (existing && !streamingMessageIds.has(messageId)) continue
+          const target = (typewriterTargets.get(messageId) ?? existing?.text ?? '') + message.delta
+          typewriterTargets.set(messageId, target)
+          if (existing && streamingMessageIds.has(messageId)) existing.text = nextVisibleText(existing.text, target)
           else if (!existing) {
-            list.push({ id: messageId, role: 'assistant', text: message.delta })
+            list.push({ id: messageId, role: 'assistant', text: nextVisibleText('', target) })
             streamingMessageIds.add(messageId)
           }
+          startTypewriter(list)
         }
         if (event.eventType === 'run.failed') {
           list.push({

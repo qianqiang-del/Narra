@@ -178,6 +178,14 @@ export default {
     speed: 'Speed',
   },
   chat: {
+    you: 'You',
+    assistant: 'Classroom assistant',
+    copy: 'Copy reply',
+    copied: 'Copied',
+    copyFailed: 'Could not copy. Please select and copy the text.',
+    latest: 'Jump to latest',
+    ending: 'Ending…',
+    keyboardHint: 'Enter to send · Shift + Enter for a new line',
     notes: 'Notes',
     chat: 'Chat',
     noConversations: 'No conversations',
@@ -191,6 +199,18 @@ export default {
     backToList: 'Back to conversations',
     thinking: 'Thinking...',
     speaking: '{name} is speaking...',
+    currentSession: 'Current conversation',
+    participantCount: '{count} participants',
+    status: {
+      working: 'Preparing a response',
+      waiting: 'Waiting for you',
+      ready: 'Idle',
+    },
+    sessionType: {
+      qa: 'Q&A',
+      discussion: 'Roundtable discussion',
+      lecture: 'Lecture',
+    },
   },
   classroom: {
     notFound: 'Course not found',
