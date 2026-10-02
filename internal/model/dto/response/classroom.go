@@ -41,6 +41,16 @@ type ClassroomAgentBrief struct {
 	VoiceID  string `json:"voice_id"`  // 本课程为该角色选定的音色
 }
 
+// ClassroomMaterial 是课堂受理时附带的课程材料快照（来自 generation_config.materials）。
+//
+// 它是"这门课用了哪些材料"的唯一展示来源：材料页签只按 kind=material 列文档，
+// 旧课堂引用的知识库文档不会出现在那里；课堂侧因此必须自己带上快照。
+type ClassroomMaterial struct {
+	DocumentID uint64 `json:"document_id"`
+	Name       string `json:"name"`
+	Size       int64  `json:"size"`
+}
+
 // Classroom 是课堂的对外视图，受理返回与轮询查询共用。
 type Classroom struct {
 	ID              uint64                `json:"id"`
@@ -50,7 +60,8 @@ type Classroom struct {
 	Mode            string                `json:"mode"`
 	Status          string                `json:"status"`
 	GenerationError *string               `json:"generation_error"`
-	Agents          []ClassroomAgentBrief `json:"agents"` // 本课程的角色，按角色池顺序；未指定时为空数组
+	Agents          []ClassroomAgentBrief `json:"agents"`    // 本课程的角色，按角色池顺序；未指定时为空数组
+	Materials       []ClassroomMaterial   `json:"materials"` // 本课材料快照；没有材料或旧课堂为空数组
 	CreatedAt       time.Time             `json:"created_at"`
 	UpdatedAt       time.Time             `json:"updated_at"`
 }

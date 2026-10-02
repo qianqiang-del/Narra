@@ -257,3 +257,17 @@ func TestClassroomMaterialIDs(t *testing.T) {
 		t.Fatalf("材料 ID 解析不对: %v", ids)
 	}
 }
+
+func TestClassroomMaterialsOf(t *testing.T) {
+	if got := classroomMaterialsOf(nil); len(got) != 0 || got == nil {
+		t.Fatalf("空配置应返回空数组而不是 nil: %v", got)
+	}
+	if got := classroomMaterialsOf(json.RawMessage(`不是 JSON`)); len(got) != 0 {
+		t.Fatalf("坏 JSON 应返回空: %v", got)
+	}
+	raw := json.RawMessage(`{"materials":[{"document_id":7,"name":"讲义.md","size":1024}]}`)
+	got := classroomMaterialsOf(raw)
+	if len(got) != 1 || got[0].DocumentID != 7 || got[0].Name != "讲义.md" || got[0].Size != 1024 {
+		t.Fatalf("材料快照解析不对: %+v", got)
+	}
+}

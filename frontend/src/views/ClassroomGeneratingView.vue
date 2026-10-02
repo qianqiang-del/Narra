@@ -14,7 +14,7 @@
 import { computed, onMounted, onUnmounted, ref, watch, type Component } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  AlertCircle, ArrowRight, Check, FileText, Layers, Loader2, Rocket, Sparkles, Users,
+  AlertCircle, ArrowRight, Check, FileText, Layers, Loader2, Paperclip, Rocket, Sparkles, Users,
 } from 'lucide-vue-next'
 import {
   fetchClassroom, fetchClassroomAgents, fetchClassroomOutline, fetchClassroomScenes,
@@ -329,6 +329,21 @@ onUnmounted(() => {
       <header class="text-center">
         <p class="text-xs font-medium tracking-widest text-slate-400 uppercase">Narra · 课堂生成</p>
         <h1 class="mt-1 text-2xl font-semibold text-slate-900 dark:text-slate-50">{{ title }}</h1>
+        <!-- 本课材料：受理时选中的文件快照；旧课堂没有材料时整行不出现 -->
+        <p
+          v-if="classroom?.materials?.length"
+          class="mt-2 flex flex-wrap items-center justify-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"
+        >
+          <Paperclip class="size-3.5 shrink-0" />
+          <span>本课材料（{{ classroom.materials.length }}）：</span>
+          <span
+            v-for="material in classroom.materials"
+            :key="material.document_id"
+            class="rounded-full border border-slate-200 bg-white/70 px-2 py-0.5 text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300"
+          >
+            {{ material.name }}
+          </span>
+        </p>
       </header>
 
       <div v-if="loading" class="flex items-center justify-center gap-3 rounded-2xl border border-slate-200/70 bg-white/80 p-10 text-sm text-slate-500 backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">

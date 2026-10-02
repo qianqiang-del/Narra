@@ -20,6 +20,7 @@ import {
 } from 'lucide-vue-next'
 
 import type { ChatMessage } from '@/data/workspace'
+import { useUploadLimits } from '@/lib/upload-limits'
 import { cn } from '@/lib/utils'
 import MarkdownText from '@/components/shared/MarkdownText.vue'
 
@@ -41,6 +42,9 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+/** 上传限制由后端下发（共享缓存），提示文案与首页工具栏同源 */
+const { limits: uploadLimits, sizeLabel: uploadSizeLabel } = useUploadLimits()
 
 const draft = ref('')
 const scrollRef = ref<HTMLDivElement | null>(null)
@@ -270,7 +274,7 @@ watch(
           >
             <Paperclip class="size-4 text-muted-foreground/50" />
             <span class="text-center text-[11px] text-muted-foreground/60">
-              {{ t('toolbar.materialLimit') }}
+              {{ t('toolbar.materialLimit', { size: uploadSizeLabel, max: uploadLimits.maxFiles }) }}
             </span>
             <input
               type="file"

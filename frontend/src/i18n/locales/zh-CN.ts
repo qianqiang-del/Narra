@@ -87,7 +87,7 @@ export default {
     material: '课程材料',
     materialSelected: '已选择 {count} 个材料',
     uploadMaterial: '上传课程材料',
-    materialLimit: '支持 PDF、Word、PPT、Markdown 等，单个不超过 20MB',
+    materialLimit: '支持 PDF、Word、PPT、Markdown 等，单个不超过 {size}，一次最多 {max} 份',
     materialRetry: '重新上传',
     materialRejected: '文件未被接收',
     materialUploadFailed: '材料上传失败',
@@ -430,6 +430,10 @@ export default {
       title: '上传记录',
       count: '{total} 条',
       hint: '这里是每一次文件投递的流水，含已收录成功的。文档被删除后记录仍留着，状态会变成「已收录后删除」。',
+      filter: {
+        all: '全部',
+        empty: '这个类型还没有上传记录',
+      },
       empty: '还没有上传记录',
       removed: '记录已删除',
       status: {

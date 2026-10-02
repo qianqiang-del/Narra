@@ -188,6 +188,17 @@ psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0009_rech
 脚本会直接报错中止（不会误删）；服务若还是旧代码，旧 worker 不会写 `content_type`，
 脚本会反复命中。重嵌入要花时间与上游额度、处理期间文档暂不可检索，建议低峰执行。
 
+**第十一步（2026-10-02 之前上传过课程材料的老环境，一次性），回填上传记录的投递类型**：
+
+```bash
+psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0010_backfill_upload_record_kind.sql
+```
+
+上传记录新增 `kind` 列（知识库文档 / 课程材料），上传时从文档快照写入。本脚本把
+"关联文档是课程材料"的历史记录回填成 `material`；文档已被删除的记录无法追溯，
+保持 `knowledge`。幂等，新环境跑命中 0 行。不用改 `updated_at` —— kind 是补充的
+身份信息，不是状态变更。
+
 ## 约束全部归实体 tag（2026-09-17 大迁移）
 
 历史上约束分两处：AutoMigrate 建表和单列 UNIQUE，SQL 文件补 CHECK / 外键 /

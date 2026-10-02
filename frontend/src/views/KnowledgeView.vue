@@ -97,6 +97,9 @@ const confirmNote = computed(() =>
 )
 
 onMounted(async () => {
+  // 每次进入知识库页都默认看「知识库」：页签状态存在 Pinia store 里（SPA 会话内常驻），
+  // 不重置的话，上次停在「课程材料」，从首页入口再进来会直接落到材料页签。
+  listKind.value = 'knowledge'
   void store.loadEmbeddingStatus()
   await refresh()
   startObserving()

@@ -131,6 +131,7 @@ interface KnowledgeUploadRecordDTO {
   original_name: string
   size_bytes: number
   status: string
+  kind: string
   stage?: string
   failed_stage?: string
   error?: string
@@ -150,6 +151,8 @@ export interface KnowledgeUploadRecord {
   id: number
   /** 关联文档 ID；为空表示那次上传的成果已经被删了 */
   documentId: number | null
+  /** 投递类型：知识库文档 / 课程材料；文档删除后仍保留（上传时快照） */
+  kind: KnowledgeDocumentKind
   /** 展示标题：优先文档标题，文档没了则回落 originalName（后端算好给前端） */
   title: string
   /** 用户看到的原始文件名，始终有值 */
@@ -499,6 +502,7 @@ function toUploadRecord(r: KnowledgeUploadRecordDTO): KnowledgeUploadRecord {
     originalName: r.original_name,
     sizeBytes: r.size_bytes,
     status: r.status as KnowledgeDocumentStatus,
+    kind: (r.kind as KnowledgeDocumentKind) || 'knowledge',
     stage: toStage(r.stage),
     failedStage: r.failed_stage ?? '',
     error: r.error ?? '',
