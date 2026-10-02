@@ -8,6 +8,7 @@ import { useI18n } from 'vue-i18n'
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 
 const open = defineModel<boolean>('open', { default: false })
+defineProps<{ submitting?: boolean }>()
 const emit = defineEmits<{ (e: 'create', name: string): void }>()
 
 const { t } = useI18n()
@@ -25,7 +26,6 @@ function submit() {
   const next = name.value.trim()
   if (!next) return
   emit('create', next.slice(0, 80))
-  open.value = false
 }
 </script>
 
@@ -62,7 +62,7 @@ function submit() {
           <button
             type="button"
             class="rounded-lg bg-primary px-3.5 py-1.5 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="!name.trim()"
+          :disabled="!name.trim() || submitting"
             @click="submit"
           >
             {{ t('home.create') }}

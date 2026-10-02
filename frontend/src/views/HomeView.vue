@@ -78,9 +78,10 @@ function selectFirstAvailableModel() {
 }
 
 onMounted(async () => {
-  try {
-    await Promise.all([llmStore.loadAvailableModels(), library.loadClassrooms()])
-  } catch { /* 保留当前空状态 */ }
+  const results = await Promise.allSettled([
+    llmStore.loadAvailableModels(), library.loadClassrooms(), library.loadFolders(),
+  ])
+  if (results[2]?.status === 'rejected') toast.error('加载文件夹失败')
   selectFirstAvailableModel()
 })
 

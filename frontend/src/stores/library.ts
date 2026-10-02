@@ -1,12 +1,11 @@
-/**
- * 最近学习的课程 / 文件夹数据。
- *
- * 当前为 localStorage 持久化的前端状态（原项目挂在 zustand store 上）。
- * 接入 Go 后端后，把 load/save 换成 API 调用即可，对外接口不变。
- */
 import { defineStore } from 'pinia'
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
 import { deleteClassroom as deleteClassroomRequest, fetchClassrooms } from '@/api/classroom'
+import {
+  addClassroomToFolder, createFolder as createFolderRequest, deleteFolder as deleteFolderRequest,
+  fetchFolders, removeClassroomFromFolder, renameFolder as renameFolderRequest,
+  type FolderDTO,
+} from '@/api/folder'
 import { toScene } from '@/lib/scene-mapper'
 import type { Scene } from '@/types/scene'
 
@@ -36,13 +35,6 @@ export interface Folder {
   createdAt: number
 }
 
-const STORAGE_KEY = 'narra-library'
-
-interface LibraryState {
-  classrooms: Classroom[]
-  folders: Folder[]
-}
-
 /** 归一化时间：今天 / 昨天 / N 天前 / 具体日期 */
 export function formatRelativeDate(ts: number, locale: string, t: (k: string, p?: Record<string, unknown>) => string) {
   const now = new Date()
@@ -54,53 +46,13 @@ export function formatRelativeDate(ts: number, locale: string, t: (k: string, p?
   return new Date(ts).toLocaleDateString(locale)
 }
 
-function seed(): LibraryState {
-  const now = Date.now()
-  const day = 86_400_000
-  return {
-    folders: [
-      { id: 'f-math', name: '数学', createdAt: now - 12 * day },
-      { id: 'f-pro', name: '专业课', createdAt: now - 5 * day },
-    ],
-    classrooms: [
-      { id: 'c-1', name: '从零学 Python：30 分钟写出第一个程序', pages: 18, readyPages: 18, createdAt: now - 2 * 3600_000, folderId: null },
-      { id: 'c-2', name: '线性代数入门：矩阵与向量空间', pages: 24, readyPages: 24, createdAt: now - day, folderId: 'f-math', mode: 'interactive' },
-      { id: 'c-3', name: '数控车床实操训练', pages: 12, readyPages: 12, createdAt: now - 2 * day, folderId: 'f-pro', mode: 'vocational' },
-      { id: 'c-4', name: '英语口语：日常对话场景', pages: 16, readyPages: 16, createdAt: now - 3 * day, folderId: null },
-      { id: 'c-5', name: '概率论与数理统计', pages: 30, readyPages: 30, createdAt: now - 6 * day, folderId: 'f-math' },
-      { id: 'c-6', name: '计算机网络原理速览', pages: 21, readyPages: 21, createdAt: now - 14 * day, folderId: null },
-    ],
-  }
-}
-
-function load(): LibraryState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return JSON.parse(raw) as LibraryState
-  } catch {
-    /* 存档损坏则回落到种子数据 */
-  }
-  return seed()
-}
-
-/**
- * 去掉封面再进本地存档。
- *
- * 封面是课程第一页的整份内容（交互页那份 HTML 上限 256KB），几门课就可能把 localStorage
- * 撑过配额；一次写失败会让 folders 也一起存不进去，下次打开文件夹就没了。
- * 课堂本身每次开首页都从服务端重取，这里存的只是旧存档结构的兼容，不带封面没有损失。
- */
-function stripCover(classroom: Classroom): Classroom {
-  const rest = { ...classroom }
-  delete rest.cover
-  return rest
+function toFolder(item: FolderDTO): Folder {
+  return { id: String(item.id), name: item.name, createdAt: Date.parse(item.created_at) }
 }
 
 export const useLibraryStore = defineStore('library', () => {
-  const initial = load()
-  // 课堂数据以服务端为唯一来源，不能使用本地 seed/mock 数据。
   const classrooms = ref<Classroom[]>([])
-  const folders = ref<Folder[]>(initial.folders)
+  const folders = ref<Folder[]>([])
 
   async function loadClassrooms() {
     const items = await fetchClassrooms()
@@ -114,20 +66,9 @@ export const useLibraryStore = defineStore('library', () => {
     }))
   }
 
-  watch(
-    [classrooms, folders],
-    () => {
-      try {
-        localStorage.setItem(
-          STORAGE_KEY,
-          JSON.stringify({ classrooms: classrooms.value.map(stripCover), folders: folders.value }),
-        )
-      } catch {
-        /* 隐私模式忽略 */
-      }
-    },
-    { deep: true },
-  )
+  async function loadFolders() {
+    folders.value = (await fetchFolders()).map(toFolder)
+  }
 
   const unfiledClassrooms = computed(() => classrooms.value.filter((c) => !c.folderId))
 
@@ -135,32 +76,22 @@ export const useLibraryStore = defineStore('library', () => {
     return classrooms.value.filter((c) => c.folderId === folderId)
   }
 
-  function createFolder(name: string): Folder {
-    const folder: Folder = { id: `f-${Date.now()}`, name, createdAt: Date.now() }
+  async function createFolder(name: string): Promise<Folder> {
+    const folder = toFolder(await createFolderRequest(name))
     folders.value = [...folders.value, folder]
     return folder
   }
 
-  function renameFolder(id: string, name: string) {
-    const f = folders.value.find((x) => x.id === id)
-    if (f) f.name = name
+  async function renameFolder(id: string, name: string) {
+    const updated = toFolder(await renameFolderRequest(id, name))
+    folders.value = folders.value.map((folder) => folder.id === id ? updated : folder)
   }
 
   /** 仅删文件夹：课程回落到顶层 */
-  function deleteFolderOnly(id: string) {
+  async function deleteFolderOnly(id: string) {
+    await deleteFolderRequest(id)
     folders.value = folders.value.filter((f) => f.id !== id)
     classrooms.value = classrooms.value.map((c) => (c.folderId === id ? { ...c, folderId: null } : c))
-  }
-
-  /** 连课程一起删 */
-  function deleteFolderWithCourses(id: string) {
-    folders.value = folders.value.filter((f) => f.id !== id)
-    classrooms.value = classrooms.value.filter((c) => c.folderId !== id)
-  }
-
-  function renameClassroom(id: string, name: string) {
-    const c = classrooms.value.find((x) => x.id === id)
-    if (c) c.name = name
   }
 
   async function deleteClassroom(id: string) {
@@ -168,13 +99,12 @@ export const useLibraryStore = defineStore('library', () => {
     classrooms.value = classrooms.value.filter((c) => c.id !== id)
   }
 
-  function moveClassroom(id: string, folderId: string | null) {
+  async function moveClassroom(id: string, folderId: string | null) {
     const c = classrooms.value.find((x) => x.id === id)
-    if (c) c.folderId = folderId
-  }
-
-  function renameFolderOf(id: string, name: string) {
-    renameFolder(id, name)
+    if (!c || c.folderId === folderId) return
+    if (folderId) await addClassroomToFolder(folderId, id)
+    else if (c.folderId) await removeClassroomFromFolder(c.folderId, id)
+    c.folderId = folderId
   }
 
   return {
@@ -185,11 +115,9 @@ export const useLibraryStore = defineStore('library', () => {
     createFolder,
     renameFolder,
     deleteFolderOnly,
-    deleteFolderWithCourses,
-    renameClassroom,
-    renameFolderOf,
     deleteClassroom,
     moveClassroom,
     loadClassrooms,
+    loadFolders,
   }
 })

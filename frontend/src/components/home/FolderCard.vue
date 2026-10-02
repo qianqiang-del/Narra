@@ -22,7 +22,6 @@ const emit = defineEmits<{
   (e: 'open', id: string): void
   (e: 'rename', id: string, name: string): void
   (e: 'delete-only', id: string): void
-  (e: 'delete-with-courses', id: string): void
   (e: 'drop-course', classroomId: string, folderId: string): void
 }>()
 
@@ -66,15 +65,34 @@ function commitRename() {
   editing.value = false
 }
 
+function onDragOver(e: DragEvent) {
+  if (!e.dataTransfer?.types.includes('text/stage-id')) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'move'
+  dragOver.value = true
+}
+
+function onDragLeave(e: DragEvent) {
+  if (!e.currentTarget || (e.relatedTarget instanceof Node && (e.currentTarget as Node).contains(e.relatedTarget))) return
+  dragOver.value = false
+}
+
 function onDrop(e: DragEvent) {
   dragOver.value = false
   const id = e.dataTransfer?.getData('text/stage-id')
-  if (id) emit('drop-course', id, props.folder.id)
+  if (!id) return
+  e.preventDefault()
+  emit('drop-course', id, props.folder.id)
 }
 </script>
 
 <template>
-  <div class="group cursor-pointer">
+  <div
+    :class="cn('group cursor-pointer', dragOver && 'relative z-20')"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+  >
     <div
       :class="
         cn(
@@ -85,9 +103,6 @@ function onDrop(e: DragEvent) {
         )
       "
       @click="!deleteOpen && emit('open', folder.id)"
-      @dragover.prevent="dragOver = true"
-      @dragleave.prevent="dragOver = false"
-      @drop.prevent="onDrop"
     >
       <!-- 封面堆叠 -->
       <div v-if="stack.length" class="flex size-full items-center justify-center">
@@ -118,7 +133,7 @@ function onDrop(e: DragEvent) {
       <!-- 拖拽悬停遮罩 -->
       <div
         v-if="dragOver"
-        class="absolute inset-0 z-20 flex items-center justify-center bg-violet-500/20 backdrop-blur-[2px]"
+        class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-violet-500/20 backdrop-blur-[2px]"
       >
         <Folder class="size-8 text-white drop-shadow" />
       </div>
@@ -154,7 +169,7 @@ function onDrop(e: DragEvent) {
           class="flex items-center gap-1.5 text-center text-[11px] text-amber-300"
         >
           <AlertTriangle class="size-3.5 shrink-0" />
-          <span>{{ t('home.deleteFolderWarning') }}</span>
+          <span>{{ t('home.deleteOnlyFolderDesc') }}</span>
         </div>
 
         <div class="flex flex-col items-stretch gap-1.5">
@@ -164,14 +179,6 @@ function onDrop(e: DragEvent) {
             @click="((deleteOpen = false), emit('delete-only', folder.id))"
           >
             {{ t('home.deleteOnlyFolder') }}
-          </button>
-          <button
-            v-if="count > 0"
-            type="button"
-            class="rounded-lg bg-red-500/90 px-3.5 py-1 text-[12px] font-medium text-white transition-colors hover:bg-red-500"
-            @click="((deleteOpen = false), emit('delete-with-courses', folder.id))"
-          >
-            {{ t('home.deleteFolderWithCourses', { count }) }}
           </button>
           <button
             type="button"

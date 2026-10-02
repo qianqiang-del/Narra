@@ -2,12 +2,11 @@
 /**
  * ClassroomCard —— 文档 §5.8。
  *
- * 16:9 缩略图 + 模式徽章 + hover 操作（重命名/移动/删除）+ 信息行（页数徽章 + 名称）。
- * 双击名称可重命名；删除有确认遮罩。
+ * 16:9 缩略图 + 模式徽章 + hover 操作（移动/删除）+ 信息行。
  */
-import { computed, nextTick, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Atom, Copy, FolderInput, Pencil, Trash2, Wrench } from 'lucide-vue-next'
+import { Atom, Copy, FolderInput, GripVertical, Trash2, Wrench } from 'lucide-vue-next'
 
 import ClassroomCover from '@/components/home/ClassroomCover.vue'
 import UiTooltip from '@/components/ui/UiTooltip.vue'
@@ -22,7 +21,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'open', id: string): void
-  (e: 'rename', id: string, name: string): void
   (e: 'delete', id: string): void
   (e: 'move', id: string, folderId: string | null): void
   (e: 'copied'): void
@@ -30,30 +28,13 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n()
 
-const editing = ref(false)
-const draft = ref('')
 const confirmingDelete = ref(false)
 const moveOpen = ref(false)
-const nameInputRef = ref<HTMLInputElement | null>(null)
+const dragging = ref(false)
 
 const dateLabel = computed(() =>
   formatRelativeDate(props.classroom.createdAt, locale.value, t as never),
 )
-
-function startRename() {
-  draft.value = props.classroom.name
-  editing.value = true
-  nextTick(() => {
-    nameInputRef.value?.focus()
-    nameInputRef.value?.select()
-  })
-}
-
-function commitRename() {
-  const next = draft.value.trim()
-  if (next && next !== props.classroom.name) emit('rename', props.classroom.id, next.slice(0, 100))
-  editing.value = false
-}
 
 async function copyName() {
   try {
@@ -65,16 +46,19 @@ async function copyName() {
 }
 
 function onDragStart(e: DragEvent) {
-  e.dataTransfer?.setData('text/stage-id', props.classroom.id)
-  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+  if (!e.dataTransfer) return
+  e.dataTransfer.setData('text/stage-id', props.classroom.id)
+  e.dataTransfer.effectAllowed = 'move'
+  dragging.value = true
 }
 </script>
 
 <template>
   <div
-    class="group cursor-pointer"
+    :class="['group relative cursor-grab active:cursor-grabbing', dragging && 'opacity-50']"
     draggable="true"
     @dragstart="onDragStart"
+    @dragend="dragging = false"
   >
     <!-- 缩略图 -->
     <div
@@ -82,6 +66,10 @@ function onDragStart(e: DragEvent) {
       @click="!confirmingDelete && emit('open', classroom.id)"
     >
       <ClassroomCover :scene="classroom.cover" :title="classroom.name" />
+
+      <span class="pointer-events-none absolute top-2 left-2 z-10 flex size-7 items-center justify-center rounded-full bg-black/30 text-white opacity-0 transition-opacity group-hover:opacity-100" title="拖动课堂到文件夹">
+        <GripVertical class="size-3.5" />
+      </span>
 
       <!-- 模式徽章 -->
       <div
@@ -108,14 +96,6 @@ function onDragStart(e: DragEvent) {
         >
           <Trash2 class="size-3.5" />
         </button>
-        <button
-          type="button"
-          class="flex size-7 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-colors hover:bg-black/50"
-          @click.stop="startRename"
-        >
-          <Pencil class="size-3.5" />
-        </button>
-
         <UiTooltip content="移动到文件夹">
           <button
             type="button"
@@ -126,30 +106,6 @@ function onDragStart(e: DragEvent) {
           </button>
         </UiTooltip>
 
-        <!-- 移动菜单 -->
-        <div
-          v-if="moveOpen"
-          class="absolute top-8 right-0 z-30 w-40 overflow-hidden rounded-lg border border-border bg-popover p-1 shadow-lg"
-          @click.stop
-        >
-          <button
-            v-for="f in folders"
-            :key="f.id"
-            type="button"
-            class="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs hover:bg-muted/60"
-            @click="((moveOpen = false), emit('move', classroom.id, f.id))"
-          >
-            {{ f.name }}
-          </button>
-          <button
-            v-if="classroom.folderId"
-            type="button"
-            class="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/60"
-            @click="((moveOpen = false), emit('move', classroom.id, null))"
-          >
-            移出文件夹
-          </button>
-        </div>
       </div>
 
       <!-- 删除确认遮罩 -->
@@ -178,6 +134,31 @@ function onDragStart(e: DragEvent) {
       </div>
     </div>
 
+    <!-- 菜单位于封面裁剪区域外，文件夹选项才能完整显示并可点击。 -->
+    <div
+      v-if="moveOpen"
+      class="absolute top-10 right-2 z-30 max-h-52 w-40 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-lg"
+      @click.stop
+    >
+      <button
+        v-for="f in folders.filter((item) => item.id !== classroom.folderId)"
+        :key="f.id"
+        type="button"
+        class="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs hover:bg-muted/60"
+        @click="((moveOpen = false), emit('move', classroom.id, f.id))"
+      >
+        {{ f.name }}
+      </button>
+      <button
+        v-if="classroom.folderId"
+        type="button"
+        class="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/60"
+        @click="((moveOpen = false), emit('move', classroom.id, null))"
+      >
+        移出文件夹
+      </button>
+    </div>
+
     <!-- 信息行 -->
     <div class="mt-2.5 flex items-center gap-2 px-1">
       <span
@@ -186,27 +167,14 @@ function onDragStart(e: DragEvent) {
         {{ t('home.classroomCount', { count: classroom.pages, date: dateLabel }) }}
       </span>
 
-      <input
-        v-if="editing"
-        ref="nameInputRef"
-        v-model="draft"
-        type="text"
-        maxlength="100"
-        class="w-full border-b border-violet-400/60 bg-transparent text-[15px] font-medium text-foreground/90 outline-none placeholder:text-muted-foreground/40"
-        @keydown.enter.prevent="commitRename"
-        @keydown.esc="editing = false"
-        @blur="commitRename"
-      />
-      <UiTooltip v-else side="bottom" :content="classroom.name">
+      <UiTooltip side="bottom" :content="classroom.name">
         <p
-          class="min-w-0 cursor-text truncate text-[15px] font-medium text-foreground/90"
-          @dblclick.stop="startRename"
+          class="min-w-0 truncate text-[15px] font-medium text-foreground/90"
         >
           {{ classroom.name }}
         </p>
       </UiTooltip>
       <button
-        v-if="!editing"
         type="button"
         class="shrink-0 rounded p-0.5 text-muted-foreground/40 transition-colors hover:text-foreground"
         :title="t('home.copyName')"

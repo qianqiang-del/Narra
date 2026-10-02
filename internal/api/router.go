@@ -5,6 +5,7 @@ import (
 	conversationv1 "narra/internal/api/v1/conversation"
 	discussionv1 "narra/internal/api/v1/discussion"
 	"narra/internal/api/v1/embedding"
+	folderv1 "narra/internal/api/v1/folder"
 	knowledgev1 "narra/internal/api/v1/knowledge"
 	"narra/internal/api/v1/llm"
 	mcpv1 "narra/internal/api/v1/mcp"
@@ -29,6 +30,7 @@ type Router struct {
 	llmCtrl          *llm.Controller
 	rerankCtrl       *rerank.Controller
 	classroomCtrl    *classroomv1.Controller
+	folderCtrl       *folderv1.Controller
 	knowledgeCtrl    *knowledgev1.Controller
 	conversationCtrl *conversationv1.Controller
 	sceneCtrl        *scenev1.Controller
@@ -36,7 +38,7 @@ type Router struct {
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, rerankSvc service.RerankSettingService, classroomSvc service.ClassroomService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, uploadDir string, parser documentparser.Parser, knowledgeLimits config.KnowledgeIngestConfig) *Router {
+func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, rerankSvc service.RerankSettingService, classroomSvc service.ClassroomService, folderSvc service.FolderService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, uploadDir string, parser documentparser.Parser, knowledgeLimits config.KnowledgeIngestConfig) *Router {
 	return &Router{
 		roleCtrl:         role.NewController(roleSvc),
 		embeddingCtrl:    embedding.NewController(embeddingSvc),
@@ -45,6 +47,7 @@ func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettin
 		llmCtrl:          llm.NewController(llmSvc),
 		rerankCtrl:       rerank.NewController(rerankSvc),
 		classroomCtrl:    classroomv1.NewController(classroomSvc),
+		folderCtrl:       folderv1.NewController(folderSvc),
 		knowledgeCtrl:    knowledgev1.NewController(knowledgeSvc, uploadDir, parser, knowledgeLimits),
 		conversationCtrl: conversationv1.NewController(conversationSvc),
 		sceneCtrl:        scenev1.NewController(sceneSvc),
@@ -78,6 +81,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		llm.RegisterRoutes(v1, r.llmCtrl)
 		rerank.RegisterRoutes(v1, r.rerankCtrl)
 		classroomv1.RegisterRoutes(v1, r.classroomCtrl)
+		folderv1.RegisterRoutes(v1, r.folderCtrl)
 		knowledgev1.RegisterRoutes(v1, r.knowledgeCtrl)
 		conversationv1.RegisterRoutes(v1, r.conversationCtrl)
 		scenev1.RegisterRoutes(v1, r.sceneCtrl)
