@@ -8,6 +8,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ChevronLeft, ChevronRight, Clock, FolderPlus, Search, X } from 'lucide-vue-next'
+import { toast } from 'vue-sonner'
 
 import ClassroomCard from '@/components/home/ClassroomCard.vue'
 import FolderCard from '@/components/home/FolderCard.vue'
@@ -30,6 +31,7 @@ const searchOpen = ref(false)
 const keyword = ref('')
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const newFolderOpen = ref(false)
+const creatingFolder = ref(false)
 const page = ref(1)
 
 const currentFolder = computed(() =>
@@ -113,9 +115,34 @@ function clearSearch() {
   nextTick(() => searchInputRef.value?.focus())
 }
 
-function onCreateFolder(name: string) {
-  library.createFolder(name)
-  emit('toast', '文件夹已创建')
+function showError(error: unknown) {
+  toast.error(error instanceof Error ? error.message : '操作失败，请重试')
+}
+
+async function onCreateFolder(name: string) {
+  if (creatingFolder.value) return
+  creatingFolder.value = true
+  try {
+    await library.createFolder(name)
+    newFolderOpen.value = false
+    emit('toast', '文件夹已创建')
+  } catch (error) {
+    showError(error)
+  } finally {
+    creatingFolder.value = false
+  }
+}
+
+async function onRenameFolder(id: string, name: string) {
+  try { await library.renameFolder(id, name) } catch (error) { showError(error) }
+}
+
+async function onDeleteFolder(id: string) {
+  try { await library.deleteFolderOnly(id) } catch (error) { showError(error) }
+}
+
+async function onMoveClassroom(id: string, folderId: string | null) {
+  try { await library.moveClassroom(id, folderId) } catch (error) { showError(error) }
 }
 
 function onCopied() {
@@ -133,7 +160,15 @@ function onCopied() {
         <!-- 标题 / 面包屑 -->
         <div class="flex items-center gap-1.5">
           <Clock class="size-3.5" />
-          <span>{{ t('home.recentClassrooms') }}</span>
+          <button
+            v-if="currentFolder"
+            type="button"
+            class="transition-colors hover:text-foreground/80"
+            @click="backToRoot"
+          >
+            {{ t('home.recentClassrooms') }}
+          </button>
+          <span v-else>{{ t('home.recentClassrooms') }}</span>
           <ChevronRight v-if="currentFolder" class="size-3 opacity-50" />
           <span v-if="currentFolder" class="font-medium text-foreground/70">{{ currentFolder.name }}</span>
           <span class="text-[11px] tabular-nums opacity-60">
@@ -198,13 +233,6 @@ function onCopied() {
         <div v-if="searching" class="-mt-3 mb-4 text-center text-[12px] text-muted-foreground/50">
           {{ t('home.searchResultTitle') }}
         </div>
-        <div v-else-if="currentFolder" class="-mt-3 mb-4 flex items-center justify-center gap-1.5 text-[12px] text-muted-foreground/50">
-          <button type="button" class="transition-colors hover:text-foreground/80" @click="backToRoot">
-            {{ t('home.recentClassrooms') }}
-          </button>
-          <ChevronRight class="size-3 opacity-50" />
-          <span class="text-foreground/70">{{ currentFolder.name }}</span>
-        </div>
 
         <!-- 网格 -->
         <div class="grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-3 lg:grid-cols-4">
@@ -215,10 +243,9 @@ function onCopied() {
               :folder="f"
               :courses="library.inFolder(f.id)"
               @open="openFolder"
-              @rename="library.renameFolder"
-              @delete-only="library.deleteFolderOnly"
-              @delete-with-courses="library.deleteFolderWithCourses"
-              @drop-course="(classroomId, folderId) => library.moveClassroom(classroomId, folderId)"
+              @rename="onRenameFolder"
+              @delete-only="onDeleteFolder"
+              @drop-course="onMoveClassroom"
             />
           </template>
           <ClassroomCard
@@ -227,9 +254,8 @@ function onCopied() {
             :classroom="c"
             :folders="library.folders"
             @open="emit('open-classroom', $event)"
-            @rename="library.renameClassroom"
             @delete="library.deleteClassroom"
-            @move="library.moveClassroom"
+            @move="onMoveClassroom"
             @copied="onCopied"
           />
         </div>
@@ -266,6 +292,6 @@ function onCopied() {
       </div>
     </div>
 
-    <NewFolderDialog v-model:open="newFolderOpen" @create="onCreateFolder" />
+    <NewFolderDialog v-model:open="newFolderOpen" :submitting="creatingFolder" @create="onCreateFolder" />
   </div>
 </template>

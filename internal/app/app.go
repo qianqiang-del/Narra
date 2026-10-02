@@ -223,6 +223,7 @@ func (a *App) initDependencies() error {
 	// 由服务层热更新（见 rerankSettingSvc 的 LoadActive 与 reload）；nil = 精排关闭。
 	rerankManager := rerank.NewManager()
 	classroomRepo := repository.NewClassroomRepository(a.postgresDB)
+	folderRepo := repository.NewFolderRepository(a.postgresDB)
 	classroomAgentRepo := repository.NewClassroomAgentRepository(a.postgresDB)
 	txManager := repository.NewTransactionManager(a.postgresDB)
 	sceneRepo := repository.NewSceneRepository(a.postgresDB)
@@ -417,6 +418,7 @@ func (a *App) initDependencies() error {
 	}
 	a.worker = workerRuntime
 	classroomSvc := service.NewClassroomService(classroomRepo, classroomAgentRepo, roleRepo, sceneRepo, llmProviderSvc, queue, txManager, audioDir)
+	folderSvc := service.NewFolderService(folderRepo, txManager)
 
 	// 对话事件流（SSE）：执行过程与最终结果从 conversation_events 里增量读、推给前端。
 	// 事件的写入不经过服务层 —— 它属于产生内容的那条链路（编排 / 工作台）的事务。
@@ -482,7 +484,7 @@ func (a *App) initDependencies() error {
 	}
 
 	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo)
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, classroomSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, uploadDir, parser, knowledgeIngest)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, classroomSvc, folderSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, uploadDir, parser, knowledgeIngest)
 	return nil
 }
 
