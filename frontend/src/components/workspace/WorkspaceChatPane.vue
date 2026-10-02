@@ -21,6 +21,7 @@ import {
 
 import type { ChatMessage } from '@/data/workspace'
 import { cn } from '@/lib/utils'
+import MarkdownText from '@/components/shared/MarkdownText.vue'
 
 const props = defineProps<{
   /** null = 空态（尚未选择对话） */
@@ -156,7 +157,7 @@ watch(
 
           <!-- AI 消息 -->
           <div v-else class="flex flex-col gap-2">
-            <p class="text-[13px] leading-6 whitespace-pre-wrap text-foreground/90">{{ m.text }}</p>
+            <MarkdownText :source="m.text" class="text-[13px] leading-6 text-foreground/90" />
             <!-- 课程卡片 -->
             <button
               v-if="m.courseCard"
