@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"narra/internal/agent"
+	"narra/internal/material"
 	"narra/internal/toolcall"
 	"narra/pkg/logger"
 )
@@ -52,6 +53,10 @@ type EvidenceItem struct {
 type researchInput struct {
 	Page  PageContext
 	Steps []ToolStep
+
+	// MaterialExcerpts 是从本课材料里按本页内容检索到的原文片段。
+	// 它们是预置的事实来源，不经过工具调用；为空表示本课没有材料或没命中。
+	MaterialExcerpts []material.Hit
 
 	// PlannerSkipped 表示页规划判了这一页不需要查资料。它只是参考——要不要查由调研 Agent 自己定。
 	PlannerSkipped bool
@@ -142,6 +147,24 @@ func researchPrompt(in *researchInput) string {
 		builder.WriteString("页规划判了这一页不需要查资料。那只是参考——你手里有工具，这一页要是会出现你拿不准的事实，就自己去查。\n")
 	default:
 		builder.WriteString("规划阶段没有给出具体步骤，请自行判断需要查什么。\n")
+	}
+	if len(in.MaterialExcerpts) > 0 {
+		builder.WriteString("\n## 本课材料摘录（用户上传，优先采用）\n")
+		builder.WriteString("下面是从这门课的材料里按本页内容检索到的原文片段。它们与工具查到的资料同属事实来源，冲突时以材料为准；引用时来源写材料名。\n")
+		for _, hit := range in.MaterialExcerpts {
+			label := strings.TrimSpace(hit.Source)
+			if hit.SectionPath != "" {
+				if label != "" {
+					label += " · " + hit.SectionPath
+				} else {
+					label = hit.SectionPath
+				}
+			}
+			if label == "" {
+				label = "材料"
+			}
+			fmt.Fprintf(&builder, "- 【%s】%s\n", label, strings.TrimSpace(hit.Content))
+		}
 	}
 	builder.WriteString("\n先用工具把事实查准，再调用 ")
 	builder.WriteString(toolNameEmitEvidence)

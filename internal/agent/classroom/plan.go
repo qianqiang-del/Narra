@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"narra/internal/agent"
+	"narra/internal/material"
 	"narra/internal/model/entity"
 	"narra/pkg/logger"
 )
@@ -36,6 +37,8 @@ type GenerationConfig struct {
 	ModelID    string `json:"llm_model_id"`
 	WebSearch  bool   `json:"web_search"`
 	Bio        string `json:"bio"`
+	// Materials 是受理时冻结的本课材料引用；生成侧据此定向取材料文本。
+	Materials []material.Ref `json:"materials"`
 }
 
 // planClassroom 段一：生成课堂计划、计划落库、建场景行，成功时把课程置为 playable。
@@ -53,7 +56,22 @@ func planClassroom(ctx context.Context, deps Deps, classroom *entity.Classroom, 
 	if err != nil {
 		return nil, err
 	}
-	messages, err := buildPlanMessages(classroom, config)
+	// 材料是加法：取不到（文档被删、检索故障）就按没材料排课，绝不阻断规划。
+	// 走 rt.retrievalContext 是为了让"需求相关节选"这步能复用课堂模型做查询扩写。
+	var materialBlocks []material.Block
+	if deps.Materials != nil && len(config.Materials) > 0 {
+		materialBlocks = deps.Materials.Snapshot(rt.retrievalContext(ctx), config.Materials, classroom.Requirement)
+		if len(materialBlocks) == 0 {
+			logger.Warn("本课材料没有可注入的内容",
+				zap.Uint64("classroom_id", classroom.ID),
+				zap.Int("materials", len(config.Materials)))
+		} else {
+			logger.Info("本课材料已注入规划",
+				zap.Uint64("classroom_id", classroom.ID),
+				zap.Int("blocks", len(materialBlocks)))
+		}
+	}
+	messages, err := buildPlanMessages(classroom, config, materialBlocks)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +112,7 @@ func generatePlan(ctx context.Context, planner *react.Agent, messages []*schema.
 }
 
 // buildPlanMessages 拼规划的输入。纯函数，便于单测。
-func buildPlanMessages(classroom *entity.Classroom, config GenerationConfig) ([]*schema.Message, error) {
+func buildPlanMessages(classroom *entity.Classroom, config GenerationConfig, materialBlocks []material.Block) ([]*schema.Message, error) {
 	systemPrompt, ok := agent.BuildTaskPrompt(agent.TaskOutline)
 	if !ok {
 		return nil, fmt.Errorf("大纲提示词未注册")
@@ -113,11 +131,37 @@ func buildPlanMessages(classroom *entity.Classroom, config GenerationConfig) ([]
 		input.WriteString("\n\n## 用户简介\n")
 		input.WriteString(bio)
 	}
+	if section := formatMaterialSection(materialBlocks); section != "" {
+		input.WriteString("\n\n")
+		input.WriteString(section)
+	}
 
 	return []*schema.Message{
 		schema.SystemMessage(systemPrompt),
 		schema.UserMessage(input.String()),
 	}, nil
+}
+
+// formatMaterialSection 把材料块拼成规划输入里的一节；没有材料时返回空串，
+// 调用方的输入与"没有材料"时代完全一致。
+func formatMaterialSection(blocks []material.Block) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("## 本课材料\n")
+	builder.WriteString("以下是用户为这门课提供的材料，排课应以其为依据。\n")
+	for _, block := range blocks {
+		builder.WriteString("\n### ")
+		builder.WriteString(block.Name)
+		if block.Truncated {
+			builder.WriteString("（节选）")
+		}
+		builder.WriteString("\n")
+		builder.WriteString(block.Text)
+		builder.WriteString("\n")
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 // parsePlan 解析并校验规划 Agent 交回的计划。
