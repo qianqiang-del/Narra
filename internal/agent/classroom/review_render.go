@@ -18,6 +18,12 @@ func renderBlocksForReview(blocks []contentBlock) string {
 			builder.WriteString(content)
 			builder.WriteByte('\n')
 		}
+		for columnIndex, column := range block.Columns {
+			fmt.Fprintf(&builder, "   第%d列：%s\n", columnIndex+1, column.Title)
+			for _, item := range column.Items {
+				fmt.Fprintf(&builder, "   - %s\n", item)
+			}
+		}
 		if interaction := block.Interaction; interaction != nil {
 			if kind := strings.TrimSpace(interaction.Kind); kind != "" {
 				fmt.Fprintf(&builder, "   交互类型：%s\n", kind)

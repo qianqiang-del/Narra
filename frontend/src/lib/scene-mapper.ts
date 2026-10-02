@@ -5,7 +5,7 @@
  * 只是各自多带一些用不上的字段，所以这里只依赖两者的公共部分：课堂主画布与首页卡片
  * 共用同一套组装逻辑，免得「课堂里怎么画」和「卡片上怎么画」慢慢长成两个样子。
  */
-import type { Scene, SlideContent } from '@/types/scene'
+import type { Scene, SlideColumn, SlideContent } from '@/types/scene'
 
 /** 讲解页里的一个内容块；与后端 `content.blocks` 的每一项一一对应。 */
 export interface SceneBlockDTO {
@@ -13,6 +13,7 @@ export interface SceneBlockDTO {
   type?: string
   content?: string
   text?: string
+  columns?: { title?: string; items?: string[] }[]
   interaction?: { kind?: string; controls?: Record<string, unknown>[]; options?: string[]; answer?: string; config?: Record<string, unknown> }
 }
 
@@ -42,7 +43,15 @@ function sameAsTitle(text: string, title: string): boolean {
  */
 export function toSlideContent(title: string, blocks: SceneBlockDTO[]): SlideContent {
   const kept = blocks
-    .map((block) => ({ key: block.key ?? '', type: block.type ?? 'paragraph', text: (block.content ?? block.text ?? '').trim() }))
+    .map((block) => ({
+      key: block.key ?? '',
+      type: block.type ?? 'paragraph',
+      text: (block.content ?? block.text ?? '').trim(),
+      columns: block.columns?.map((column): SlideColumn => ({
+        title: (column.title ?? '').trim(),
+        items: (column.items ?? []).map((item) => item.trim()).filter(Boolean),
+      })).filter((column) => column.title && column.items.length) ?? [],
+    }))
     .filter((block) => block.text.length > 0)
 
   const titleIndex = kept.findIndex((block) => block.type === 'heading' && sameAsTitle(block.text, title))

@@ -782,9 +782,9 @@ onBeforeUnmount(() => {
       <!-- 舞台：高度 = 100% - (Header + Roundtable) -->
       <div
         class="relative isolate min-h-0 flex-1 overflow-hidden"
-        :style="{ height: `calc(100% - ${isPresenting ? 0 : 80}px - 192px)` }"
       >
         <CanvasArea
+          :class="{ 'presenting-canvas': isPresenting }"
           :scene="activeScene"
           :index="activeIndex"
           :total="scenes.length"

@@ -55,7 +55,7 @@ interface SlideRow { key: string; label: string; text: string }
 /** 讲解页正文的一个渲染单元；相邻的 list-item 合成一张要点卡片。 */
 interface SlideUnit {
   id: string
-  type: 'heading' | 'paragraph' | 'code' | 'callout' | 'list' | 'takeaway'
+  type: 'heading' | 'paragraph' | 'code' | 'callout' | 'columns' | 'list' | 'takeaway'
   /** 小节标题、段落与代码的原文 */
   text: string
   /** `callout` 按「标签：正文」拆出的标签，没有标签时为空串 */
@@ -65,6 +65,7 @@ interface SlideUnit {
   /** 卡片里是否有带标签的行；没有就整张卡片退回普通条目排版 */
   hasLabel: boolean
   rows: SlideRow[]
+  columns?: { title: string; items: string[] }[]
 }
 
 /** 把「标签：正文」拆成两列，让要点排得像表格；标签不像短语时原样返回。 */
@@ -98,7 +99,20 @@ const slideUnits = computed<SlideUnit[]>(() => {
     }
     const type: SlideUnit['type'] =
       block.type === 'heading' || block.type === 'code' || block.type === 'callout' ? block.type : 'paragraph'
-    units.push({ id: block.key || `block-${index}`, type, text: block.text, ...splitLabel(block.text), hasLabel: false, rows: [] })
+    if (block.type === 'columns' && block.columns?.length) {
+      units.push({
+        id: block.key || `block-${index}`,
+        type: 'columns',
+        text: block.text,
+        label: '',
+        rest: block.text,
+        hasLabel: false,
+        rows: [],
+        columns: block.columns,
+      })
+    } else {
+      units.push({ id: block.key || `block-${index}`, type, text: block.text, ...splitLabel(block.text), hasLabel: false, rows: [] })
+    }
   })
   // 收尾结论永远排在正文最后一块，跟着内容一起滚动。
   const takeaway = props.scene.slide?.takeaway ?? ''
@@ -121,12 +135,12 @@ const slideUnits = computed<SlideUnit[]>(() => {
   <!-- slide：一页课件，正文块按类型分别排版 -->
   <div
     v-if="scene.type === 'slide' && scene.slide"
-    class="flex size-full flex-col justify-center overflow-hidden bg-white px-10 md:px-16 dark:bg-slate-900"
+    class="flex size-full flex-col overflow-hidden bg-white px-8 py-8 md:px-14 md:py-10 dark:bg-slate-900"
   >
     <!-- 标题区 -->
     <header class="shrink-0 px-0 pt-0 pb-4">
       <h1
-        class="text-3xl leading-tight font-bold tracking-tight text-gray-800 md:text-4xl dark:text-gray-100"
+        class="line-clamp-2 text-3xl leading-tight font-bold tracking-tight text-gray-800 md:text-4xl dark:text-gray-100"
       >
         {{ scene.title }}
       </h1>
@@ -140,7 +154,7 @@ const slideUnits = computed<SlideUnit[]>(() => {
     </header>
 
     <!-- 正文：内容不满一屏时垂直居中，超出时从顶部开始滚动 -->
-    <div class="slide-body min-h-0 max-h-[70%] overflow-y-auto px-0">
+    <div class="slide-body min-h-0 flex-1 overflow-y-auto px-0">
       <template v-for="unit in slideUnits" :key="unit.id">
         <!-- 小节标题 -->
         <h2
@@ -176,17 +190,44 @@ const slideUnits = computed<SlideUnit[]>(() => {
           </p>
         </div>
 
+        <!-- 对比/分类列：结构化内容由后端保留，避免模型的分组关系被压成一段文字。 -->
+        <div
+          v-else-if="unit.type === 'columns'"
+          class="grid gap-3 md:grid-cols-2"
+        >
+          <section
+            v-for="column in unit.columns"
+            :key="column.title"
+            class="rounded-2xl border border-violet-100 bg-violet-50/50 p-4 dark:border-violet-900/60 dark:bg-violet-950/25"
+          >
+            <h3 class="text-[14px] font-bold text-violet-900 dark:text-violet-100">{{ column.title }}</h3>
+            <ul class="mt-3 space-y-2">
+              <li
+                v-for="item in column.items"
+                :key="item"
+                class="flex items-start gap-2 text-[13px] leading-6 text-slate-700 dark:text-slate-200"
+              >
+                <span class="mt-2 size-1.5 shrink-0 rounded-full bg-violet-500" />
+                <span>{{ item }}</span>
+              </li>
+            </ul>
+          </section>
+        </div>
+
         <!-- 并列要点：一张卡片逐行分隔，带标签的行分两列对齐 -->
         <div
           v-else-if="unit.type === 'list'"
-          class="space-y-3"
+          :class="cn(
+            'grid gap-3 rounded-2xl border border-slate-200/80 bg-slate-50/70 p-4 dark:border-slate-700/70 dark:bg-slate-800/40',
+            unit.rows.length >= 4 ? 'md:grid-cols-2' : 'grid-cols-1',
+          )"
         >
           <div
             v-for="(row, rowIndex) in unit.rows"
             :key="row.key || rowIndex"
             :class="
               cn(
-                'flex items-start gap-3 px-0',
+                'flex items-start gap-3 rounded-xl bg-white/80 px-3.5 py-3 ring-1 ring-slate-200/60 dark:bg-slate-900/50 dark:ring-slate-700/60',
               )
             "
           >
