@@ -51,7 +51,13 @@ type contentBlock struct {
 	Key         string             `json:"key"`
 	Type        string             `json:"type"`
 	Content     string             `json:"content"`
+	Columns     []contentColumn    `json:"columns,omitempty"`
 	Interaction *interactionConfig `json:"interaction,omitempty"`
+}
+
+type contentColumn struct {
+	Title string   `json:"title"`
+	Items []string `json:"items"`
 }
 
 type interactionConfig struct {

@@ -1,8 +1,9 @@
 export type SceneType = 'slide' | 'quiz' | 'interactive' | 'complete'
 export type SceneStatus = 'pending' | 'generating' | 'ready' | 'failed' | 'complete'
 
+export interface SlideColumn { title: string; items: string[] }
 /** 讲解页里的一个内容块；`type` 与后端内容块类型对应，前端按类型给不同版式。 */
-export interface SlideBlock { key: string; type: string; text: string }
+export interface SlideBlock { key: string; type: string; text: string; columns?: SlideColumn[] }
 /**
  * 讲解页正文。
  *
@@ -51,7 +52,7 @@ export interface Scene {
   slide?: SlideContent
   quiz?: QuizContent
   interactive?: InteractiveContent
-  blocks?: { key?: string; type?: string; content?: string; text?: string; interaction?: { kind?: string; controls?: Record<string, unknown>[]; options?: string[]; answer?: string; config?: Record<string, unknown> } }[]
+  blocks?: { key?: string; type?: string; content?: string; text?: string; columns?: { title?: string; items?: string[] }[]; interaction?: { kind?: string; controls?: Record<string, unknown>[]; options?: string[]; answer?: string; config?: Record<string, unknown> } }[]
 }
 
 export interface Classroom { id: string; title: string; scenes: Scene[] }

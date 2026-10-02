@@ -9,6 +9,7 @@
  *   - scene.* 事件：单页进度变化（检索资料/写内容/写讲稿/审核/合成语音/完成/失败）。
  * 角色只在挂载时拉一次：它们在受理时就已经写进库，之后再不会变。
  * 标题也跟着流走 —— 大纲落库后后端会把 classrooms.title 回填成模型起的标题。
+ * 大纲结构另外取一次 /outline：它带每页简介，比场景摘要更适合只读展示；落库后不再变，不必进流。
  */
 import { computed, onMounted, onUnmounted, ref, watch, type Component } from 'vue'
 import { useRouter } from 'vue-router'
@@ -16,8 +17,9 @@ import {
   AlertCircle, ArrowRight, Check, FileText, Layers, Loader2, Rocket, Sparkles, Users,
 } from 'lucide-vue-next'
 import {
-  fetchClassroom, fetchClassroomAgents, fetchClassroomScenes, streamClassroomEvents,
-  type ClassroomDTO, type ClassroomSceneSummaryDTO, type RoleCardDTO,
+  fetchClassroom, fetchClassroomAgents, fetchClassroomOutline, fetchClassroomScenes,
+  streamClassroomEvents,
+  type ClassroomDTO, type ClassroomOutlineDTO, type ClassroomSceneSummaryDTO, type RoleCardDTO,
 } from '@/api/classroom'
 
 const props = defineProps<{ id: string }>()
@@ -26,6 +28,8 @@ const router = useRouter()
 const classroom = ref<ClassroomDTO | null>(null)
 const agents = ref<RoleCardDTO[]>([])
 const scenes = ref<ClassroomSceneSummaryDTO[]>([])
+/** 大纲结构（含每页简介）；拉不到时这一屏退回用 scenes 渲染。 */
+const outlineScenes = ref<ClassroomOutlineDTO['scenes']>([])
 const loading = ref(true)
 const error = ref('')
 
@@ -49,6 +53,18 @@ const settledCount = computed(() => readyCount.value + failedCount.value)
 const scenePercent = computed(() => (totalScenes.value === 0 ? 0 : Math.round((settledCount.value / totalScenes.value) * 100)))
 /** 有任一页就绪即可进课堂；整课 ready 也算。不拿 playable 当条件——它在页面就绪前就会置上。 */
 const canEnter = computed(() => readyCount.value > 0 || classroom.value?.status === 'ready')
+
+/**
+ * 大纲这一屏要展示的页。
+ *
+ * 优先用 /outline 的结果——它有每页简介，且这一屏刻意不显示生成状态（那是「生成场景」的职责）；
+ * /outline 没拉到就退回场景摘要，至少把结构与页型列出来。
+ */
+const outlineRows = computed(() => (
+  outlineScenes.value.length
+    ? outlineScenes.value.map((scene) => ({ id: scene.id, title: scene.title, type: scene.type, brief: scene.brief }))
+    : scenes.value.map((scene) => ({ id: scene.id, title: scene.title, type: scene.type, brief: '' }))
+))
 
 /**
  * 生成是否已经不会再有变化——用来停掉动画并断开事件流。
@@ -98,6 +114,18 @@ function stepState(index: number): 'done' | 'active' | 'ready' | 'locked' {
   if (index < activeIndex.value) return 'done'
   if (index <= maxReached.value) return 'ready'
   return 'locked'
+}
+
+/**
+ * 节点是否该转圈。
+ *
+ * 不能只看「是不是当前选中」——回退到大纲看结构时，它早已完成，还转圈会让人以为在重新生成。
+ * 大纲与角色都是一次成型的，只有「生成场景」要一直转到所有页出结果。
+ */
+function stepBusy(index: number) {
+  if (index === 0) return !outlineReady.value
+  if (index === 1) return false
+  return !generationDone.value
 }
 
 function nodeClass(index: number) {
@@ -153,11 +181,21 @@ function upsertScene(scene: ClassroomSceneSummaryDTO) {
   scenes.value = scenes.value.map((item) => (item.id === scene.id ? scene : item))
 }
 
+/**
+ * 大纲就绪那一刻：停掉等待动画、取一次结构、把流程往前推。
+ *
+ * immediate 是必要的：直接进这个页（或刷新）时，大纲在挂载那一刻就已经落库了，
+ * 没有「从没就绪变成就绪」这一步，普通侦听不会触发，轮播会一直转下去。
+ */
 watch(outlineReady, (ready) => {
+  if (phaseTimer) {
+    window.clearInterval(phaseTimer)
+    phaseTimer = undefined
+  }
   if (!ready) return
-  if (phaseTimer) window.clearInterval(phaseTimer)
+  void loadOutline()
   if (activeIndex.value < 1) later(() => reach(1), 1400)
-})
+}, { immediate: true })
 
 watch(activeIndex, (index) => {
   // 角色只展示一小会儿，第一次进入时自动走向场景；回退时不重复触发。
@@ -175,7 +213,7 @@ const autoEnterDelayMs = 1200
  *
  * 进来时就已经有页可学却不跳：一门课一旦有过 ready 页，从卡片进会被分流直接送进课堂，
  * 生成进度页就只剩直接敲 URL 这一条路；这里不抢跳，那个页面才留得住——页面上「进入课堂」
- * 的按钮也始终是它的出口。
+ * 的按钮也始终是它的出口。syncInitialStep 因此必须把 autoEntered 一起置位。
  */
 let autoEntered = false
 
@@ -198,12 +236,24 @@ async function load() {
   scenes.value = currentScenes
 }
 
+/** 取一次大纲结构。拉不到就退回场景摘要渲染，不影响这一屏的其它功能。 */
+async function loadOutline() {
+  try {
+    const data = await fetchClassroomOutline(classroomId.value)
+    outlineScenes.value = data.scenes
+  } catch {
+    outlineScenes.value = []
+  }
+}
+
 /** 刷新中途进入时，直接落到与当前进度相符的节点，不从头播一遍。 */
 function syncInitialStep() {
   if (canEnter.value) {
     maxReached.value = 3
     activeIndex.value = 3
     rolesAdvanced = true
+    // 已经有页可学还停在进度页，说明是直接进来的，不是刚看着第一页生成完——别抢跳。
+    autoEntered = true
     return
   }
   if (outlineReady.value) {
@@ -232,9 +282,12 @@ onMounted(async () => {
 
   syncInitialStep()
 
-  phaseTimer = window.setInterval(() => {
-    phaseIndex.value = (phaseIndex.value + 1) % outlinePhases.length
-  }, 2400)
+  // 轮播只在真等着大纲时才转；进来时它已经就绪就别再假动。
+  if (!outlineReady.value) {
+    phaseTimer = window.setInterval(() => {
+      phaseIndex.value = (phaseIndex.value + 1) % outlinePhases.length
+    }, 2400)
+  }
 
   try {
     for await (const event of streamClassroomEvents(classroomId.value, eventController.signal)) {
@@ -302,7 +355,7 @@ onUnmounted(() => {
               >
                 <span class="flex size-9 shrink-0 items-center justify-center rounded-full border transition" :class="nodeClass(index)">
                   <Check v-if="stepState(index) === 'done'" class="size-4" />
-                  <Loader2 v-else-if="stepState(index) === 'active' && !generationDone" class="size-4 animate-spin" />
+                  <Loader2 v-else-if="stepState(index) === 'active' && stepBusy(index)" class="size-4 animate-spin" />
                   <component :is="step.icon" v-else class="size-4" />
                 </span>
                 <span class="hidden sm:block">
@@ -320,7 +373,7 @@ onUnmounted(() => {
         </nav>
 
         <section v-if="activeStep.key === 'outline'" class="anim-fade-up rounded-2xl border border-slate-200/70 bg-white/80 p-8 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
-          <div class="flex flex-col items-center text-center">
+          <div v-if="!outlineReady" class="flex flex-col items-center text-center">
             <div class="relative mb-6 flex size-16 items-center justify-center">
               <span class="absolute inset-0 animate-ping rounded-full bg-blue-500/20" />
               <span class="relative flex size-16 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg shadow-blue-500/30">
@@ -338,6 +391,40 @@ onUnmounted(() => {
               <div class="indeterminate h-full w-1/3 rounded-full bg-blue-500" />
             </div>
             <p class="mt-3 text-xs text-slate-400">大纲完成后会自动进入下一步</p>
+          </div>
+
+          <div v-else>
+            <header class="flex items-center gap-2">
+              <FileText class="size-5 text-blue-600 dark:text-blue-400" />
+              <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-50">课程大纲</h2>
+              <span class="ml-auto text-xs text-slate-400">{{ outlineRows.length }} 页</span>
+            </header>
+
+            <ol class="mt-5 space-y-2">
+              <li
+                v-for="(row, index) in outlineRows"
+                :key="row.id"
+                class="anim-fade-up flex items-start gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-800"
+                :style="{ animationDelay: `${index * 40}ms` }"
+              >
+                <span class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs text-slate-500 tabular-nums dark:bg-slate-800">{{ index + 1 }}</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-sm font-medium text-slate-900 dark:text-slate-100">{{ row.title || `第 ${index + 1} 页` }}</span>
+                  <span v-if="row.brief" class="mt-0.5 block text-xs leading-5 text-slate-500 dark:text-slate-400">{{ row.brief }}</span>
+                </span>
+                <span class="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500 dark:bg-slate-800">{{ typeLabel(row.type) }}</span>
+              </li>
+            </ol>
+
+            <div class="mt-5 flex items-center justify-between text-xs text-slate-400">
+              <span>大纲已落库，页面按这份结构逐页生成</span>
+              <button
+                v-if="maxReached >= 2"
+                type="button"
+                class="rounded-lg px-2 py-1 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+                @click="goTo(2)"
+              >查看生成进度 →</button>
+            </div>
           </div>
         </section>
 
@@ -478,7 +565,11 @@ onUnmounted(() => {
 }
 .indeterminate { animation: indeterminate-slide 1.5s ease-in-out infinite; }
 
+/*
+ * 减少动态效果时停掉装饰性动画。但 indeterminate 那条线不停：它是「后台还在干活」
+ * 的唯一信号，静止时会停在轨道三分之一处，比不动更像卡住；同屏的图标转圈也照常跑。
+ */
 @media (prefers-reduced-motion: reduce) {
-  .blob, .anim-fade-up, .shimmer, .indeterminate { animation: none; }
+  .blob, .anim-fade-up, .shimmer { animation: none; }
 }
 </style>

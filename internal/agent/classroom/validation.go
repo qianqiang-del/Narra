@@ -33,6 +33,24 @@ func validateBlocks(blocks []contentBlock, sceneType string) ([]contentBlock, er
 		if err := validateInteraction(*block); err != nil {
 			return nil, err
 		}
+		if block.Type == blockTypeColumns {
+			if len(block.Columns) < 2 || len(block.Columns) > 3 {
+				return nil, fmt.Errorf("内容块 %q 的 columns 必须有 2 到 3 列", block.Key)
+			}
+			for columnIndex := range block.Columns {
+				column := &block.Columns[columnIndex]
+				column.Title = strings.TrimSpace(column.Title)
+				if column.Title == "" || len(column.Items) == 0 || len(column.Items) > 5 {
+					return nil, fmt.Errorf("内容块 %q 的第 %d 列标题或条目不完整", block.Key, columnIndex+1)
+				}
+				for itemIndex := range column.Items {
+					column.Items[itemIndex] = strings.TrimSpace(column.Items[itemIndex])
+					if column.Items[itemIndex] == "" {
+						return nil, fmt.Errorf("内容块 %q 的第 %d 列存在空条目", block.Key, columnIndex+1)
+					}
+				}
+			}
+		}
 	}
 
 	// 交互页不在这里：它的正文是一份 HTML 文档，由 generateInteractiveContent 单独校验。

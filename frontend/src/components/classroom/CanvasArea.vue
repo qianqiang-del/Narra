@@ -53,8 +53,7 @@ const { t } = useI18n()
       class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-gray-50/30 p-2 transition-colors duration-500 dark:bg-gray-900/30"
     >
       <div
-        class="relative aspect-[16/9] max-h-full max-w-full overflow-hidden rounded-lg bg-white shadow-2xl transition-all duration-700 dark:bg-gray-800"
-        style="height: 100%"
+        class="canvas-frame relative overflow-hidden rounded-lg bg-white shadow-2xl transition-all duration-700 dark:bg-gray-800"
       >
         <!-- 课程完成页 -->
         <ClassroomComplete v-if="courseComplete" :stats="stats" />
@@ -121,3 +120,19 @@ const { t } = useI18n()
     />
   </div>
 </template>
+
+<style scoped>
+/*
+ * 画布同时受舞台宽度和剩余高度约束，取两者中较小的尺寸。
+ * 仅使用 height: 100% 会让宽屏设备按剩余高度缩小课件，浪费可用横向空间。
+ */
+.canvas-frame {
+  width: min(100%, calc((100dvh - 272px) * 1.7777778));
+  aspect-ratio: 16 / 9;
+  max-height: 100%;
+}
+
+.presenting-canvas .canvas-frame {
+  width: min(100%, calc((100dvh - 192px) * 1.7777778));
+}
+</style>

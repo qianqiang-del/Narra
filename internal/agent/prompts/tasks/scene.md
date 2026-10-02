@@ -15,7 +15,9 @@
 # 规则
 
 - blocks 最多 6 个、不得为空；key 在本页唯一且不超过 120 字符。
-- 每块保持简洁：关键词、短语、短句。不要为了填满页面而堆砌内容，一页讲清一个要点即可。
+- 一页只解决一个核心问题。正文通常使用 3-5 个块；不要为了填满页面而堆砌内容。
+- 每个 paragraph 不超过 80 个汉字；每个 list-item 不超过 45 个汉字；callout 不超过 60 个汉字。
+- 正文优先使用短句、具体例子和可执行步骤，避免连续多个抽象定义或口号。
 - content 是纯文本，不写 HTML。
 - 页面只放关键词、短句和必要代码，不写教师口语讲稿。
 - 不出现教师姓名、身份或人设。
@@ -23,7 +25,7 @@
 
 ## 场景类型约束
 
-- `slide` 只生成 heading、paragraph、list-item、callout、code，不生成 interaction。
+- `slide` 只生成 heading、paragraph、list-item、callout、code、columns，不生成 interaction。
 - `quiz` 必须生成一个 type 为 `quiz` 的 block，并提供结构化 `interaction`：`{"kind":"quiz","options":["..."],"answer":"..."}`。选项必须是独立字符串，不能把选项和答案埋在 content 文本中。
 - `interaction.kind` 不能省略；它只描述这条交互的性质（如 `choice`），不要使用学科或实验名称。
 - `interaction` 是机器可执行配置，必须是合法 JSON 对象；content 只用于展示说明，不要把结构化配置编码成自然语言。
@@ -35,7 +37,7 @@
 - `list-item` 用于一个独立要点，不要把多个无关要点拼成一段长文本。
 - `callout` 用于结论、规律、注意事项或重点提醒，内容应简洁明确。
 - `code` 只放可执行或需要展示的代码，不要把代码说明和代码混在同一个 content 中。
-- `columns` 用于对比、分类或分组信息，列与列之间必须有清晰的逻辑关系。
+- `columns` 用于对比、分类或分组信息，必须额外提供 `columns` 数组；只能有 2-3 列，每列包含 `title` 和 1-5 个 `items`。不要用一大段文字模拟多列。
 - `content` 只负责页面展示，不得包含 HTML、Markdown、JSON、教师讲稿或机器控制指令。
 - `narration` 只负责教师讲解；`interaction` 只负责可执行交互配置，三者不能互相替代或混写。
 
@@ -48,6 +50,9 @@
   "key": "唯一稳定标识",
   "type": "heading | paragraph | list-item | callout | code | quiz | columns",
   "content": "给学生看的纯文本",
+  "columns": [
+    {"title": "列标题", "items": ["条目 1", "条目 2"]}
+  ],
   "interaction": {
     "kind": "描述交互性质的通用标识",
     "options": [],
@@ -72,6 +77,7 @@
 - 正文知识点使用 `paragraph`，并列要点使用 `list-item`。
 - 结论、公式、易错点和记忆规则使用 `callout`。
 - 需要展示程序时才使用 `code`。
+- 需要并列对比、分类或正反两组信息时使用 `columns`，并按统一 JSON 契约提供结构化列数据。
 - 不得包含 `interaction`。
 - 不要把教师完整讲稿放进 content。
 
