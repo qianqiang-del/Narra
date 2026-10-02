@@ -366,16 +366,16 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         </button>
       </UiTooltip>
 
-      <button
-        v-else
-        type="button"
-        :class="webSearch ? pillActive : pillMuted"
-        :aria-pressed="webSearch"
-        :title="webSearch ? t('toolbar.webSearchOn') : t('toolbar.webSearchOff')"
-        @click="webSearch = !webSearch"
-      >
-        <Globe2 :class="cn('size-3.5', webSearch && 'animate-pulse')" />
-      </button>
+      <UiTooltip v-else :content="t('toolbar.webSearchHint')">
+        <button
+          type="button"
+          :class="webSearch ? pillActive : pillMuted"
+          :aria-pressed="webSearch"
+          @click="webSearch = !webSearch"
+        >
+          <Globe2 :class="cn('size-3.5', webSearch && 'animate-pulse')" />
+        </button>
+      </UiTooltip>
     </div>
   </div>
 </template>
