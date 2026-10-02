@@ -350,6 +350,13 @@ func (a *App) initDependencies() error {
 		return fmt.Errorf("创建精排装饰器失败: %w", err)
 	}
 	knowledgeRetrieval = reranked
+	// 上下文装配层包在最外面：折叠同组命中、把整节/整符号拼好放进 context，再交给服务层。
+	// 精排的输入与打分不受影响；装配失败自动降级为"只返回命中切片"（见 rag/assemble.go）。
+	assembled, err := rag.NewAssembled(knowledgeRetrieval, knowledgeSearchRepo)
+	if err != nil {
+		return fmt.Errorf("创建上下文装配层失败: %w", err)
+	}
+	knowledgeRetrieval = assembled
 	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetrieval, embeddingModelRepo, uploadDir, knowledgeDir)
 
 	// 内置工具 rag_retrieve：把知识库检索直接挂给 Eino agent（见 internal/mcp/knowledge_tool.go）。

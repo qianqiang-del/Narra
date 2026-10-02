@@ -35,4 +35,20 @@ type KnowledgeSearchRepository interface {
 	// 拼起来的那一段；每个词项的权重由调用方给（见 entity.KnowledgeLexicalTerm），
 	// 短语只在不改变准入的前提下额外加分。terms 为空时直接返回空结果，不查库。
 	SearchLexical(ctx context.Context, query entity.KnowledgeLexicalQuery) ([]entity.KnowledgeChunkView, error)
+
+	// 下面三个是"上下文装配"的只读查询（见 rag.Assembled）：命中之后按组回读整组切片，
+	// 拼成一段完整上下文交给调用方。它们与召回是两条不同的路径 —— 召回按相似度/词项找，
+	// 这里按位置取，所以不经过向量与词法，只按 document_id + 条件顺序读。
+	//
+	// 底线过滤与召回完全一致（文档 ready + enabled）：命中之后、装配之前文档被停用时，
+	// 不该再把它的内容拼出来。条件里的字段都有现成的索引（document_id 前缀），不需要新索引。
+
+	// ListSectionChunkTexts 取一篇文档里某个节的全部切片（按 chunk_index 升序）。
+	ListSectionChunkTexts(ctx context.Context, documentID uint64, sectionPath string) ([]entity.KnowledgeChunkText, error)
+
+	// ListSymbolChunkTexts 取一篇代码文档里同一个符号的全部切片（按 chunk_index 升序）。
+	ListSymbolChunkTexts(ctx context.Context, documentID uint64, symbol string) ([]entity.KnowledgeChunkText, error)
+
+	// ListChunkTextWindow 取 [from, to] 序号区间内的切片（含端点，按 chunk_index 升序）。
+	ListChunkTextWindow(ctx context.Context, documentID uint64, from, to int32) ([]entity.KnowledgeChunkText, error)
 }

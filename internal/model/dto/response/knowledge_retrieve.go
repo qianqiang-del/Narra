@@ -6,16 +6,18 @@ package response
 // 多出来的字段（标题、章节、命中方式、相似度）是给界面显示与调参用的，
 // MCP 适配层按需取用即可，不必对齐。
 type KnowledgeHit struct {
-	ChunkID    uint64   `json:"chunk_id"`             // 切片 ID
-	DocumentID uint64   `json:"document_id"`          // 所属文档 ID
-	Title      string   `json:"title"`                // 所属文档标题
-	ChunkIndex int32    `json:"chunk_index"`          // 切片在原文中的顺序号，按它还原上下文顺序
-	Heading    string   `json:"heading,omitempty"`    // 所在章节标题；无章节归属时不出现
-	Content    string   `json:"content"`              // 切片正文
-	Source     string   `json:"source"`               // 来源标识（原始文件名等）；手工录入的文档回落到标题
-	Score      float64  `json:"score"`                // 本次检索的最终排序分，只用于本次检索内部比较
-	Similarity *float64 `json:"similarity,omitempty"` // 余弦相似度；纯词法命中的切片没有这个值
-	Method     string   `json:"method"`               // 命中来源：vector / lexical / hybrid
+	ChunkID     uint64   `json:"chunk_id"`               // 切片 ID
+	DocumentID  uint64   `json:"document_id"`            // 所属文档 ID
+	Title       string   `json:"title"`                  // 所属文档标题
+	ChunkIndex  int32    `json:"chunk_index"`            // 切片在原文中的顺序号，按它还原上下文顺序
+	Heading     string   `json:"heading,omitempty"`      // 所在章节标题；无章节归属时不出现
+	SectionPath string   `json:"section_path,omitempty"` // 所属节的完整路径；无节时不出现
+	Content     string   `json:"content"`                // 切片正文
+	Context     string   `json:"context,omitempty"`      // 装配层拼好的整节/整符号上下文；与 content 相同或没有额外上下文时不出现
+	Source      string   `json:"source"`                 // 来源标识（原始文件名等）；手工录入的文档回落到标题
+	Score       float64  `json:"score"`                  // 本次检索的最终排序分，只用于本次检索内部比较
+	Similarity  *float64 `json:"similarity,omitempty"`   // 余弦相似度；纯词法命中的切片没有这个值
+	Method      string   `json:"method"`                 // 命中来源：vector / lexical / hybrid
 }
 
 // KnowledgeRetrieveResult 是一次检索的响应。

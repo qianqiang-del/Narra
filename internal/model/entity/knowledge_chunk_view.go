@@ -17,6 +17,8 @@ type KnowledgeChunkView struct {
 	DocumentID     uint64  `gorm:"column:document_id"`     // 所属文档 ID
 	ChunkIndex     int32   `gorm:"column:chunk_index"`     // 切片在原文中的顺序号，检索后按它还原上下文
 	Heading        *string `gorm:"column:heading"`         // 所在章节标题；无章节归属时为 NULL
+	SectionPath    *string `gorm:"column:section_path"`    // 所属节的完整路径；前言/无标题文档/代码为 NULL
+	Symbol         *string `gorm:"column:symbol"`          // 代码切片对应的符号；非代码或提不出来时为 NULL
 	Content        string  `gorm:"column:content"`         // 切片正文
 	CharacterCount int32   `gorm:"column:character_count"` // 切片字符数
 	DocumentTitle  string  `gorm:"column:document_title"`  // 所属文档标题
@@ -29,6 +31,16 @@ type KnowledgeChunkView struct {
 	// 两条路的口径不在一个量纲上，跨路比较没有意义 —— 融合排序由 rag 的 RRF 负责，
 	// 这里只是"这条路自己是按什么排的"。所以它叫 raw：拿它直接对外排序是错的。
 	RawScore float64 `gorm:"column:raw_score"`
+}
+
+// KnowledgeChunkText 是"装配上下文"用的最小切片形状：只要序号与正文。
+//
+// 与 KnowledgeChunkView 分开的理由：上下文装配按节/符号/邻域回读同组的切片，
+// 只关心顺序与文本，不需要文档标题、来源、得分这些召回字段，也不需要 JOIN 文档表。
+// 底线过滤（ready + enabled）仍在 SQL 里，见仓储的 listChunkTexts。
+type KnowledgeChunkText struct {
+	ChunkIndex int32  `gorm:"column:chunk_index"` // 切片在原文中的顺序号
+	Content    string `gorm:"column:content"`     // 切片正文
 }
 
 // KnowledgeChunkFilter 是召回阶段两条路共用的过滤条件。
