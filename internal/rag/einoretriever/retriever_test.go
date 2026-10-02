@@ -61,6 +61,8 @@ func mockHit(chunkID uint64, method string) rag.Hit {
 		DocumentID:    chunkID / 10,
 		ChunkIndex:    int32(chunkID % 10),
 		Heading:       "章节",
+		SectionPath:   "第一章/1.1",
+		Symbol:        "Parse",
 		Content:       "命中正文",
 		DocumentTitle: "文档",
 		SourceType:    "import",
@@ -194,6 +196,9 @@ func TestHitToDocumentRoundTrip(t *testing.T) {
 	}
 	if restored.ChunkIndex != original.ChunkIndex || restored.Heading != original.Heading {
 		t.Fatalf("位置字段往返不一致: %+v", restored)
+	}
+	if restored.SectionPath != original.SectionPath || restored.Symbol != original.Symbol {
+		t.Fatalf("节路径与符号往返不一致: %+v", restored)
 	}
 	if restored.DocumentTitle != original.DocumentTitle || restored.SourceURI != original.SourceURI {
 		t.Fatalf("标题与来源往返不一致: %+v", restored)

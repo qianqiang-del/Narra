@@ -287,7 +287,9 @@ func TestRetrieveMapsRequestAndHits(t *testing.T) {
 				DocumentID:    testDocumentID,
 				ChunkIndex:    2,
 				Heading:       "排序",
+				SectionPath:   "第一章/1.1 排序",
 				Content:       "命中正文",
+				Context:       "第一章/1.1 排序的完整上下文",
 				DocumentTitle: "向量检索调研",
 				SourceType:    testDocumentSource,
 				SourceURI:     "向量检索调研.md",
@@ -330,6 +332,9 @@ func TestRetrieveMapsRequestAndHits(t *testing.T) {
 	}
 	if first.Similarity == nil || *first.Similarity != similarity {
 		t.Fatalf("相似度没有带出来: %+v", first)
+	}
+	if first.SectionPath != "第一章/1.1 排序" || first.Context != "第一章/1.1 排序的完整上下文" {
+		t.Fatalf("节路径与装配上下文没有带出来: %+v", first)
 	}
 
 	second := result.Results[1]

@@ -37,6 +37,8 @@ const chunkViewColumns = `c.id AS chunk_id,
 	c.document_id,
 	c.chunk_index,
 	c.heading,
+	c.section_path,
+	c.symbol,
 	c.content,
 	c.character_count,
 	d.title AS document_title,
@@ -401,4 +403,58 @@ func chunkFilterClause(filter entity.KnowledgeChunkFilter) (string, []any) {
 // 参数按位置传给驱动；数组参数的编码方式取决于驱动，逐项展开的行为最确定。
 func sqlPlaceholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// ---------------------------------------------------------------------------
+// 上下文装配的只读查询（见 KnowledgeSearchRepository 接口上的说明）
+// ---------------------------------------------------------------------------
+
+// listChunkTexts 是三个装配查询的公共实现：条件不同，投影与底线过滤完全相同。
+//
+// 条件由本包的三个包装方法拼好（都是固定字符串，没有外部输入），参数跟在状态值后面。
+// 只取序号与正文：装配不需要标题、来源、得分那些召回字段，也就不 JOIN 文档表的其它列。
+func (r *knowledgeSearchRepository) listChunkTexts(ctx context.Context, condition string, args ...any) ([]entity.KnowledgeChunkText, error) {
+	statement := `
+SELECT c.chunk_index, c.content
+FROM knowledge_chunks c
+JOIN knowledge_documents d ON d.id = c.document_id
+WHERE d.enabled
+	AND d.status = ?
+	AND ` + condition + `
+ORDER BY c.chunk_index ASC`
+
+	queryArgs := make([]any, 0, len(args)+1)
+	queryArgs = append(queryArgs, entity.KnowledgeDocumentStatusReady)
+	queryArgs = append(queryArgs, args...)
+
+	var rows []entity.KnowledgeChunkText
+	if err := r.db.WithContext(ctx).Raw(statement, queryArgs...).Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("读取装配切片失败: %w", err)
+	}
+	return rows, nil
+}
+
+// ListSectionChunkTexts 取一个节的全部切片。参数非法时返回空而不是报错：
+// 装配层在空路径时根本不会调它，这里只是兜底。
+func (r *knowledgeSearchRepository) ListSectionChunkTexts(ctx context.Context, documentID uint64, sectionPath string) ([]entity.KnowledgeChunkText, error) {
+	if documentID == 0 || strings.TrimSpace(sectionPath) == "" {
+		return nil, nil
+	}
+	return r.listChunkTexts(ctx, "c.document_id = ? AND c.section_path = ?", documentID, sectionPath)
+}
+
+// ListSymbolChunkTexts 取一个代码符号的全部切片。
+func (r *knowledgeSearchRepository) ListSymbolChunkTexts(ctx context.Context, documentID uint64, symbol string) ([]entity.KnowledgeChunkText, error) {
+	if documentID == 0 || strings.TrimSpace(symbol) == "" {
+		return nil, nil
+	}
+	return r.listChunkTexts(ctx, "c.document_id = ? AND c.symbol = ?", documentID, symbol)
+}
+
+// ListChunkTextWindow 取序号区间内的切片；from > to 时返回空（非法区间没有意义）。
+func (r *knowledgeSearchRepository) ListChunkTextWindow(ctx context.Context, documentID uint64, from, to int32) ([]entity.KnowledgeChunkText, error) {
+	if documentID == 0 || from > to {
+		return nil, nil
+	}
+	return r.listChunkTexts(ctx, "c.document_id = ? AND c.chunk_index BETWEEN ? AND ?", documentID, from, to)
 }

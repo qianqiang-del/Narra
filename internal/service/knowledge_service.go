@@ -1038,16 +1038,18 @@ func toHitResponse(hit rag.Hit) responsedto.KnowledgeHit {
 		source = hit.DocumentTitle
 	}
 	return responsedto.KnowledgeHit{
-		ChunkID:    hit.ChunkID,
-		DocumentID: hit.DocumentID,
-		Title:      hit.DocumentTitle,
-		ChunkIndex: hit.ChunkIndex,
-		Heading:    hit.Heading,
-		Content:    hit.Content,
-		Source:     source,
-		Score:      hit.Score,
-		Similarity: hit.Similarity,
-		Method:     hit.Method,
+		ChunkID:     hit.ChunkID,
+		DocumentID:  hit.DocumentID,
+		Title:       hit.DocumentTitle,
+		ChunkIndex:  hit.ChunkIndex,
+		Heading:     hit.Heading,
+		SectionPath: hit.SectionPath,
+		Content:     hit.Content,
+		Context:     hit.Context,
+		Source:      source,
+		Score:       hit.Score,
+		Similarity:  hit.Similarity,
+		Method:      hit.Method,
 	}
 }
 

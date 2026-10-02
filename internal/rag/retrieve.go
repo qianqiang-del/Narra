@@ -109,10 +109,17 @@ type Hit struct {
 	DocumentID    uint64 // 所属文档 ID
 	ChunkIndex    int32  // 切片在原文中的顺序号，按它可以还原上下文顺序
 	Heading       string // 所在章节标题；无章节归属时为空串
+	SectionPath   string // 所属节的完整路径；前言/无标题文档/代码为空串（见装配层）
+	Symbol        string // 代码切片对应的符号；非代码或提不出来时为空串（见装配层）
 	Content       string // 切片正文
 	DocumentTitle string // 所属文档标题
 	SourceType    string // 所属文档的来源类型
 	SourceURI     string // 所属文档的来源标识；手工录入时为空串
+
+	// Context 是装配层补的上下文：命中切片所属整节（或整符号、邻域窗口）拼好的文本。
+	// 空串表示"没有额外上下文"（单块节、代码 v1、装配失败），此时 Content 就是全部。
+	// 它只用于交付给调用方，不参与排序，也不进精排的输入。
+	Context string
 
 	// Score 是本次检索的**最终排序分**，只用于**同一次检索内部**排序。
 	// 默认是 RRF 融合分（名次的函数，1/61 + 1/64 这种量级）；接上精排装饰器后
@@ -413,6 +420,12 @@ func draftFor(drafts map[uint64]*Hit, row entity.KnowledgeChunkView) *Hit {
 	}
 	if row.Heading != nil {
 		hit.Heading = *row.Heading
+	}
+	if row.SectionPath != nil {
+		hit.SectionPath = *row.SectionPath
+	}
+	if row.Symbol != nil {
+		hit.Symbol = *row.Symbol
 	}
 	if row.SourceURI != nil {
 		hit.SourceURI = *row.SourceURI

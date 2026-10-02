@@ -34,17 +34,19 @@ type Searcher interface {
 // Document.MetaData 的键。它们携带项目侧的检索字段：多查询融合从这里读，
 // 将来接 Graph 的下游也可以从这里取，不必再包一层结构体。
 const (
-	metaDocumentID = "document_id"
-	metaChunkIndex = "chunk_index"
-	metaTitle      = "title"
-	metaHeading    = "heading"
-	metaSourceType = "source_type"
-	metaSource     = "source"     // 对外展示用的来源（SourceURI 为空时回落到标题）
-	metaSourceURI  = "source_uri" // 原始来源标识；手工录入时为空，用于还原 Hit
-	metaMethod     = "method"
-	metaSimilarity = "similarity"
-	metaModel      = "model"
-	metaTerms      = "terms"
+	metaDocumentID  = "document_id"
+	metaChunkIndex  = "chunk_index"
+	metaTitle       = "title"
+	metaHeading     = "heading"
+	metaSectionPath = "section_path" // 节路径；装配层按它折叠与拼整节
+	metaSymbol      = "symbol"       // 代码符号；装配层按它折叠与拼整符号
+	metaSourceType  = "source_type"
+	metaSource      = "source"     // 对外展示用的来源（SourceURI 为空时回落到标题）
+	metaSourceURI   = "source_uri" // 原始来源标识；手工录入时为空，用于还原 Hit
+	metaMethod      = "method"
+	metaSimilarity  = "similarity"
+	metaModel       = "model"
+	metaTerms       = "terms"
 )
 
 // Retriever 把 rag.Retriever 适配成 Eino 的 retriever.Retriever。
@@ -133,16 +135,18 @@ func hitToDocument(hit rag.Hit, model string, terms []string) *schema.Document {
 		displaySource = hit.DocumentTitle
 	}
 	metadata := map[string]any{
-		metaDocumentID: hit.DocumentID,
-		metaChunkIndex: hit.ChunkIndex,
-		metaTitle:      hit.DocumentTitle,
-		metaHeading:    hit.Heading,
-		metaSourceType: hit.SourceType,
-		metaSource:     displaySource,
-		metaSourceURI:  hit.SourceURI,
-		metaMethod:     hit.Method,
-		metaModel:      model,
-		metaTerms:      terms,
+		metaDocumentID:  hit.DocumentID,
+		metaChunkIndex:  hit.ChunkIndex,
+		metaTitle:       hit.DocumentTitle,
+		metaHeading:     hit.Heading,
+		metaSectionPath: hit.SectionPath,
+		metaSymbol:      hit.Symbol,
+		metaSourceType:  hit.SourceType,
+		metaSource:      displaySource,
+		metaSourceURI:   hit.SourceURI,
+		metaMethod:      hit.Method,
+		metaModel:       model,
+		metaTerms:       terms,
 	}
 	if hit.Similarity != nil {
 		metadata[metaSimilarity] = *hit.Similarity
@@ -165,6 +169,8 @@ func documentToHit(doc *schema.Document) rag.Hit {
 		DocumentID:    metaUint64(doc, metaDocumentID),
 		ChunkIndex:    int32(metaInt(doc, metaChunkIndex)),
 		Heading:       metaString(doc, metaHeading),
+		SectionPath:   metaString(doc, metaSectionPath),
+		Symbol:        metaString(doc, metaSymbol),
 		Content:       doc.Content,
 		DocumentTitle: metaString(doc, metaTitle),
 		SourceType:    metaString(doc, metaSourceType),
