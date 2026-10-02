@@ -459,6 +459,8 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 			OriginalName: truncateTitle(sourceURI),
 			SizeBytes:    input.SizeBytes,
 			Status:       entity.KnowledgeUploadRecordStatusPending,
+			// 类型随文档快照：文档被删后记录仍能区分知识库投递与课程材料投递。
+			Kind: created.Kind,
 		}
 		if err := i.records.CreateUploadRecord(ctx, record); err != nil {
 			return fmt.Errorf("创建上传记录失败: %w", err)

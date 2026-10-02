@@ -48,6 +48,10 @@ type KnowledgeUploadRecord struct {
 
 	Status string `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_upload_records_status_check,status IN ('pending', 'processing', 'ready', 'failed');comment:投递状态，取值 pending（排队）/ processing（处理中）/ ready（收录成功）/ failed（失败），与关联文档的状态同源" json:"status"` // 收录状态：pending、processing、ready 或 failed
 
+	// Kind 是这次投递的成果类型，上传时从文档快照写入：knowledge 知识库文档 /
+	// material 课程材料。文档被删除后（document_id 置空）仍能区分这条历史属于哪条链路。
+	Kind string `gorm:"column:kind;type:varchar(32);not null;default:knowledge;check:knowledge_upload_records_kind_check,kind IN ('knowledge', 'material');comment:投递类型：knowledge 知识库文档 / material 课程材料（上传时从文档快照）" json:"kind"`
+
 	// 失败原因，给界面直接显示的一句话 —— 纯中文，不带错误码与 stderr 原文
 	// （"文档解析失败：解析环境缺少 Python 模块 scipy"）。
 	// 与 documents.metadata 里那份的关系：metadata 的 error 键是同一句话，

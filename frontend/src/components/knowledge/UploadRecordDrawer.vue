@@ -15,11 +15,12 @@
  * 那个按钮不出现。
  */
 import { X, Trash2, RotateCw } from 'lucide-vue-next'
-import { computed, onUnmounted, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import KnowledgeRow from './KnowledgeRow.vue'
-import type { KnowledgeUploadRecord } from '@/api/knowledge'
+import type { KnowledgeDocumentKind, KnowledgeUploadRecord } from '@/api/knowledge'
+import { cn } from '@/lib/utils'
 import { useKnowledgeStore } from '@/stores/knowledge'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -34,6 +35,23 @@ const { t } = useI18n()
 const store = useKnowledgeStore()
 
 const records = computed(() => store.uploadRecords)
+
+/**
+ * 投递类型筛选：全部 / 知识库 / 课程材料。
+ *
+ * 客户端过滤：记录一次只拉最近 100 条（没有分页），筛选不改变加载范围，
+ * 也不会动 store.uploadRecords —— 工具条角标与"最近失败"依赖完整列表。
+ */
+type RecordFilter = 'all' | KnowledgeDocumentKind
+const filter = ref<RecordFilter>('all')
+const filterOptions: { value: RecordFilter; labelKey: string }[] = [
+  { value: 'all', labelKey: 'knowledge.records.filter.all' },
+  { value: 'knowledge', labelKey: 'knowledge.tabs.knowledge' },
+  { value: 'material', labelKey: 'knowledge.tabs.material' },
+]
+const visibleRecords = computed(() =>
+  filter.value === 'all' ? records.value : records.value.filter((record) => record.kind === filter.value),
+)
 
 /**
  * 抽屉打开时锁住页面滚动、顺便对一次账。
@@ -89,17 +107,37 @@ onUnmounted(() => {
         </button>
       </header>
 
+      <!-- 投递类型筛选：知识库 / 课程材料混在一张流水里，按来源分开看 -->
+      <div class="flex shrink-0 items-center gap-1 border-b border-border px-5 py-2">
+        <button
+          v-for="option in filterOptions"
+          :key="option.value"
+          type="button"
+          :class="
+            cn(
+              'cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+              filter === option.value
+                ? 'bg-muted text-foreground'
+                : 'text-zinc-500 hover:text-foreground',
+            )
+          "
+          @click="filter = option.value"
+        >
+          {{ t(option.labelKey) }}
+        </button>
+      </div>
+
       <p
-        v-if="records.length"
+        v-if="visibleRecords.length"
         class="shrink-0 border-b border-border px-5 py-2 text-xs leading-5 text-zinc-600 dark:text-zinc-400"
       >
         {{ t('knowledge.records.hint') }}
       </p>
 
       <div class="min-h-0 flex-1 overflow-y-auto py-1">
-        <ul v-if="records.length" class="divide-y divide-border/60">
+        <ul v-if="visibleRecords.length" class="divide-y divide-border/60">
           <KnowledgeRow
-            v-for="record in records"
+            v-for="record in visibleRecords"
             :key="record.id"
             :record="record"
           >
@@ -130,7 +168,7 @@ onUnmounted(() => {
         </ul>
 
         <p v-else class="px-5 py-12 text-center text-[13px] text-zinc-600 dark:text-zinc-400">
-          {{ t('knowledge.records.empty') }}
+          {{ records.length ? t('knowledge.records.filter.empty') : t('knowledge.records.empty') }}
         </p>
       </div>
     </aside>

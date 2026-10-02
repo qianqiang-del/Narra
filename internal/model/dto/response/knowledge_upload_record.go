@@ -24,6 +24,7 @@ type KnowledgeUploadRecord struct {
 	SizeBytes    int64  `json:"size_bytes"`    // 文件字节数；0 表示调用方没提供
 
 	Status      string `json:"status"`                 // pending、processing、ready 或 failed
+	Kind        string `json:"kind"`                   // 投递类型：knowledge 知识库文档 / material 课程材料
 	Stage       string `json:"stage,omitempty"`        // 关联文档的收录阶段（parse / chunk / embed）；文档已删或 ready 时为空
 	FailedStage string `json:"failed_stage,omitempty"` // 关联文档失败卡在哪一步（metadata.stage），如 vector、store
 	Error       string `json:"error,omitempty"`        // 失败原因；成功或未结束时为空

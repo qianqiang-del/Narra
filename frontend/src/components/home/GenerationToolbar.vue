@@ -35,9 +35,13 @@ import UiTooltip from '@/components/ui/UiTooltip.vue'
 import { findProviderLogo } from '@/data/providers'
 import type { AvailableLlmModel } from '@/api/llm'
 import { materialFingerprint, type SelectedMaterial, type SelectedMaterialStatus } from '@/lib/materials'
+import { useUploadLimits } from '@/lib/upload-limits'
 import { cn } from '@/lib/utils'
 
 const { t } = useI18n()
+
+/** 上传限制由后端下发（共享缓存），提示文案不再写死上限 */
+const { limits: uploadLimits, sizeLabel: uploadSizeLabel } = useUploadLimits()
 
 /** 与 HomeView 共享的生成配置 */
 const providerId = defineModel<number | null>('providerId', { default: null })
@@ -293,7 +297,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         >
           <Paperclip class="size-4 text-muted-foreground/50" />
           <span class="text-center text-[11px] text-muted-foreground/60">
-            {{ t('toolbar.materialLimit') }}
+            {{ t('toolbar.materialLimit', { size: uploadSizeLabel, max: uploadLimits.maxFiles }) }}
           </span>
           <input
             type="file"

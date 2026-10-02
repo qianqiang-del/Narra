@@ -664,7 +664,30 @@ func toClassroomResponse(c entity.Classroom) *responsedto.Classroom {
 		Mode:            c.Mode,
 		Status:          c.Status,
 		GenerationError: c.GenerationError,
+		Materials:       classroomMaterialsOf(c.GenerationConfig),
 		CreatedAt:       c.CreatedAt,
 		UpdatedAt:       c.UpdatedAt,
 	}
+}
+
+// classroomMaterialsOf 从课堂的生成配置快照里取材料清单；旧课堂没有这个键时返回空数组。
+func classroomMaterialsOf(raw json.RawMessage) []responsedto.ClassroomMaterial {
+	materials := []responsedto.ClassroomMaterial{}
+	if len(raw) == 0 {
+		return materials
+	}
+	var config struct {
+		Materials []requestdto.CreateClassroomMaterial `json:"materials"`
+	}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return materials
+	}
+	for _, material := range config.Materials {
+		materials = append(materials, responsedto.ClassroomMaterial{
+			DocumentID: material.DocumentID,
+			Name:       material.Name,
+			Size:       material.Size,
+		})
+	}
+	return materials
 }

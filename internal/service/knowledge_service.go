@@ -966,6 +966,7 @@ func toUploadRecordResponse(view entity.KnowledgeUploadRecordView) responsedto.K
 		OriginalName: view.OriginalName,
 		SizeBytes:    view.SizeBytes,
 		Status:       view.Status,
+		Kind:         view.Kind,
 		CreatedAt:    view.CreatedAt,
 		UpdatedAt:    view.UpdatedAt,
 	}

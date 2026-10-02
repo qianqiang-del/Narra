@@ -89,7 +89,7 @@ export default {
     material: 'Course material',
     materialSelected: '{count} materials selected',
     uploadMaterial: 'Upload course material',
-    materialLimit: 'PDF, Word, PPT, Markdown and more · up to 20MB each',
+    materialLimit: 'PDF, Word, PPT, Markdown and more · up to {size} each, {max} files per batch',
     materialRetry: 'Re-upload',
     materialRejected: 'File not accepted',
     materialUploadFailed: 'Material upload failed',
@@ -434,6 +434,10 @@ export default {
       title: 'Upload records',
       count: '{total} items',
       hint: 'Every file you have uploaded, including successful ones. A record stays after its document is deleted, and its status becomes “Ingested, then deleted”.',
+      filter: {
+        all: 'All',
+        empty: 'No upload records of this type yet',
+      },
       empty: 'No upload records yet',
       removed: 'Record deleted',
       status: {

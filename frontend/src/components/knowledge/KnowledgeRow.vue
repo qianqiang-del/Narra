@@ -118,6 +118,7 @@ const model = computed<RowModel>(() => {
       badge: { label: t(`knowledge.records.status.${status}`), class: badgeStyles[status] },
       tag: null,
       meta: [
+        t(`knowledge.tabs.${record.kind === 'material' ? 'material' : 'knowledge'}`),
         formatSize(record.sizeBytes),
         `${t('knowledge.records.col.created')} ${formatDate(record.createdAt)}`,
       ].filter(Boolean),

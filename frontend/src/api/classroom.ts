@@ -47,6 +47,13 @@ export interface ClassroomAgentBrief {
   voice_id: string
 }
 
+/** 本课材料快照：受理时用户选中的文件（与创建请求的 materials 同形） */
+export interface ClassroomMaterial {
+  document_id: number
+  name: string
+  size: number
+}
+
 /** 后端 `responsedto.Classroom` 的原样形状 */
 export interface ClassroomDTO {
   id: number
@@ -58,6 +65,8 @@ export interface ClassroomDTO {
   generation_error: string | null
   /** 本课程的角色，按角色池顺序；auto 模式或未指定时为空数组 */
   agents: ClassroomAgentBrief[]
+  /** 本课材料快照；没有材料或旧课堂为空数组 */
+  materials: ClassroomMaterial[]
   created_at: string
   updated_at: string
 }
