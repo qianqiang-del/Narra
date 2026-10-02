@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
+	"narra/internal/material"
 	"narra/internal/model/entity"
 	"narra/internal/repository"
 	"narra/pkg/logger"
@@ -64,6 +66,8 @@ type pageExecutor struct {
 	context   ClassroomContext
 	outline   []OutlineEntry
 	ttsPool   ttsLimiter
+	// materialIDs 是本课材料的文档 ID（来自生成配置快照）；为空表示这门课没有材料。
+	materialIDs []uint64
 	// runID 是本轮生成的运行标识，owner 是本执行者在这一轮里的身份。
 	// 两者都随执行者走，逐页共用：租约是按页（行）算的，同一次执行手里的页互不干扰。
 	runID string
@@ -329,14 +333,55 @@ func (e *pageExecutor) research(ctx context.Context, state *pageRunState) error 
 		return e.saveCheckpoint(ctx, state, pageNodeContent)
 	}
 	bundle, note := researchEvidence(ctx, e.rt, &researchInput{
-		Page:           state.Context,
-		Steps:          steps,
-		PlannerSkipped: plannerSkipped,
+		Page:             state.Context,
+		Steps:            steps,
+		PlannerSkipped:   plannerSkipped,
+		MaterialExcerpts: e.materialExcerpts(ctx, state.Context),
 	})
 	state.Evidence = bundle
 	state.ResearchNote = note
 	state.ResearchSteps = signature
 	return e.saveCheckpoint(ctx, state, pageNodeContent)
+}
+
+// materialExcerpts 在本课材料范围内按这一页的内容检索，作为调研的预置事实。
+//
+// 与规划阶段同一取舍：材料是加法，没配依赖、没材料或检索失败都返回空，调研照常
+// 走工具；零命中记一条日志，便于排查"材料为什么没被用上"。
+func (e *pageExecutor) materialExcerpts(ctx context.Context, page PageContext) []material.Hit {
+	if e.deps.Materials == nil || len(e.materialIDs) == 0 {
+		return nil
+	}
+	query := materialQuery(page)
+	if query == "" {
+		return nil
+	}
+	hits, err := e.deps.Materials.Retrieve(e.rt.retrievalContext(ctx), e.materialIDs, query, material.PageTopK)
+	if err != nil {
+		logger.Warn("课程材料定向检索失败，这一页只用工具调研",
+			zap.Uint64("classroom_id", e.classroom.ID),
+			zap.Int("order", page.Current.Order),
+			zap.Error(err))
+		return nil
+	}
+	if len(hits) == 0 {
+		logger.Info("课程材料在本页零命中",
+			zap.Uint64("classroom_id", e.classroom.ID),
+			zap.Int("order", page.Current.Order),
+			zap.String("title", page.Current.Title))
+	}
+	return hits
+}
+
+// materialQuery 用这一页的标题、要点与学习目标拼检索词。
+func materialQuery(page PageContext) string {
+	parts := make([]string, 0, 3)
+	for _, part := range []string{page.Current.Title, page.Current.Brief, page.Current.LearningObjective} {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return truncateRunes(strings.Join(parts, " "), 300)
 }
 
 // toolStepsSignature 把工具步骤压成可比较的指纹；计划没变就不必重新取资料。

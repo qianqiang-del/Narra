@@ -15,6 +15,7 @@ import { toast } from 'vue-sonner'
 
 import { createClassroom } from '@/api/classroom'
 import { ApiError } from '@/api/client'
+import { uploadKnowledgeFiles, waitForKnowledgeDocument } from '@/api/knowledge'
 import AgentBar from '@/components/home/AgentBar.vue'
 import GenerationToolbar from '@/components/home/GenerationToolbar.vue'
 import GreetingBar from '@/components/home/GreetingBar.vue'
@@ -23,6 +24,7 @@ import RecentSection from '@/components/home/RecentSection.vue'
 import SettingsDialog from '@/components/home/SettingsDialog.vue'
 import TopPillToolbar from '@/components/home/TopPillToolbar.vue'
 import UiTooltip from '@/components/ui/UiTooltip.vue'
+import { type SelectedMaterial } from '@/lib/materials'
 import { cn } from '@/lib/utils'
 import { useLlmStore } from '@/stores/llm'
 import { useProfileStore } from '@/stores/profile'
@@ -41,6 +43,15 @@ const settingsSection = ref<'theme' | 'llm' | 'embedding' | 'mcp'>('theme')
 const requirement = ref('')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const generating = ref(false)
+/** 材料准备阶段：上传 → 等收录；idle 表示当前不在准备材料 */
+const prepareStage = ref<'idle' | 'uploading' | 'waiting'>('idle')
+
+const submitLabel = computed(() => {
+  if (!generating.value) return t('home.enterClassroom')
+  if (prepareStage.value === 'uploading') return t('home.uploadingMaterials')
+  if (prepareStage.value === 'waiting') return t('home.processingMaterials')
+  return t('home.generating')
+})
 
 /** 深度交互模式 */
 const interactiveMode = ref(false)
@@ -49,7 +60,7 @@ const interactiveMode = ref(false)
 const providerId = ref<number | null>(null)
 const modelId = ref('')
 const webSearch = ref(false)
-const materials = ref<{ id: string; name: string; size: number }[]>([])
+const materials = ref<SelectedMaterial[]>([])
 
 const agentMode = ref<'preset' | 'auto'>('preset')
 /** 预设模式勾选的角色，默认一个都不选 */
@@ -118,6 +129,80 @@ function pickedRoleVoices(): Record<string, string> {
   return picked
 }
 
+/** 材料等待收录的上限：超时就跳过该材料，不把提交无限期挂住。 */
+const MATERIAL_WAIT_MS = 10 * 60 * 1000
+
+/**
+ * 提交前的材料准备：把待上传的文件送进知识库，再等它们收录完成。
+ *
+ * 返回真正能带进建课请求的材料（ready）；失败/被拒/超时的材料留在列表里由用户
+ * 处置，本次跳过并提示。材料出问题不该把"生成课堂"整个拦死。
+ */
+async function prepareMaterials(): Promise<SelectedMaterial[]> {
+  const queued = materials.value.filter((m) => m.status === 'queued')
+  if (queued.length > 0) {
+    prepareStage.value = 'uploading'
+    for (const material of queued) material.status = 'uploading'
+    try {
+      const batch = await uploadKnowledgeFiles(queued.map((m) => m.file))
+      batch.items.forEach((item, index) => {
+        const material = queued[index]
+        if (!material) return
+        if (item.status === 'pending' && item.documentId !== null) {
+          material.documentId = item.documentId
+          material.status = 'pending'
+          material.error = ''
+        } else {
+          material.status = 'rejected'
+          material.error = item.error || t('toolbar.materialRejected')
+        }
+      })
+      // 返回条目数与文件数对不上时，没被服务端接住的按失败处理（理论上不会发生）
+      for (const material of queued) {
+        if (material.status === 'uploading') {
+          material.status = 'failed'
+          material.error = t('toolbar.materialUploadFailed')
+        }
+      }
+    } catch (error) {
+      for (const material of queued) {
+        material.status = 'failed'
+        material.error = error instanceof ApiError ? error.message : t('toolbar.materialUploadFailed')
+      }
+    }
+  }
+
+  const pending = materials.value.filter((m) => m.status === 'pending' && m.documentId !== null)
+  if (pending.length > 0) {
+    prepareStage.value = 'waiting'
+    await Promise.all(
+      pending.map(async (material) => {
+        try {
+          const document = await waitForKnowledgeDocument(material.documentId as number, {
+            timeoutMs: MATERIAL_WAIT_MS,
+          })
+          if (document.status === 'ready') {
+            material.status = 'ready'
+            material.error = ''
+          } else {
+            material.status = 'failed'
+            material.error = document.error || t('toolbar.materialProcessFailed')
+          }
+        } catch (error) {
+          material.status = 'failed'
+          material.error = error instanceof ApiError ? error.message : t('toolbar.materialTimeout')
+        }
+      }),
+    )
+  }
+  prepareStage.value = 'idle'
+
+  const usable = materials.value.filter((m) => m.status === 'ready' && m.documentId !== null)
+  const skipped = materials.value.length - usable.length
+  if (skipped > 0) toast.warning(t('toolbar.materialSkipped', { count: skipped }))
+  return usable
+}
+
 async function submit() {
   if (!hasProvider.value) {
     openModelSettings()
@@ -129,6 +214,7 @@ async function submit() {
   if (provider === null) return
   generating.value = true
   try {
+    const usableMaterials = await prepareMaterials()
     const created = await createClassroom({
       requirement: requirement.value.trim(),
       mode: interactiveMode.value ? 'interactive' : 'vocational',
@@ -136,6 +222,11 @@ async function submit() {
       llm_model_id: modelId.value,
       web_search: webSearch.value,
       bio: profileStore.profile.bio.trim(),
+      materials: usableMaterials.map((material) => ({
+        document_id: material.documentId as number,
+        name: material.name,
+        size: material.size,
+      })),
       agent_mode: agentMode.value,
       role_ids: agentMode.value === 'preset' ? selectedRoleIds.value : [],
       role_voices: pickedRoleVoices(),
@@ -146,6 +237,7 @@ async function submit() {
     toast.error(error instanceof ApiError ? error.message : t('home.generateFailed'))
   } finally {
     generating.value = false
+    prepareStage.value = 'idle'
   }
 }
 
@@ -298,7 +390,7 @@ function openClassroom(id: string) {
             <Loader2 v-if="generating" class="size-3.5 animate-spin" />
             <ArrowUp v-else class="size-3.5" />
             <span class="text-xs font-medium">
-              {{ generating ? t('home.generating') : t('home.enterClassroom') }}
+              {{ submitLabel }}
             </span>
           </button>
         </div>

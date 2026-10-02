@@ -9,6 +9,13 @@ import type { SceneContentSource } from '@/lib/scene-mapper'
  * 响应字段与后端 `responsedto.Classroom` 一一对应，下划线命名只在本文件出现。
  */
 
+/** 课程材料引用：进知识库的文档 ID + 展示快照；服务端会校验文档 ready 且启用 */
+export interface ClassroomMaterialInput {
+  document_id: number
+  name: string
+  size: number
+}
+
 /** 创建课堂的入参，与后端 `request.CreateClassroom` 对齐 */
 export interface CreateClassroomInput {
   requirement: string
@@ -20,6 +27,8 @@ export interface CreateClassroomInput {
   web_search: boolean
   /** 用户简介（首页个人资料里那段自我介绍）；会进大纲提示词，影响讲解深浅，可空 */
   bio: string
+  /** 本次生成附带的课程材料；不传或空数组表示不带材料 */
+  materials?: ClassroomMaterialInput[]
   /** `preset` 用 role_ids 指定的角色，`auto` 从角色池随机挑 */
   agent_mode: 'preset' | 'auto'
   role_ids: string[]

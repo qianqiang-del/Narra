@@ -27,6 +27,12 @@ type modelLister interface {
 	AvailableModels(ctx context.Context) ([]responsedto.AvailableLLMModel, error)
 }
 
+// materialDocumentReader 是课程材料校验对知识库的最小依赖面：只按 ID 读文档，
+// 判断它是否已经能参与检索（ready + enabled）。
+type materialDocumentReader interface {
+	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error)
+}
+
 // JobQueue 受理成功后投递生成任务，删除课堂时撤掉它。
 type JobQueue interface {
 	Enqueue(classroomID uint64) error
@@ -42,6 +48,9 @@ const (
 // autoStudentCount 是自动模式下抽取的学生人数。
 const autoStudentCount = 3
 
+// maxClassroomMaterials 是一次生成最多携带的课程材料数，与知识库批量上传的文件数上限一致。
+const maxClassroomMaterials = 10
+
 // classroomService 课堂受理与状态查询。
 type classroomService struct {
 	classrooms repository.ClassroomRepository
@@ -49,6 +58,7 @@ type classroomService struct {
 	roles      repository.RoleRepository
 	scenes     repository.SceneRepository
 	models     modelLister
+	materials  materialDocumentReader
 	queue      JobQueue
 	tx         repository.TransactionManager
 	// audioDir 是课堂音频的根目录，删除课堂时按 <audioDir>/<课堂 ID> 清理。
@@ -62,6 +72,7 @@ func NewClassroomService(
 	roles repository.RoleRepository,
 	scenes repository.SceneRepository,
 	models modelLister,
+	materials materialDocumentReader,
 	queue JobQueue,
 	tx repository.TransactionManager,
 	audioDir string,
@@ -72,6 +83,7 @@ func NewClassroomService(
 		roles:      roles,
 		scenes:     scenes,
 		models:     models,
+		materials:  materials,
 		queue:      queue,
 		tx:         tx,
 		audioDir:   audioDir,
@@ -171,6 +183,12 @@ func (s *classroomService) Create(ctx context.Context, input requestdto.CreateCl
 	if err != nil {
 		return nil, err
 	}
+	// 课程材料只收"现在就检索得到"的文档；名字/大小的归一化结果随后写进生成配置。
+	materials, err := s.normalizeMaterials(ctx, input.Materials)
+	if err != nil {
+		return nil, err
+	}
+	input.Materials = materials
 
 	generationConfig, err := buildGenerationConfig(input)
 	if err != nil {
@@ -449,6 +467,59 @@ func (s *classroomService) listAgentBriefs(ctx context.Context, classroomID uint
 	return briefs, nil
 }
 
+// normalizeMaterials 校验并归一化课程材料引用。
+//
+// 只收已经能参与检索的文档：不存在 / 还没收录完 / 已停用一律拒绝，避免"课建了、
+// 材料却永远检索不到"的沉默失败。名字是展示快照，缺省回落到文档标题；大小不合法按 0。
+func (s *classroomService) normalizeMaterials(ctx context.Context, materials []requestdto.CreateClassroomMaterial) ([]requestdto.CreateClassroomMaterial, error) {
+	if len(materials) == 0 {
+		return nil, nil
+	}
+	if len(materials) > maxClassroomMaterials {
+		return nil, apperrors.New(apperrors.CodeBadRequest, fmt.Sprintf("一次最多携带 %d 份课程材料", maxClassroomMaterials))
+	}
+	if s.materials == nil {
+		return nil, apperrors.New(apperrors.CodeInternalError, "校验课程材料失败：缺少知识库依赖")
+	}
+
+	seen := make(map[uint64]struct{}, len(materials))
+	out := make([]requestdto.CreateClassroomMaterial, 0, len(materials))
+	for _, material := range materials {
+		if material.DocumentID == 0 {
+			return nil, apperrors.New(apperrors.CodeBadRequest, "课程材料缺少文档 ID")
+		}
+		if _, duplicated := seen[material.DocumentID]; duplicated {
+			return nil, apperrors.New(apperrors.CodeBadRequest, "同一份课程材料重复提交")
+		}
+		seen[material.DocumentID] = struct{}{}
+
+		document, err := s.materials.GetByID(ctx, material.DocumentID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, apperrors.New(apperrors.CodeBadRequest, "课程材料不存在或已被删除")
+			}
+			return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课程材料失败", err)
+		}
+		if document.Status != entity.KnowledgeDocumentStatusReady {
+			return nil, apperrors.New(apperrors.CodeBadRequest, "课程材料还没处理完成，请稍后再试")
+		}
+		if !document.Enabled {
+			return nil, apperrors.New(apperrors.CodeBadRequest, "课程材料已被停用，请启用后再试")
+		}
+
+		name := strings.TrimSpace(material.Name)
+		if name == "" {
+			name = document.Title
+		}
+		material.Name = truncateText(name, 300)
+		if material.Size < 0 {
+			material.Size = 0
+		}
+		out = append(out, material)
+	}
+	return out, nil
+}
+
 // validateModel 校验 provider + model 在可用列表里。
 func (s *classroomService) validateModel(ctx context.Context, providerID uint64, modelID string) error {
 	models, err := s.models.AvailableModels(ctx)
@@ -465,11 +536,11 @@ func (s *classroomService) validateModel(ctx context.Context, providerID uint64,
 
 // generationConfigJSON 是落进 classrooms.generation_config 的字段。
 type generationConfigJSON struct {
-	LLMProviderID uint64          `json:"llm_provider_id"`
-	LLMModelID    string          `json:"llm_model_id"`
-	WebSearch     bool            `json:"web_search"`
-	Bio           string          `json:"bio"`
-	Materials     json.RawMessage `json:"materials,omitempty"`
+	LLMProviderID uint64                               `json:"llm_provider_id"`
+	LLMModelID    string                               `json:"llm_model_id"`
+	WebSearch     bool                                 `json:"web_search"`
+	Bio           string                               `json:"bio"`
+	Materials     []requestdto.CreateClassroomMaterial `json:"materials,omitempty"`
 }
 
 // agentConfigJSON 是落进 classrooms.agent_config 的字段。

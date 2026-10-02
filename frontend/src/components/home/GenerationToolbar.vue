@@ -16,11 +16,25 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bot, Check, ChevronDown, FileText, Globe2, Paperclip, Search, X } from 'lucide-vue-next'
+import {
+  AlertCircle,
+  Bot,
+  Check,
+  ChevronDown,
+  Clock,
+  FileText,
+  Globe2,
+  Loader2,
+  Paperclip,
+  RotateCcw,
+  Search,
+  X,
+} from 'lucide-vue-next'
 
 import UiTooltip from '@/components/ui/UiTooltip.vue'
 import { findProviderLogo } from '@/data/providers'
 import type { AvailableLlmModel } from '@/api/llm'
+import { materialFingerprint, type SelectedMaterial, type SelectedMaterialStatus } from '@/lib/materials'
 import { cn } from '@/lib/utils'
 
 const { t } = useI18n()
@@ -29,9 +43,7 @@ const { t } = useI18n()
 const providerId = defineModel<number | null>('providerId', { default: null })
 const modelId = defineModel<string>('modelId', { default: '' })
 const webSearch = defineModel<boolean>('webSearch', { default: false })
-const materials = defineModel<{ id: string; name: string; size: number }[]>('materials', {
-  default: () => [],
-})
+const materials = defineModel<SelectedMaterial[]>('materials', { default: () => [] })
 
 const props = defineProps<{ availableModels: AvailableLlmModel[] }>()
 const emit = defineEmits<{ configure: [] }>()
@@ -84,31 +96,55 @@ function pickModel(id: string) {
   openMenu.value = null
 }
 
-function removeMaterial(id: string) {
-  materials.value = materials.value.filter((m) => m.id !== id)
+function removeMaterial(key: string) {
+  materials.value = materials.value.filter((m) => m.key !== key)
+}
+
+/** 失败/被拒的材料退回待上传，用户重新提交时再试一次。 */
+function retryMaterial(material: SelectedMaterial) {
+  material.status = 'queued'
+  material.documentId = null
+  material.error = ''
+}
+
+function addFiles(files: File[]) {
+  const seen = new Set(materials.value.map((m) => materialFingerprint(m.file)))
+  for (const file of files) {
+    const fingerprint = materialFingerprint(file)
+    if (seen.has(fingerprint)) continue
+    seen.add(fingerprint)
+    materials.value = [
+      ...materials.value,
+      {
+        key: `${fingerprint}:${Date.now()}`,
+        file,
+        name: file.name,
+        size: file.size,
+        status: 'queued',
+        documentId: null,
+        error: '',
+      },
+    ]
+  }
 }
 
 function onFilePick(e: Event) {
   const input = e.target as HTMLInputElement
-  const files = Array.from(input.files ?? [])
+  addFiles(Array.from(input.files ?? []))
   input.value = ''
-  for (const f of files) {
-    materials.value = [
-      ...materials.value,
-      { id: `${f.name}-${f.size}-${Date.now()}`, name: f.name, size: f.size },
-    ]
-  }
 }
 
 function onDrop(e: DragEvent) {
   materialDragging.value = false
-  const files = Array.from(e.dataTransfer?.files ?? [])
-  for (const f of files) {
-    materials.value = [
-      ...materials.value,
-      { id: `${f.name}-${f.size}-${Date.now()}`, name: f.name, size: f.size },
-    ]
-  }
+  addFiles(Array.from(e.dataTransfer?.files ?? []))
+}
+
+const materialBusy = computed(() =>
+  materials.value.some((m) => m.status === 'uploading' || m.status === 'pending'),
+)
+
+function materialStatusLabel(status: SelectedMaterialStatus): string {
+  return t(`toolbar.materialStatus.${status}`)
 }
 
 /** 通用 pill 类名（文档 §5.6 的三套基类） */
@@ -227,7 +263,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         :class="materials.length ? pillActive : pillMuted"
         @click="toggle('material')"
       >
-        <Paperclip class="size-3.5" />
+        <Loader2 v-if="materialBusy" class="size-3.5 animate-spin" />
+        <Paperclip v-else class="size-3.5" />
         <span v-if="materials.length">
           {{
             materials.length === 1
@@ -270,17 +307,49 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         <div v-if="materials.length" class="mt-2 max-h-40 space-y-1.5 overflow-y-auto">
           <div
             v-for="m in materials"
-            :key="m.id"
+            :key="m.key"
             class="flex items-center gap-2 rounded-lg border border-border/50 px-2 py-2"
           >
             <div class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet-100 dark:bg-violet-900/30">
-              <FileText class="size-3.5 text-violet-600 dark:text-violet-300" />
+              <Loader2
+                v-if="m.status === 'uploading' || m.status === 'pending'"
+                class="size-3.5 animate-spin text-violet-600 dark:text-violet-300"
+              />
+              <Check v-else-if="m.status === 'ready'" class="size-3.5 text-emerald-600 dark:text-emerald-400" />
+              <AlertCircle
+                v-else-if="m.status === 'failed' || m.status === 'rejected'"
+                class="size-3.5 text-red-500"
+              />
+              <Clock v-else-if="m.status === 'queued'" class="size-3.5 text-muted-foreground/60" />
+              <FileText v-else class="size-3.5 text-violet-600 dark:text-violet-300" />
             </div>
-            <span class="min-w-0 flex-1 truncate text-xs">{{ m.name }}</span>
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-xs">{{ m.name }}</p>
+              <p
+                class="truncate text-[10px]"
+                :class="
+                  m.status === 'failed' || m.status === 'rejected'
+                    ? 'text-red-500'
+                    : 'text-muted-foreground/60'
+                "
+                :title="m.error"
+              >
+                {{ m.error || materialStatusLabel(m.status) }}
+              </p>
+            </div>
+            <button
+              v-if="m.status === 'failed' || m.status === 'rejected'"
+              type="button"
+              class="shrink-0 rounded p-1 text-muted-foreground/50 hover:bg-muted hover:text-foreground"
+              :title="t('toolbar.materialRetry')"
+              @click="retryMaterial(m)"
+            >
+              <RotateCcw class="size-3.5" />
+            </button>
             <button
               type="button"
               class="shrink-0 rounded p-1 text-muted-foreground/50 hover:bg-muted hover:text-foreground"
-              @click="removeMaterial(m.id)"
+              @click="removeMaterial(m.key)"
             >
               <X class="size-3.5" />
             </button>

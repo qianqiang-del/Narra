@@ -15,6 +15,7 @@ import (
 	"narra/internal/agent/discussion"
 	"narra/internal/api"
 	"narra/internal/bootstrap"
+	"narra/internal/material"
 	internalmcp "narra/internal/mcp"
 	"narra/internal/model/entity"
 	"narra/internal/rag"
@@ -372,6 +373,13 @@ func (a *App) initDependencies() error {
 		return fmt.Errorf("注册知识库检索工具失败: %w", err)
 	}
 
+	// 课程材料消费：规划/调研阶段按本课材料的 document_id 定向取文本与检索，
+	// 不让材料只躺在知识库里等模型"碰巧"查到（见 internal/material）。
+	materialSource, err := material.NewSource(knowledgeDocumentRepo, knowledgeDocumentRepo, knowledgeSvc)
+	if err != nil {
+		return fmt.Errorf("创建课程材料消费组件失败: %w", err)
+	}
+
 	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey)
 	// 重排配置是「多存一条、同时只启用一条」：设置页增删改测，检索侧只读启用中的那条。
 	// 先做启动对齐（没有启用记录时关闭精排），之后的变动由服务层的 reload 热更新。
@@ -404,6 +412,7 @@ func (a *App) initDependencies() error {
 		Tx:              txManager,
 		AudioDir:        audioDir,
 		Tools:           a.mcpManager,
+		Materials:       materialSource,
 		EncryptionKey:   encryptionKey,
 		PageConcurrency: a.cfg.Classroom.PageConcurrency,
 		TTSPoolSize:     a.cfg.Classroom.TTSPoolSize,
@@ -417,7 +426,7 @@ func (a *App) initDependencies() error {
 		return err
 	}
 	a.worker = workerRuntime
-	classroomSvc := service.NewClassroomService(classroomRepo, classroomAgentRepo, roleRepo, sceneRepo, llmProviderSvc, queue, txManager, audioDir)
+	classroomSvc := service.NewClassroomService(classroomRepo, classroomAgentRepo, roleRepo, sceneRepo, llmProviderSvc, knowledgeDocumentRepo, queue, txManager, audioDir)
 	folderSvc := service.NewFolderService(folderRepo, txManager)
 
 	// 对话事件流（SSE）：执行过程与最终结果从 conversation_events 里增量读、推给前端。

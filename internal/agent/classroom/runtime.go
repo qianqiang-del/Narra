@@ -19,6 +19,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 
+	"narra/internal/material"
 	"narra/internal/rag/einoretriever"
 	"narra/internal/repository"
 	appcrypto "narra/pkg/crypto"
@@ -40,16 +41,18 @@ type ToolSource interface {
 
 // Deps 是生成课堂需要的外部依赖。
 type Deps struct {
-	Providers     repository.LLMProviderRepository
-	Classrooms    repository.ClassroomRepository
-	Scenes        repository.SceneRepository
-	Segments      repository.SceneSegmentRepository
-	Agents        repository.ClassroomAgentRepository
-	Roles         repository.RoleRepository
-	Tx            repository.TransactionManager
-	TTS           Synthesizer
-	AudioDir      string
-	Tools         ToolSource
+	Providers  repository.LLMProviderRepository
+	Classrooms repository.ClassroomRepository
+	Scenes     repository.SceneRepository
+	Segments   repository.SceneSegmentRepository
+	Agents     repository.ClassroomAgentRepository
+	Roles      repository.RoleRepository
+	Tx         repository.TransactionManager
+	TTS        Synthesizer
+	AudioDir   string
+	Tools      ToolSource
+	// Materials 是课程材料的消费入口；为 nil 时生成侧忽略材料（测试或旧装配）。
+	Materials     material.Source
 	EncryptionKey []byte
 	// PageConcurrency 是同时生成的页面数，TTSPoolSize 是同时发出的语音合成请求数；两者不大于 0 时按缺省值。
 	PageConcurrency int

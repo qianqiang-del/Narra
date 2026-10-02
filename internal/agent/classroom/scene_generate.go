@@ -53,16 +53,17 @@ func generateScenes(ctx context.Context, deps Deps, classroom *entity.Classroom,
 	}
 
 	executor := &pageExecutor{
-		deps:      deps,
-		classroom: classroom,
-		teacher:   teacher,
-		voice:     voice,
-		rt:        rt,
-		context:   buildClassroomContext(classroom, plan),
-		outline:   outlineIndex(plan.Pages),
-		ttsPool:   newTTSLimiter(effectiveTTSPoolSize(deps)),
-		runID:     runID,
-		owner:     owner,
+		deps:        deps,
+		classroom:   classroom,
+		teacher:     teacher,
+		voice:       voice,
+		rt:          rt,
+		context:     buildClassroomContext(classroom, plan),
+		outline:     outlineIndex(plan.Pages),
+		ttsPool:     newTTSLimiter(effectiveTTSPoolSize(deps)),
+		materialIDs: materialDocumentIDs(config),
+		runID:       runID,
+		owner:       owner,
 	}
 	concurrency := effectivePageConcurrency(deps)
 	logger.Info("课堂页面开始生成",
@@ -117,6 +118,20 @@ func generateScenes(ctx context.Context, deps Deps, classroom *entity.Classroom,
 	}
 	message := truncateRunes("部分场景生成失败："+strings.Join(reasons, "；"), 500)
 	return deps.Classrooms.UpdateStatus(writeCtx, classroom.ID, entity.ClassroomStatusPlayable, &message)
+}
+
+// materialDocumentIDs 取本课材料的文档 ID，供页面级定向检索用。
+func materialDocumentIDs(config GenerationConfig) []uint64 {
+	if len(config.Materials) == 0 {
+		return nil
+	}
+	ids := make([]uint64, 0, len(config.Materials))
+	for _, ref := range config.Materials {
+		if ref.DocumentID != 0 {
+			ids = append(ids, ref.DocumentID)
+		}
+	}
+	return ids
 }
 
 // pageTask 是段二的一页：计划里的那一页，与它对应的场景行。
