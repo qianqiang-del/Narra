@@ -663,7 +663,7 @@ func TestSetEnabledTogglesRetrievalFlag(t *testing.T) {
 
 // 列表条件解析：分页钳到合法区间、关键字去首尾空白、status 按逗号拆开并去重。
 func TestParseDocumentListQueryNormalizes(t *testing.T) {
-	query, err := ParseDocumentListQuery(0, 5000, " pending , processing , pending ", "  设计  ")
+	query, err := ParseDocumentListQuery(0, 5000, " pending , processing , pending ", "", "  设计  ")
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
@@ -673,27 +673,42 @@ func TestParseDocumentListQueryNormalizes(t *testing.T) {
 	if got := strings.Join(query.Statuses, ","); got != "pending,processing" {
 		t.Errorf("状态 = %q，期望 pending,processing（去重且保序）", got)
 	}
+	if query.Kind != entity.KnowledgeDocumentKindKnowledge {
+		t.Errorf("空 kind 应缺省为知识库文档，实际 %q", query.Kind)
+	}
 	if query.Keyword != "设计" {
 		t.Errorf("关键字 = %q，期望去掉首尾空白", query.Keyword)
 	}
 
 	// 不传 status 就是不限状态，不能变成"只看某个默认值"。
-	empty, err := ParseDocumentListQuery(1, 20, "  ", "")
+	empty, err := ParseDocumentListQuery(1, 20, "  ", entity.KnowledgeDocumentKindMaterial, "")
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
 	if len(empty.Statuses) != 0 {
 		t.Errorf("空 status 应当解析成不限，实际 %v", empty.Statuses)
 	}
+	if empty.Kind != entity.KnowledgeDocumentKindMaterial {
+		t.Errorf("kind = %q，期望 material", empty.Kind)
+	}
 }
 
 // 不合法状态必须报错，不能静默当成"不限" —— 后者在界面上和"确实没有数据"长得一样，
 // 排查时会白绕一圈。
 func TestParseDocumentListQueryRejectsUnknownStatus(t *testing.T) {
-	if _, err := ParseDocumentListQuery(1, 20, "pending,归档", ""); err == nil {
+	if _, err := ParseDocumentListQuery(1, 20, "pending,归档", "", ""); err == nil {
 		t.Fatal("非法状态必须报错")
 	} else if !strings.Contains(err.Error(), "无效") {
 		t.Errorf("错误信息应当说明状态无效，实际: %v", err)
+	}
+}
+
+// 非法 kind 同样必须报错。
+func TestParseDocumentListQueryRejectsUnknownKind(t *testing.T) {
+	if _, err := ParseDocumentListQuery(1, 20, "", "文件", ""); err == nil {
+		t.Fatal("非法文档类型必须报错")
+	} else if !strings.Contains(err.Error(), "无效") {
+		t.Errorf("错误信息应当说明文档类型无效，实际: %v", err)
 	}
 }
 

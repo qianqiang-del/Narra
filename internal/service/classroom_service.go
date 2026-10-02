@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -27,10 +28,14 @@ type modelLister interface {
 	AvailableModels(ctx context.Context) ([]responsedto.AvailableLLMModel, error)
 }
 
-// materialDocumentReader 是课程材料校验对知识库的最小依赖面：只按 ID 读文档，
-// 判断它是否已经能参与检索（ready + enabled）。
+// materialDocumentReader 是课程材料校验与生命周期对知识库的最小依赖面。
 type materialDocumentReader interface {
 	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error)
+	// AssociateMaterials 把待用材料关联到课堂（expires_at 置空）；返回实际关联行数，
+	// 调用方核对是否等于材料数，不等就回滚（材料已被别的课堂用掉或已失效）。
+	AssociateMaterials(ctx context.Context, ids []uint64) (int64, error)
+	// ExpireMaterials 给材料重设清理时间（删课堂时回收）。
+	ExpireMaterials(ctx context.Context, ids []uint64, expiresAt time.Time) (int64, error)
 }
 
 // JobQueue 受理成功后投递生成任务，删除课堂时撤掉它。
@@ -225,6 +230,17 @@ func (s *classroomService) Create(ctx context.Context, input requestdto.CreateCl
 		if err := s.agents.CreateBatch(txCtx, agents); err != nil {
 			return apperrors.NewWithErr(apperrors.CodeInternalError, "写入课堂角色失败", err)
 		}
+		// 材料"转正"与建课同事务：把待用材料的 expires_at 置空。
+		// 行数对不上说明材料已被别的课堂用掉或已失效（并发/过期/删除），整体回滚。
+		if ids := materialDocumentIDs(input.Materials); len(ids) > 0 {
+			applied, err := s.materials.AssociateMaterials(txCtx, ids)
+			if err != nil {
+				return apperrors.NewWithErr(apperrors.CodeInternalError, "关联课程材料失败", err)
+			}
+			if applied != int64(len(ids)) {
+				return apperrors.New(apperrors.CodeBadRequest, "课程材料已被其他课堂使用或已失效，请重新选择")
+			}
+		}
 		return nil
 	}); err != nil {
 		return nil, err
@@ -400,12 +416,38 @@ func (s *classroomService) List(ctx context.Context) ([]*responsedto.ClassroomLi
 // 「停止写旧结果」不在这里做，也不该在这里做：页面每次写库都带页面租约校验，
 // 行都被级联删掉了，旧执行者的写入自然影响 0 行——靠代码结构保证，不靠删除方记得去拦。
 func (s *classroomService) Delete(ctx context.Context, id uint64) error {
+	classroom, err := s.classrooms.FindByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
+		}
+		return apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂失败", err)
+	}
 	if err := s.queue.Remove(id); err != nil {
 		// 撤任务失败不拦着删课：任务真跑起来发现课没了会自己结束（Generate 读不到课程直接返回），
 		// 用户想删的课却删不掉才是更糟的结果。
 		logger.Warn("撤销生成任务失败，继续删除课堂", zap.Uint64("classroom_id", id), zap.Error(err))
 	}
-	if err := s.classrooms.Delete(ctx, id); err != nil {
+	if s.tx == nil {
+		return apperrors.New(apperrors.CodeInternalError, "删除课堂事务未配置")
+	}
+
+	// 删课回收：材料随课走，回到"待清理"状态，由 retention 下一轮删除。
+	// 必须在删掉课行之后再设 expires_at（同一事务内），否则解析出的名单会把本课自己算进去；
+	// 材料不存在（已被手动删除）时 ExpireMaterials 命中 0 行，不是错误。
+	recycled := classroomMaterialIDs(classroom.GenerationConfig)
+	err = s.tx.Run(ctx, func(txCtx context.Context) error {
+		if err := s.classrooms.Delete(txCtx, id); err != nil {
+			return err
+		}
+		if len(recycled) > 0 {
+			if _, err := s.materials.ExpireMaterials(txCtx, recycled, time.Now().UTC()); err != nil {
+				return fmt.Errorf("回收课程材料失败: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
 		}
@@ -415,6 +457,34 @@ func (s *classroomService) Delete(ctx context.Context, id uint64) error {
 		logger.Warn("清理课堂音频失败", zap.Uint64("classroom_id", id), zap.Error(err))
 	}
 	return nil
+}
+
+// materialDocumentIDs 取材料引用的文档 ID；入参在受理阶段已经去重。
+func materialDocumentIDs(materials []requestdto.CreateClassroomMaterial) []uint64 {
+	if len(materials) == 0 {
+		return nil
+	}
+	ids := make([]uint64, 0, len(materials))
+	for _, material := range materials {
+		if material.DocumentID != 0 {
+			ids = append(ids, material.DocumentID)
+		}
+	}
+	return ids
+}
+
+// classroomMaterialIDs 从课堂的生成配置快照里取材料文档 ID；旧课堂没有这个键时返回空。
+func classroomMaterialIDs(raw json.RawMessage) []uint64 {
+	if len(raw) == 0 {
+		return nil
+	}
+	var config struct {
+		Materials []requestdto.CreateClassroomMaterial `json:"materials"`
+	}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return nil
+	}
+	return materialDocumentIDs(config.Materials)
 }
 
 // removeAudio 删掉这门课的音频目录。删的是本程序自己写出去的目录，
@@ -505,6 +575,11 @@ func (s *classroomService) normalizeMaterials(ctx context.Context, materials []r
 		}
 		if !document.Enabled {
 			return nil, apperrors.New(apperrors.CodeBadRequest, "课程材料已被停用，请启用后再试")
+		}
+		// 材料不共享：只收"待使用"的课程材料（未关联课堂，带 expires_at）。
+		// 已关联的材料、普通知识库文档都不允许再挂到另一门课。
+		if document.Kind != entity.KnowledgeDocumentKindMaterial || document.ExpiresAt == nil {
+			return nil, apperrors.New(apperrors.CodeBadRequest, "只能引用待使用的课程材料，请重新上传")
 		}
 
 		name := strings.TrimSpace(material.Name)

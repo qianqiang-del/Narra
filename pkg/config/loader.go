@@ -56,6 +56,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("knowledge_ingest.queue_capacity", DefaultKnowledgeQueueCapacity)
 	v.SetDefault("knowledge_ingest.parse_concurrency", DefaultKnowledgeParseConcurrency)
 	v.SetDefault("knowledge_ingest.embedding_concurrency", DefaultKnowledgeEmbeddingConcurrency)
+	// 课程材料（首页随建课上传）未关联课堂时的保留时长；到期由 retention 清理。
+	v.SetDefault("knowledge_ingest.material_ttl", DefaultKnowledgeMaterialTTL)
 	// 上传是长请求：读超时必须留够把整批文件传完的时间，见 AppConfig.ReadTimeout。
 	v.SetDefault("app.read_timeout", "5m")
 	// 后台生成任务：默认串行、最多重试两次、单次不超过一刻钟、每十分钟对一次账。

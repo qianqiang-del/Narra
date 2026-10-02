@@ -204,6 +204,7 @@ func (s *knowledgeService) SubmitFile(ctx context.Context, input requestdto.Know
 		SourceType: input.SourceType,
 		SourceURI:  input.SourceURI,
 		SizeBytes:  input.SizeBytes,
+		Purpose:    input.Purpose,
 	})
 	if err != nil {
 		return responsedto.KnowledgeDocument{}, err
@@ -483,6 +484,7 @@ func (s *knowledgeService) IngestFile(
 		Title:      input.Title,
 		SourceType: input.SourceType,
 		SourceURI:  input.SourceURI,
+		Purpose:    input.Purpose,
 	})
 	return toDocumentResponse(result.Document, result.Chunks), err
 }
@@ -522,14 +524,19 @@ func NormalizePage(page, size int) (int, int) {
 // ParseDocumentListQuery 把原始查询参数解析成列表条件。
 //
 // 归一化与校验都放服务层、接口层只负责把 query string 递进来，是为了让
-// "页从 1 起、每页最多 100 条"和"status 只认那四个值"这两条口径只有一处实现 ——
-// 与 NormalizePage 同一个理由。
+// "页从 1 起、每页最多 100 条""status 只认那四个值""kind 只认 knowledge / material"
+// 这几条口径只有一处实现 —— 与 NormalizePage 同一个理由。
 //
 // status 不合法时返回错误，而不是当作"不限"：静默忽略在界面上和"确实没有数据"
-// 长得一模一样，排查时会白绕一圈。
-func ParseDocumentListQuery(page, size int, status, keyword string) (requestdto.KnowledgeListQuery, error) {
+// 长得一模一样，排查时会白绕一圈。kind 同理；空值缺省为 knowledge（知识库主列表），
+// 课程材料页签显式传 material。
+func ParseDocumentListQuery(page, size int, status, kind, keyword string) (requestdto.KnowledgeListQuery, error) {
 	page, size = NormalizePage(page, size)
 	statuses, err := parseDocumentStatuses(status)
+	if err != nil {
+		return requestdto.KnowledgeListQuery{}, err
+	}
+	parsedKind, err := parseDocumentKind(kind)
 	if err != nil {
 		return requestdto.KnowledgeListQuery{}, err
 	}
@@ -537,8 +544,22 @@ func ParseDocumentListQuery(page, size int, status, keyword string) (requestdto.
 		Page:     page,
 		Size:     size,
 		Statuses: statuses,
+		Kind:     parsedKind,
 		Keyword:  strings.TrimSpace(keyword),
 	}, nil
+}
+
+// parseDocumentKind 解析 kind 参数；空值缺省为知识库文档，非法值报错。
+func parseDocumentKind(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return entity.KnowledgeDocumentKindKnowledge, nil
+	}
+	if value != entity.KnowledgeDocumentKindKnowledge && value != entity.KnowledgeDocumentKindMaterial {
+		return "", fmt.Errorf("文档类型 %q 无效，可选值：%s、%s",
+			value, entity.KnowledgeDocumentKindKnowledge, entity.KnowledgeDocumentKindMaterial)
+	}
+	return value, nil
 }
 
 // parseDocumentStatuses 解析 status 参数，支持逗号分隔的多个状态。
@@ -588,6 +609,7 @@ func (s *knowledgeService) List(ctx context.Context, query requestdto.KnowledgeL
 
 	documents, total, err := s.documents.List(ctx, entity.KnowledgeDocumentQuery{
 		Statuses: query.Statuses,
+		Kind:     query.Kind,
 		Keyword:  strings.TrimSpace(query.Keyword),
 		Offset:   (page - 1) * size,
 		Limit:    size,
@@ -1064,6 +1086,8 @@ func toDocumentResponse(document *entity.KnowledgeDocument, chunks int) response
 		SourceType:  document.SourceType,
 		Enabled:     document.Enabled,
 		Status:      document.Status,
+		Kind:        document.Kind,
+		ExpiresAt:   document.ExpiresAt,
 		Stage:       stageName(document.IngestStage),
 		FailedStage: failureStage(document.Metadata),
 		Parser:      parserName(document.Metadata),

@@ -211,4 +211,18 @@ type KnowledgeDocumentRepository interface {
 	// Delete 删除一篇文档。切片与向量不在这里删 —— 外键 ON DELETE CASCADE 会把它们带走。
 	// 硬删除，不走软删除：UNIQUE (document_id, chunk_index) 要求同序号的上一条先消失。
 	Delete(ctx context.Context, id uint64) error
+
+	// AssociateMaterials 把一批待用课程材料关联到课堂（expires_at 置空，此后长期保留）。
+	//
+	// 条件（kind = material、expires_at 非空、ready 且启用）是"材料不共享"的原子闸门：
+	// 并发建课或校验后材料失效的竞态在这里影响 0 行，调用方核对行数后回滚整个建课事务。
+	AssociateMaterials(ctx context.Context, ids []uint64) (int64, error)
+
+	// ExpireMaterials 给一批课程材料重设清理时间（删课堂时回收）。
+	// 只处理 kind = material 的行，不存在的行静默跳过；命中行数少于入参数量不是错误。
+	ExpireMaterials(ctx context.Context, ids []uint64, expiresAt time.Time) (int64, error)
+
+	// ListExpiredMaterials 取到期且未关联课堂的课程材料 ID（升序），供后台清理逐个删除。
+	// 只返回 ID：删除要走服务层 Delete，连带清理归档原件与文档图片。
+	ListExpiredMaterials(ctx context.Context, before time.Time) ([]uint64, error)
 }

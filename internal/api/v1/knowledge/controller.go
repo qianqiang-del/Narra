@@ -149,11 +149,19 @@ func (c *Controller) Upload(ctx *gin.Context) {
 		title = ctx.PostForm("title")
 	}
 
+	// purpose 是入库用途标记：空 = 普通知识库文档；material = 课程材料（临时，
+	// 未关联课堂时带 expires_at、到期清理）。非法值整批拒绝，不静默降级成普通文档。
+	purpose := strings.TrimSpace(ctx.PostForm("purpose"))
+	if purpose != "" && purpose != entity.KnowledgeDocumentKindMaterial {
+		response.BadRequest(ctx, "purpose 参数无效")
+		return
+	}
+
 	items := make([]responsedto.KnowledgeIngestItem, 0, len(files))
 	documents := make([]*responsedto.KnowledgeDocument, 0, len(files))
 	errs := make([]error, 0, len(files))
 	for _, header := range files {
-		item, document, err := c.submitUpload(ctx, header, title)
+		item, document, err := c.submitUpload(ctx, header, title, purpose)
 		items = append(items, item)
 		documents = append(documents, document)
 		errs = append(errs, err)
@@ -226,6 +234,7 @@ func (c *Controller) submitUpload(
 	ctx *gin.Context,
 	header *multipart.FileHeader,
 	title string,
+	purpose string,
 ) (responsedto.KnowledgeIngestItem, *responsedto.KnowledgeDocument, error) {
 	item := responsedto.KnowledgeIngestItem{
 		OriginalName: filepath.Base(header.Filename),
@@ -259,6 +268,8 @@ func (c *Controller) submitUpload(
 		SourceURI: filepath.Base(header.Filename),
 		// 字节数取自接收到的文件头，是这份文件在上传记录里唯一能显示的大小信息。
 		SizeBytes: header.Size,
+		// 用途标记：material 表示课程材料（临时，未关联课堂时到期清理）。
+		Purpose: purpose,
 	})
 	if err != nil {
 		// 提交失败：原件已经落盘，删掉它。worker 从来没见过这份文件，
@@ -587,6 +598,7 @@ func (c *Controller) List(ctx *gin.Context) {
 		queryInt(ctx, "page", 1),
 		queryInt(ctx, "size", 20),
 		ctx.Query("status"),
+		ctx.Query("kind"),
 		ctx.Query("keyword"),
 	)
 	if err != nil {

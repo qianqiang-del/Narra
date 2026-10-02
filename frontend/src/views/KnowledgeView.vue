@@ -22,19 +22,20 @@ import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { toast } from 'vue-sonner'
 
-import type { KnowledgeDocument, KnowledgeUploadRecord } from '@/api/knowledge'
+import type { KnowledgeDocument, KnowledgeDocumentKind, KnowledgeUploadRecord } from '@/api/knowledge'
 import ConfirmDialog from '@/components/knowledge/ConfirmDialog.vue'
 import DocumentPreviewDialog from '@/components/knowledge/DocumentPreviewDialog.vue'
 import KnowledgeRow from '@/components/knowledge/KnowledgeRow.vue'
 import NewKnowledgeDialog from '@/components/knowledge/NewKnowledgeDialog.vue'
 import UploadRecordDrawer from '@/components/knowledge/UploadRecordDrawer.vue'
+import { cn } from '@/lib/utils'
 import { useKnowledgeStore } from '@/stores/knowledge'
 
 const { t } = useI18n()
 const router = useRouter()
 const store = useKnowledgeStore()
 
-const { loading, keyword, readyDocuments, readyTotal, hasMore, isEmpty, recordAlerts, embeddingStatus, reembedding, reembedTracking } =
+const { loading, keyword, listKind, readyDocuments, readyTotal, hasMore, isEmpty, recordAlerts, embeddingStatus, reembedding, reembedTracking } =
   storeToRefs(store)
 
 // 仍缺当前默认模型向量的 ready 文档数。> 0 才显示提示条；没有默认模型时后端给 0。
@@ -112,6 +113,13 @@ async function refresh() {
   } catch (error) {
     toast.error(error instanceof Error ? error.message : t('knowledge.error.load'))
   }
+}
+
+/** 切换"知识库 / 课程材料"页签：列表条件在 store 里，切完重拉第一页。 */
+function switchKind(kind: KnowledgeDocumentKind) {
+  if (listKind.value === kind) return
+  listKind.value = kind
+  void refresh()
 }
 
 /**
@@ -292,6 +300,34 @@ function goBack() {
         <h1 class="text-[15px] font-medium">{{ t('knowledge.title') }}</h1>
       </div>
 
+      <!-- 知识库 / 课程材料：材料不参与全局检索，但要有可管理的入口 -->
+      <div class="flex shrink-0 items-center rounded-lg border border-border p-0.5 text-[13px]">
+        <button
+          type="button"
+          :class="
+            cn(
+              'cursor-pointer rounded-md px-2.5 py-1 font-medium transition-colors',
+              listKind === 'knowledge' ? 'bg-muted text-foreground' : 'text-zinc-500 hover:text-foreground',
+            )
+          "
+          @click="switchKind('knowledge')"
+        >
+          {{ t('knowledge.tabs.knowledge') }}
+        </button>
+        <button
+          type="button"
+          :class="
+            cn(
+              'cursor-pointer rounded-md px-2.5 py-1 font-medium transition-colors',
+              listKind === 'material' ? 'bg-muted text-foreground' : 'text-zinc-500 hover:text-foreground',
+            )
+          "
+          @click="switchKind('material')"
+        >
+          {{ t('knowledge.tabs.material') }}
+        </button>
+      </div>
+
       <!-- 搜索：与原型一致，只搜标题与原始文件名 -->
       <div class="relative ml-auto w-full min-w-0 sm:w-72">
         <Search
@@ -334,6 +370,7 @@ function goBack() {
       </button>
 
       <button
+        v-if="listKind === 'knowledge'"
         type="button"
         class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[13px] font-medium text-primary-foreground transition-opacity hover:opacity-90"
         @click="newOpen = true"
@@ -360,7 +397,7 @@ function goBack() {
         处理期间文档会暂时从主页消失（主页只列 ready），逐批重算完自动回来。
       -->
       <div
-        v-if="showReembed"
+        v-if="showReembed && listKind === 'knowledge'"
         class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-[13px] text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200"
       >
         <TriangleAlert class="size-4 shrink-0" />
@@ -408,7 +445,9 @@ function goBack() {
           {{
             searching
               ? t('knowledge.list.filteredEmpty', { keyword: keyword.trim() })
-              : t('knowledge.list.empty')
+              : listKind === 'material'
+                ? t('knowledge.material.empty')
+                : t('knowledge.list.empty')
           }}
         </p>
       </div>

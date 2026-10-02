@@ -23,6 +23,16 @@ const (
 	KnowledgeDocumentStatusFailed     = "failed"     // 处理失败，原因记在 metadata
 )
 
+// 文档类型：区分知识库文档与课程材料。
+//
+// 课程材料是首页随建课上传的临时文档：未关联课堂时带 expires_at，到期由后台清理；
+// 建课时关联到课堂（expires_at 置空）后长期保留。材料不参与全局检索，只被它关联的
+// 课堂按 document_id 定向取用；知识库文档默认可见、可检索。
+const (
+	KnowledgeDocumentKindKnowledge = "knowledge" // 知识库文档
+	KnowledgeDocumentKindMaterial  = "material"  // 课程材料（待用或已关联课堂）
+)
+
 // 文档的收录阶段。文件收录被拆成三步，每步成功才推进到下一步，失败则停在失败的那一步 ——
 // 所以它同时表示"当前正在做"与"失败后下次从哪一步恢复"。
 //
@@ -51,6 +61,14 @@ type KnowledgeDocument struct {
 	ContentChecksum *string `gorm:"column:content_checksum;type:char(64);comment:正文的 SHA-256 摘要（64 位十六进制），用于判断内容变没变、要不要重新切片" json:"content_checksum"`                                                                                                                                     // 原文内容的 SHA-256 摘要，用于判断是否需要重新切片
 	Enabled         bool    `gorm:"column:enabled;not null;comment:是否参与知识检索；为 false 时本文档的切片不会被召回" json:"enabled"`                                                                                                                                                                         // 是否允许该文章的切片参与 RAG 检索
 	Status          string  `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_documents_status_check,status IN ('pending', 'processing', 'ready', 'failed');comment:处理状态，取值 pending（排队）/ processing（处理中）/ ready（可用）/ failed（失败，原因在 metadata）" json:"status"` // 处理状态：pending、processing、ready 或 failed
+
+	// Kind 是文档类型：knowledge 知识库文档 / material 课程材料。材料不参与全局检索，
+	// 只被它关联的课堂按 document_id 定向取用；知识库文档默认可见、可检索。
+	Kind string `gorm:"column:kind;type:varchar(32);not null;default:knowledge;check:knowledge_documents_kind_check,kind IN ('knowledge', 'material');comment:文档类型：knowledge 知识库文档 / material 课程材料（待用或已关联课堂）" json:"kind"`
+
+	// ExpiresAt 是临时材料的清理时间，只有 kind = material 时可能非空：
+	// 非空 = 还没关联课堂，到期由后台清理；为空 = 已关联课堂（或知识库文档），长期保留。
+	ExpiresAt *time.Time `gorm:"column:expires_at;type:timestamptz;index:knowledge_documents_material_expires_at_idx,where:kind = 'material' AND expires_at IS NOT NULL;comment:临时材料的清理时间；非空表示还没关联课堂、到期删除，为空表示长期保留" json:"expires_at"`
 
 	// IngestStage 是收录阶段。它必须是正式列而不是 metadata 里的一个键：恢复逻辑要按它
 	// 分支，而 metadata 是处理产物的自由格式，不适合承载状态机。取值见上面的阶段常量。

@@ -21,6 +21,10 @@ type KnowledgeIngestFile struct {
 	// SizeBytes 原始文件的字节数。只写进上传记录供界面显示"这份文件有多大"，
 	// 收录链路本身不用它；0 表示调用方没提供。
 	SizeBytes int64 `json:"size_bytes"`
+	// Purpose 是入库用途标记。空 = 普通知识库文档；取值 material 表示这是课程材料：
+	// 未关联课堂时带 expires_at，到期由后台清理；关联后长期保留。取值见
+	// entity.KnowledgeDocumentKindXxx。
+	Purpose string `json:"purpose"`
 }
 
 // KnowledgeIngestText 是把一段正文直接收录为知识文档的请求。
@@ -47,6 +51,7 @@ type KnowledgeListQuery struct {
 	Page     int      // 页码，从 1 起
 	Size     int      // 每页条数，上限见 service.maxPageSize
 	Statuses []string // 只看这些状态（HTTP 上由 status 参数按逗号拆开）；空表示不限
+	Kind     string   // 只看这类文档：knowledge 或 material；解析时缺省为 knowledge
 	Keyword  string   // 标题与来源标识的模糊匹配关键字；空表示不限
 }
 

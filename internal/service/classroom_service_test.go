@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -37,23 +38,68 @@ func (r *fakeMaterialReader) GetByID(_ context.Context, id uint64) (*entity.Know
 	return document, nil
 }
 
-func readyDocument(title string) *entity.KnowledgeDocument {
-	return &entity.KnowledgeDocument{Title: title, Status: entity.KnowledgeDocumentStatusReady, Enabled: true}
+// AssociateMaterials 模拟"转正"：只命中待用材料，命中后清空 expires_at。
+func (r *fakeMaterialReader) AssociateMaterials(_ context.Context, ids []uint64) (int64, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	applied := int64(0)
+	for _, id := range ids {
+		document, ok := r.documents[id]
+		if !ok || document.Kind != entity.KnowledgeDocumentKindMaterial || document.ExpiresAt == nil {
+			continue
+		}
+		document.ExpiresAt = nil
+		applied++
+	}
+	return applied, nil
+}
+
+// ExpireMaterials 模拟删课回收：只命中材料，重设清理时间。
+func (r *fakeMaterialReader) ExpireMaterials(_ context.Context, ids []uint64, expiresAt time.Time) (int64, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	applied := int64(0)
+	for _, id := range ids {
+		document, ok := r.documents[id]
+		if !ok || document.Kind != entity.KnowledgeDocumentKindMaterial {
+			continue
+		}
+		value := expiresAt
+		document.ExpiresAt = &value
+		applied++
+	}
+	return applied, nil
+}
+
+// readyMaterial 造一份"待使用"的课程材料：ready + 启用 + material + 带过期时间。
+func readyMaterial(title string) *entity.KnowledgeDocument {
+	expiresAt := time.Now().Add(time.Hour)
+	return &entity.KnowledgeDocument{
+		Title:     title,
+		Status:    entity.KnowledgeDocumentStatusReady,
+		Enabled:   true,
+		Kind:      entity.KnowledgeDocumentKindMaterial,
+		ExpiresAt: &expiresAt,
+	}
 }
 
 func TestNormalizeMaterials(t *testing.T) {
 	documents := map[uint64]*entity.KnowledgeDocument{
-		7:  readyDocument("讲义标题"),
-		8:  readyDocument("第二份"),
-		9:  {Title: "处理中", Status: entity.KnowledgeDocumentStatusProcessing, Enabled: true},
-		10: {Title: "已停用", Status: entity.KnowledgeDocumentStatusReady, Enabled: false},
+		7:  readyMaterial("讲义标题"),
+		8:  readyMaterial("第二份"),
+		9:  {Title: "处理中", Status: entity.KnowledgeDocumentStatusProcessing, Enabled: true, Kind: entity.KnowledgeDocumentKindMaterial},
+		10: {Title: "已停用", Status: entity.KnowledgeDocumentStatusReady, Enabled: false, Kind: entity.KnowledgeDocumentKindMaterial},
+		11: {Title: "知识库文档", Status: entity.KnowledgeDocumentStatusReady, Enabled: true, Kind: entity.KnowledgeDocumentKindKnowledge},
+		12: {Title: "已关联材料", Status: entity.KnowledgeDocumentStatusReady, Enabled: true, Kind: entity.KnowledgeDocumentKindMaterial},
 	}
 
 	overLimitReader := &fakeMaterialReader{documents: map[uint64]*entity.KnowledgeDocument{}}
 	overLimitInput := make([]requestdto.CreateClassroomMaterial, 0, maxClassroomMaterials+1)
 	for index := 0; index <= maxClassroomMaterials; index++ {
 		id := uint64(100 + index)
-		overLimitReader.documents[id] = readyDocument("材料")
+		overLimitReader.documents[id] = readyMaterial("材料")
 		overLimitInput = append(overLimitInput, requestdto.CreateClassroomMaterial{DocumentID: id})
 	}
 
@@ -108,6 +154,18 @@ func TestNormalizeMaterials(t *testing.T) {
 			name:    "已停用拒绝",
 			reader:  &fakeMaterialReader{documents: documents},
 			input:   []requestdto.CreateClassroomMaterial{{DocumentID: 10}},
+			wantErr: apperrors.CodeBadRequest,
+		},
+		{
+			name:    "普通知识库文档拒绝",
+			reader:  &fakeMaterialReader{documents: documents},
+			input:   []requestdto.CreateClassroomMaterial{{DocumentID: 11}},
+			wantErr: apperrors.CodeBadRequest,
+		},
+		{
+			name:    "已关联课堂的材料拒绝",
+			reader:  &fakeMaterialReader{documents: documents},
+			input:   []requestdto.CreateClassroomMaterial{{DocumentID: 12}},
 			wantErr: apperrors.CodeBadRequest,
 		},
 		{
@@ -181,5 +239,21 @@ func TestBuildGenerationConfigOmitsEmptyMaterials(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "materials") {
 		t.Fatalf("没有材料时不该出现 materials 键: %s", raw)
+	}
+}
+
+func TestClassroomMaterialIDs(t *testing.T) {
+	if ids := classroomMaterialIDs(nil); ids != nil {
+		t.Fatalf("空配置应返回空: %v", ids)
+	}
+	if ids := classroomMaterialIDs(json.RawMessage(`{}`)); ids != nil {
+		t.Fatalf("没有 materials 键应返回空: %v", ids)
+	}
+	if ids := classroomMaterialIDs(json.RawMessage(`不是 JSON`)); ids != nil {
+		t.Fatalf("坏 JSON 应返回空: %v", ids)
+	}
+	raw := json.RawMessage(`{"llm_provider_id":3,"materials":[{"document_id":7,"name":"a","size":1},{"document_id":0},{"document_id":8}]}`)
+	if ids := classroomMaterialIDs(raw); !reflect.DeepEqual(ids, []uint64{7, 8}) {
+		t.Fatalf("材料 ID 解析不对: %v", ids)
 	}
 }

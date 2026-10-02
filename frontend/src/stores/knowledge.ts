@@ -19,6 +19,7 @@ import {
   watchKnowledgeDocument,
   DEFAULT_UPLOAD_LIMITS,
   type KnowledgeDocument,
+  type KnowledgeDocumentKind,
   type KnowledgeEmbeddingStatus,
   type KnowledgeParserStatus,
   type KnowledgeReembedResult,
@@ -216,6 +217,14 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   /** 搜索关键字，匹配标题与原始文件名（由服务端做模糊匹配） */
   const keyword = ref('')
 
+  /**
+   * 当前列表看的是哪类文档：knowledge 知识库（默认） / material 课程材料。
+   *
+   * 材料不参与全局检索，但需要在知识库页有一个可管理的入口（否则关联后就成了
+   * 看不见也删不掉的孤儿）。切换页签时由视图重新 load。
+   */
+  const listKind = ref<KnowledgeDocumentKind>('knowledge')
+
   const hasMore = computed(() => readyDocuments.value.length < readyTotal.value)
 
   /** 空态：加载完了但一条 ready 都铺不出来（可能是没有 ready，也可能被搜索过滤光了） */
@@ -264,6 +273,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
           page: 1,
           size: KNOWLEDGE_BATCH,
           status: ['ready'],
+          kind: listKind.value,
           keyword: keyword.value,
         }),
         fetchUploadRecords({ page: 1, size: RECORD_PAGE_SIZE }),
@@ -299,6 +309,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
         page: readyPage.value + 1,
         size: KNOWLEDGE_BATCH,
         status: ['ready'],
+        kind: listKind.value,
         keyword: keyword.value,
       })
       // 按 id 去重：翻页期间上面若有文档被删或新收录，服务端的偏移会整体前移，
@@ -783,6 +794,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     reembedding,
     reembedTracking,
     keyword,
+    listKind,
     hasMore,
     isEmpty,
     // 动作
