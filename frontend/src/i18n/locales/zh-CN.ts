@@ -175,6 +175,14 @@ export default {
     speed: '倍速',
   },
   chat: {
+    you: '你',
+    assistant: '课堂伙伴',
+    copy: '复制回复',
+    copied: '已复制',
+    copyFailed: '复制失败，请选中文字复制',
+    latest: '回到最新消息',
+    ending: '正在结束…',
+    keyboardHint: 'Enter 发送 · Shift + Enter 换行',
     notes: '笔记',
     chat: '对话',
     noConversations: '暂无对话',
@@ -188,6 +196,18 @@ export default {
     backToList: '返回会话列表',
     thinking: '讨论思考中...',
     speaking: '{name} 正在发言...',
+    currentSession: '当前对话',
+    participantCount: '{count} 位成员',
+    status: {
+      working: '正在组织回复',
+      waiting: '等待你继续',
+      ready: '当前空闲',
+    },
+    sessionType: {
+      qa: '问答',
+      discussion: '圆桌讨论',
+      lecture: '课堂讲解',
+    },
   },
   classroom: {
     notFound: '找不到这门课程',

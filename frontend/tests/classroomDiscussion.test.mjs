@@ -68,6 +68,7 @@ test('classroom role keys identify the speaker even when the role label is Chine
   assert.equal(display.speakingAgentKey, 'curious')
   applyDiscussionEvent(display, event(4, 'message.delta', { turn_id: 11, message_id: 12, delta: '我想问' }))
   assert.equal(display.bubbles[0].name, '好奇宝宝')
+  assert.equal(display.bubbles[0].agentKey, 'curious')
   applyDiscussionEvent(display, event(5, 'run.completed', {}))
   assert.equal(display.speakingAgentKey, null)
 })

@@ -29,6 +29,7 @@ export interface Bubble {
   id: string
   from: 'user' | 'agent' | 'teacher'
   name?: string
+  agentKey?: string
   text: string
 }
 

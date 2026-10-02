@@ -127,10 +127,11 @@ interface DiscussionStartDTO {
 export function startDiscussion(
   conversationId: number,
   content: string,
+  sceneId?: number,
 ): Promise<DiscussionStart> {
   return request<DiscussionStartDTO>(`/conversations/${conversationId}/discussions`, {
     method: 'POST',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, ...(sceneId ? { scene_id: sceneId } : {}) }),
   }).then((item) => ({
     conversationId: item.conversation_id,
     messageId: item.message_id,

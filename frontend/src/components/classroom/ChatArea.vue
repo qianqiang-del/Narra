@@ -5,11 +5,13 @@
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ArrowLeft, BookOpen, MessageSquare, PanelRightClose, PanelRightOpen, Plus, Send } from 'lucide-vue-next'
+import { ArrowDown, ArrowLeft, BookOpen, MessageCircle, MessageSquare, PanelRightClose, PanelRightOpen, Plus, Send, Square, Users } from 'lucide-vue-next'
+import ChatMessage from './ChatMessage.vue'
 
 import { cn } from '@/lib/utils'
 import { registerAudio } from '@/lib/audioPlayback'
-import type { Bubble, ChatNote, ChatSession } from '@/types/classroom'
+import { discussionStatus } from '@/lib/discussionAppearance'
+import type { Bubble, ChatNote, ChatSession, Participant } from '@/types/classroom'
 
 const props = defineProps<{
   collapsed: boolean
@@ -32,6 +34,9 @@ const props = defineProps<{
   thinking: boolean
   yourTurn: boolean
   speakingName?: string
+  participants?: Participant[]
+  streamingIds?: Set<string>
+  closing?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -47,12 +52,17 @@ const emit = defineEmits<{
   (e: 'back'): void
   (e: 'retry'): void
   (e: 'input-activate'): void
+  (e: 'end-session'): void
 }>()
 
 const { t } = useI18n()
 const messageList = ref<HTMLElement | null>(null)
 const followMessages = ref(true)
 const activeTitle = computed(() => props.sessions.find((item) => item.active)?.title || t('workspace.newSession'))
+const status = computed(() => discussionStatus(props))
+const statusText = computed(() => status.value === 'speaking'
+  ? t('chat.speaking', { name: props.speakingName })
+  : t(`chat.status.${status.value}`))
 watch(() => props.messages, async () => {
   if (!followMessages.value) return
   await nextTick()
@@ -66,6 +76,13 @@ watch(() => [props.activeConversationId, props.view], async () => {
 function onScroll() {
   const element = messageList.value
   if (element) followMessages.value = element.scrollHeight - element.scrollTop - element.clientHeight < 48
+}
+function scrollToLatest() {
+  followMessages.value = true
+  messageList.value?.scrollTo({ top: messageList.value.scrollHeight })
+}
+function participantFor(message: Bubble) {
+  return props.participants?.find((participant) => message.agentKey ? participant.id === message.agentKey : participant.name === message.name)
 }
 function send() {
   const text = props.draft.trim()
@@ -94,11 +111,6 @@ function playAudio(path?: string | null, text?: string, id?: string) {
   }
 }
 
-const TYPE_BADGE: Record<ChatSession['type'], string> = {
-  qa: 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300',
-  discussion: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
-  lecture: 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-300',
-}
 </script>
 
 <template>
@@ -162,6 +174,8 @@ const TYPE_BADGE: Record<ChatSession['type'], string> = {
 
       <button
         type="button"
+        :title="t('workspace.collapseChat')"
+        :aria-label="t('workspace.collapseChat')"
         class="shrink-0 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800"
         @click="emit('toggle-collapse')"
       >
@@ -185,79 +199,73 @@ const TYPE_BADGE: Record<ChatSession['type'], string> = {
     </div>
 
     <!-- 对话 -->
-    <div v-else class="flex min-h-0 flex-1 flex-col">
-      <div v-if="error" role="alert" class="mx-3 mb-2 rounded-lg bg-red-50 p-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+    <div v-else class="flex min-h-0 flex-1 flex-col bg-[#f8faf9] dark:bg-zinc-950">
+      <div v-if="error" role="alert" class="mx-3 mt-3 rounded-md border border-red-200 bg-red-50 p-2.5 text-xs leading-5 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
         {{ error }}
         <button type="button" class="ml-2 underline" :disabled="busy" @click="emit('retry')">{{ t('chat.retry') }}</button>
       </div>
-      <div v-if="view === 'list'" class="scrollbar-hide min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
-      <p v-if="loadingConversations" class="py-4 text-center text-xs text-gray-400">{{ t('chat.loadingMessages') }}</p>
-      <div
-        v-else-if="sessions.length === 0"
-        class="flex h-full flex-col items-center justify-center p-6 text-center opacity-50"
-      >
-        <div class="flex size-12 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800">
-          <MessageSquare class="size-5 text-gray-400" />
+      <div v-if="view === 'list'" class="scrollbar-hide min-h-0 flex-1 overflow-y-auto">
+        <div class="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+          <span class="text-xs font-semibold text-zinc-700 dark:text-zinc-200">{{ t('chat.conversationMessages') }}</span>
+          <span class="text-[11px] tabular-nums text-zinc-400">{{ sessions.length }}</span>
         </div>
-        <p class="mt-3 text-[13px] text-gray-500 dark:text-gray-400">{{ t('chat.noConversations') }}</p>
-        <p class="mt-1 text-[12px] text-gray-400">{{ t('chat.startConversation') }}</p>
-      </div>
+        <p v-if="loadingConversations" class="py-4 text-center text-xs text-gray-400">{{ t('chat.loadingMessages') }}</p>
+        <div v-else-if="sessions.length === 0" class="flex min-h-60 flex-col items-center justify-center p-6 text-center">
+          <div class="flex size-10 items-center justify-center rounded-md border border-teal-100 bg-teal-50 dark:border-teal-900 dark:bg-teal-950/30">
+            <MessageSquare class="size-4 text-teal-700 dark:text-teal-300" />
+          </div>
+          <p class="mt-3 text-[13px] text-gray-500 dark:text-gray-400">{{ t('chat.noConversations') }}</p>
+          <p class="mt-1 text-[12px] text-gray-400">{{ t('chat.startConversation') }}</p>
+        </div>
 
-      <button
-        v-for="s in sessions"
-        :key="s.id"
-        type="button"
-        :disabled="busy && !s.active"
-        :class="
-          cn(
-            'w-full overflow-hidden rounded-xl border text-left transition-all duration-500',
-            s.active
-              ? 'border-purple-200 bg-purple-50/30 shadow-sm dark:border-purple-800 dark:bg-purple-900/20'
-              : 'border-gray-100 hover:border-gray-200 dark:border-gray-800 dark:hover:border-gray-700',
-          )
-        "
-        @click="emit('open-session', s.id)"
-      >
-        <div class="flex items-center gap-2 px-3 pt-2.5">
-          <span
-            :class="
-              cn(
-                'rounded-full px-1.5 py-0.5 text-[10px] font-bold tracking-wide uppercase',
-                TYPE_BADGE[s.type],
-              )
-            "
-          >
-            {{ s.type }}
+        <button
+          v-for="s in sessions"
+          :key="s.id"
+          type="button"
+          :disabled="busy && !s.active"
+          :class="cn(
+            'flex w-full min-w-0 items-start gap-2.5 border-b border-zinc-200 px-4 py-3.5 text-left transition-colors dark:border-zinc-800',
+            s.active ? 'border-l-2 border-l-teal-700 bg-teal-50/70 pl-3.5 dark:border-l-teal-400 dark:bg-teal-950/20' : 'border-l-2 border-l-transparent hover:bg-white dark:hover:bg-zinc-900',
+          )"
+          @click="emit('open-session', s.id)"
+        >
+          <span class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-white text-teal-700 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:text-teal-300 dark:ring-zinc-700">
+            <MessageCircle class="size-3.5" />
           </span>
-          <span class="min-w-0 flex-1 truncate text-[13px] font-medium text-gray-700 dark:text-gray-200">
-            {{ s.title }}
+          <span class="min-w-0 flex-1">
+            <span class="flex min-w-0 items-start gap-2">
+              <span class="min-w-0 flex-1 truncate text-[13px] font-semibold text-zinc-800 dark:text-zinc-100">{{ s.title }}</span>
+              <span v-if="s.active" class="mt-1 size-1.5 shrink-0 rounded-full bg-emerald-500" :title="t('chat.currentSession')" />
+            </span>
+            <span class="mt-1 block truncate text-[11px] text-zinc-500 dark:text-zinc-400">{{ s.preview || t(`chat.sessionType.${s.type}`) }}</span>
           </span>
-        </div>
-        <p class="truncate px-3 pt-1 pb-2.5 text-[12px] text-gray-400">
-          {{ s.preview }}
-        </p>
-      </button>
+        </button>
       </div>
 
       <template v-else>
-        <div class="flex shrink-0 items-center gap-2 border-b border-gray-100 px-3 py-2 dark:border-gray-800">
-          <button type="button" :aria-label="t('chat.backToList')" class="rounded-md p-1 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" @click="emit('back')"><ArrowLeft class="size-4" /></button>
-          <span class="truncate text-sm font-medium text-gray-700 dark:text-gray-200">{{ activeTitle }}</span>
+        <div class="flex shrink-0 items-center gap-2 border-b border-zinc-200 bg-white px-3 py-3 dark:border-zinc-800 dark:bg-zinc-900">
+          <button type="button" :aria-label="t('chat.backToList')" :title="t('chat.backToList')" class="shrink-0 rounded-md p-1.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800" @click="emit('back')"><ArrowLeft class="size-4" /></button>
+          <span class="min-w-0 flex-1 truncate text-[13px] font-semibold text-zinc-800 dark:text-zinc-100">{{ activeTitle }}</span>
+          <button v-if="activeConversationId" type="button" :disabled="sending || loadingMessages || closing" class="flex shrink-0 items-center gap-1 rounded-md border border-zinc-200 px-2 py-1.5 text-[11px] font-medium text-zinc-600 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-rose-950/30" @click="emit('end-session')"><Square class="size-2.5" />{{ closing ? t('chat.ending') : t('roundtable.stopDiscussion') }}</button>
         </div>
-        <div ref="messageList" class="scrollbar-hide min-h-0 flex-1 space-y-3 overflow-y-auto p-3" @scroll="onScroll">
+        <div class="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800" aria-live="polite">
+          <span :class="cn('size-1.5 shrink-0 rounded-full', status === 'ready' ? 'bg-zinc-400' : status === 'waiting' ? 'bg-amber-500' : 'bg-emerald-500')" />
+          <span class="min-w-0 flex-1 text-[11px] font-medium text-zinc-600 dark:text-zinc-300">{{ statusText }}</span>
+          <span v-if="participants?.length" class="flex shrink-0 items-center gap-1 text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400"><Users class="size-3" />{{ t('chat.participantCount', { count: participants.length }) }}</span>
+        </div>
+        <div ref="messageList" class="scrollbar-hide min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-4" @scroll="onScroll">
           <div v-if="loadingMessages" class="py-3 text-center text-xs text-gray-400">{{ t('chat.loadingMessages') }}</div>
           <p v-else-if="!messages.length" class="py-8 text-center text-xs text-gray-400">{{ t('chat.startConversation') }}</p>
-          <div v-for="message in messages" :key="message.id" :class="cn('rounded-xl px-3 py-2 text-[13px] leading-relaxed', message.from === 'user' ? 'ml-5 bg-violet-600 text-white' : 'mr-5 bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200')">
-            <div v-if="message.name" class="mb-0.5 text-[10px] font-medium opacity-60">{{ message.name }}</div>
-            <p class="whitespace-pre-wrap break-words">{{ message.text }}</p>
-          </div>
-          <p v-if="running || sending || thinking" role="status" class="animate-pulse text-xs text-violet-600 dark:text-violet-300">{{ speakingName ? t('chat.speaking', { name: speakingName }) : t('chat.thinking') }}</p>
-          <p v-else-if="yourTurn" role="status" class="text-xs text-violet-600">{{ t('roundtable.yourTurnHint') }}</p>
+          <ChatMessage v-for="message in messages" :key="message.id" :message="message" :participant="participantFor(message)" :streaming="streamingIds?.has(message.id) && running" />
+          <p v-if="running || sending || thinking" role="status" class="flex items-center gap-2 pl-10 text-xs text-teal-700 dark:text-teal-300"><span class="size-1.5 animate-pulse rounded-full bg-teal-500 motion-reduce:animate-none" />{{ speakingName ? t('chat.speaking', { name: speakingName }) : t('chat.thinking') }}</p>
+          <p v-else-if="yourTurn" role="status" class="pl-10 text-xs text-amber-700 dark:text-amber-300">{{ t('roundtable.yourTurnHint') }}</p>
         </div>
-        <form class="flex shrink-0 items-end gap-1.5 border-t border-gray-100 p-3 dark:border-gray-800" @submit.prevent="send">
-          <textarea :value="draft" rows="2" class="max-h-28 min-w-0 flex-1 resize-none rounded-lg border border-gray-200 bg-transparent px-2 py-1.5 text-xs outline-none focus:border-violet-400 dark:border-gray-700" :placeholder="t('chat.inputPlaceholder')" :aria-label="t('chat.inputPlaceholder')" @input="emit('update:draft', ($event.target as HTMLTextAreaElement).value)" @focus="emit('input-activate')" @keydown="onKeydown" />
-          <button type="submit" :disabled="busy || !!error || !draft.trim()" :aria-label="t('workspace.send')" class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40"><Send class="size-3.5" /></button>
+        <button v-if="!followMessages" type="button" class="mx-auto mb-2 flex items-center gap-1 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-teal-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-teal-300" @click="scrollToLatest"><ArrowDown class="size-3" />{{ t('chat.latest') }}</button>
+        <form class="mx-3 mt-2 flex shrink-0 items-end gap-2 rounded-md border border-zinc-200 bg-white p-2 transition-colors focus-within:border-teal-600 focus-within:ring-2 focus-within:ring-teal-600/10 dark:border-zinc-700 dark:bg-zinc-900 dark:focus-within:border-teal-400" @submit.prevent="send">
+          <textarea :value="draft" rows="2" class="max-h-28 min-w-0 flex-1 resize-none bg-transparent px-1 py-1 text-[13px] leading-5 text-zinc-800 outline-none placeholder:text-zinc-400 dark:text-zinc-100" :placeholder="t('chat.inputPlaceholder')" :aria-label="t('chat.inputPlaceholder')" @input="emit('update:draft', ($event.target as HTMLTextAreaElement).value)" @focus="emit('input-activate')" @keydown="onKeydown" />
+          <button type="submit" :disabled="busy || !!error || !draft.trim()" :aria-label="t('workspace.send')" :title="t('workspace.send')" class="flex size-8 shrink-0 items-center justify-center rounded-md bg-teal-700 text-white transition-colors hover:bg-teal-800 disabled:opacity-40 dark:bg-teal-600 dark:hover:bg-teal-500"><Send class="size-3.5" /></button>
         </form>
+        <p class="px-4 py-2 text-[10px] text-zinc-400">{{ t('chat.keyboardHint') }}</p>
       </template>
     </div>
 
