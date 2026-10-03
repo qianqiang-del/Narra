@@ -58,7 +58,7 @@ export interface Scene {
 export interface Classroom { id: string; title: string; scenes: Scene[] }
 
 export const SCENE_TYPE_STYLES: Record<SceneType, { ring: string; gradient: string }> = {
-  slide: { ring: 'ring-black/5', gradient: 'from-violet-100 to-blue-100' },
+  slide: { ring: 'ring-black/5', gradient: 'from-teal-100 to-blue-100' },
   quiz: { ring: 'ring-amber-200', gradient: 'from-orange-100 to-amber-100' },
   interactive: { ring: 'ring-emerald-200', gradient: 'from-emerald-100 to-teal-100' },
   complete: { ring: 'ring-amber-200', gradient: 'from-amber-100 to-orange-100' },

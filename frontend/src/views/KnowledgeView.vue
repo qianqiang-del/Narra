@@ -299,7 +299,7 @@ function goBack() {
       </button>
 
       <div class="flex shrink-0 items-center gap-2">
-        <Database class="size-4 text-violet-500" />
+        <Database class="size-4 text-teal-500" />
         <h1 class="text-[15px] font-medium">{{ t('knowledge.title') }}</h1>
       </div>
 
@@ -340,7 +340,7 @@ function goBack() {
           v-model="keyword"
           type="search"
           :placeholder="t('knowledge.search.placeholder')"
-          class="w-full rounded-lg border border-input bg-background py-1.5 pr-8 pl-8.5 text-[13px] outline-none transition-colors placeholder:text-zinc-500 focus:border-violet-400"
+          class="w-full rounded-lg border border-input bg-background py-1.5 pr-8 pl-8.5 text-[13px] outline-none transition-colors placeholder:text-zinc-500 focus:border-teal-400"
         />
         <button
           v-if="searching"

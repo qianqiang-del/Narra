@@ -21,7 +21,7 @@ const { t } = useI18n()
         style="animation-duration: 4s"
       />
       <div
-        class="absolute right-1/4 bottom-0 h-96 w-96 animate-pulse rounded-full bg-purple-500/10 blur-3xl"
+        class="absolute right-1/4 bottom-0 h-96 w-96 animate-pulse rounded-full bg-teal-500/10 blur-3xl"
         style="animation-duration: 6s"
       />
     </div>

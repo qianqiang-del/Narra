@@ -49,7 +49,7 @@ const filteredCourses = computed(() =>
     <div class="flex h-14 shrink-0 items-center gap-2 px-4">
       <img src="/logo-horizontal.png" alt="Narra" class="h-5" />
       <span
-        class="rounded bg-gradient-to-r from-violet-600 to-fuchsia-500 px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-white"
+        class="rounded bg-gradient-to-r from-teal-600 to-amber-500 px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-white"
       >
         PRO
       </span>
@@ -116,7 +116,7 @@ const filteredCourses = computed(() =>
             cn(
               'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors',
               s.id === activeSessionId
-                ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300'
+                ? 'bg-teal-500/10 text-teal-700 dark:text-teal-300'
                 : 'text-foreground/80 hover:bg-accent',
             )
           "
@@ -144,7 +144,7 @@ const filteredCourses = computed(() =>
             cn(
               'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors',
               c.id === activeCourseId
-                ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300'
+                ? 'bg-teal-500/10 text-teal-700 dark:text-teal-300'
                 : 'text-foreground/80 hover:bg-accent',
             )
           "

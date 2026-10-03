@@ -147,7 +147,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
               :class="
                 cn(
                   'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-700',
-                  locale === l.code && 'bg-purple-50 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400',
+                  locale === l.code && 'bg-teal-50 text-teal-600 dark:bg-teal-900/20 dark:text-teal-400',
                 )
               "
               @click="pickLocale(l.code)"
@@ -180,7 +180,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
               :class="
                 cn(
                   'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-700',
-                  mode === opt.value && 'bg-purple-50 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400',
+                  mode === opt.value && 'bg-teal-50 text-teal-600 dark:bg-teal-900/20 dark:text-teal-400',
                 )
               "
               @click="pickTheme(opt.value)"
@@ -207,7 +207,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         :class="
           cn(
             'inline-flex h-9 shrink-0 items-center gap-2.5 rounded-full border bg-white/60 px-3 shadow-sm backdrop-blur-md transition-colors duration-200 dark:bg-gray-800/60',
-            proMode ? 'border-violet-500/60' : 'border-gray-100/50 dark:border-gray-700/50',
+            proMode ? 'border-teal-500/60' : 'border-gray-100/50 dark:border-gray-700/50',
           )
         "
       >
@@ -215,7 +215,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
           :class="
             cn(
               'text-[11px] font-bold tracking-[0.14em] uppercase tabular-nums',
-              proMode ? 'text-violet-600 dark:text-violet-300' : 'text-gray-400',
+              proMode ? 'text-teal-600 dark:text-teal-300' : 'text-gray-400',
             )
           "
         >
@@ -223,7 +223,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         </span>
         <SwitchRoot
           :model-value="proMode"
-          class="relative h-5 w-9 shrink-0 rounded-full transition-colors data-[state=checked]:bg-violet-500 data-[state=unchecked]:bg-gray-200 dark:data-[state=unchecked]:bg-gray-700"
+          class="relative h-5 w-9 shrink-0 rounded-full transition-colors data-[state=checked]:bg-teal-500 data-[state=unchecked]:bg-gray-200 dark:data-[state=unchecked]:bg-gray-700"
           @update:model-value="emit('toggle-pro')"
         >
           <SwitchThumb

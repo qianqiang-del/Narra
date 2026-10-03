@@ -12,6 +12,7 @@ import (
 	"narra/internal/api/v1/rerank"
 	"narra/internal/api/v1/role"
 	scenev1 "narra/internal/api/v1/scene"
+	tracev1 "narra/internal/api/v1/trace"
 	"narra/internal/api/v1/voice"
 	"narra/internal/middleware"
 	"narra/internal/service"
@@ -35,10 +36,11 @@ type Router struct {
 	conversationCtrl *conversationv1.Controller
 	sceneCtrl        *scenev1.Controller
 	discussionCtrl   *discussionv1.Controller
+	traceCtrl        *tracev1.Controller
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, rerankSvc service.RerankSettingService, classroomSvc service.ClassroomService, folderSvc service.FolderService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, uploadDir string, parser documentparser.Parser, knowledgeLimits config.KnowledgeIngestConfig) *Router {
+func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, rerankSvc service.RerankSettingService, classroomSvc service.ClassroomService, folderSvc service.FolderService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, traceSvc service.TraceService, uploadDir string, parser documentparser.Parser, knowledgeLimits config.KnowledgeIngestConfig) *Router {
 	return &Router{
 		roleCtrl:         role.NewController(roleSvc),
 		embeddingCtrl:    embedding.NewController(embeddingSvc),
@@ -52,6 +54,7 @@ func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettin
 		conversationCtrl: conversationv1.NewController(conversationSvc),
 		sceneCtrl:        scenev1.NewController(sceneSvc),
 		discussionCtrl:   discussionv1.NewController(discussionSvc),
+		traceCtrl:        tracev1.NewController(traceSvc),
 	}
 }
 
@@ -86,6 +89,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		conversationv1.RegisterRoutes(v1, r.conversationCtrl)
 		scenev1.RegisterRoutes(v1, r.sceneCtrl)
 		discussionv1.RegisterRoutes(v1, r.discussionCtrl)
+		tracev1.RegisterRoutes(v1, r.traceCtrl)
 	}
 }
 

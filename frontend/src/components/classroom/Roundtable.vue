@@ -70,10 +70,10 @@ const teacherActive = computed(() => props.speaking === 'teacher')
 const studentActive = (id: string) => props.speakingAgentId === id
 
 const bubbleClass: Record<Bubble['from'], string> = {
-  user: 'bg-purple-600/95 backdrop-blur-sm border-purple-400/40 text-white rounded-br-sm shadow-md shadow-purple-300/30 self-end',
+  user: 'bg-teal-600/95 backdrop-blur-sm border-teal-400/40 text-white rounded-br-sm shadow-md shadow-teal-300/30 self-end',
   agent: 'bg-blue-50/95 border-blue-200/60 text-gray-700 rounded-br-sm shadow-sm dark:bg-blue-950/40 dark:border-blue-900 dark:text-blue-100',
   teacher:
-    'relative bg-purple-50/95 border-purple-200/70 text-purple-900 rounded-bl-sm shadow-sm cursor-pointer dark:bg-purple-950/40 dark:border-purple-800 dark:text-purple-100 before:absolute before:left-[-7px] before:bottom-4 before:size-3 before:rotate-45 before:border-l before:border-b before:border-purple-200/70 before:bg-purple-50/95 dark:before:border-purple-800 dark:before:bg-purple-950/40',
+    'relative bg-teal-50/95 border-teal-200/70 text-teal-900 rounded-bl-sm shadow-sm cursor-pointer dark:bg-teal-950/40 dark:border-teal-800 dark:text-teal-100 before:absolute before:left-[-7px] before:bottom-4 before:size-3 before:rotate-45 before:border-l before:border-b before:border-teal-200/70 before:bg-teal-50/95 dark:before:border-teal-800 dark:before:bg-teal-950/40',
 }
 
 const resolvedUserAvatar = computed(() => props.userAvatar || profileStore.profile.avatar)
@@ -171,7 +171,7 @@ onBeforeUnmount(stopRecognition)
         class="relative flex w-[90px] shrink-0 flex-col items-center justify-center gap-2 border-r border-gray-100 dark:border-gray-800"
       >
         <div
-          class="pointer-events-none absolute top-0 h-16 w-full bg-gradient-to-b from-purple-50/50 to-transparent dark:from-purple-900/20"
+          class="pointer-events-none absolute top-0 h-16 w-full bg-gradient-to-b from-teal-50/50 to-transparent dark:from-teal-900/20"
         />
 
         <HoverCardRoot :open-delay="300" :close-delay="100">
@@ -181,7 +181,7 @@ onBeforeUnmount(stopRecognition)
                 cn(
                   'relative flex size-12 cursor-pointer items-center justify-center rounded-full transition-all duration-300',
                   teacherActive
-                    ? 'scale-105 border border-purple-500 shadow-[0_0_12px_rgba(168,85,247,0.4)]'
+                    ? 'scale-105 border border-teal-500 shadow-[0_0_12px_rgba(168,85,247,0.4)]'
                     : 'border border-transparent',
                 )
               "
@@ -206,7 +206,7 @@ onBeforeUnmount(stopRecognition)
                   </p>
                   <span
                     class="mt-0.5 inline-block rounded-full px-1.5 py-0.5 text-[10px] leading-tight text-white"
-                    :style="{ backgroundColor: '#722ed1' }"
+                    :style="{ backgroundColor: '#0f766e' }"
                   >
                     {{ t('roundtable.roles.teacher') }}
                   </span>
@@ -245,10 +245,10 @@ onBeforeUnmount(stopRecognition)
                 "
               >
                 <div v-if="b.from === 'teacher'" class="mb-1 flex items-center gap-1.5 pl-0.5">
-                  <div class="size-5 shrink-0 overflow-hidden rounded-full border border-purple-200">
+                  <div class="size-5 shrink-0 overflow-hidden rounded-full border border-teal-200">
                     <img src="/avatars/teacher-2.png" alt="" class="size-full object-cover" />
                   </div>
-                  <span class="text-[10px] font-bold tracking-wide text-purple-600 uppercase dark:text-purple-300">
+                  <span class="text-[10px] font-bold tracking-wide text-teal-600 uppercase dark:text-teal-300">
                     {{ b.name || t('roundtable.teacher') }}
                   </span>
                 </div>
@@ -268,7 +268,7 @@ onBeforeUnmount(stopRecognition)
             <span
               v-for="i in 3"
               :key="i"
-              class="size-1.5 animate-pulse rounded-full bg-purple-500"
+              class="size-1.5 animate-pulse rounded-full bg-teal-500"
               :style="{ animationDelay: `${(i - 1) * 0.2}s`, animationDuration: '1.2s' }"
             />
           </div>
@@ -279,7 +279,7 @@ onBeforeUnmount(stopRecognition)
               <span
                 v-for="i in 12"
                 :key="i"
-                class="w-0.5 rounded-full bg-purple-500"
+                class="w-0.5 rounded-full bg-teal-500"
                 :style="{
                   animation: `wave 0.6s ease-in-out ${i * 0.05}s infinite alternate`,
                   height: `${4 + (i % 4) * 3}px`,
@@ -287,14 +287,14 @@ onBeforeUnmount(stopRecognition)
               />
             </div>
             <div class="relative">
-              <span class="absolute inset-0 animate-ping rounded-full bg-purple-500/30" />
+              <span class="absolute inset-0 animate-ping rounded-full bg-teal-500/30" />
               <span
-                class="relative flex size-10 items-center justify-center rounded-full bg-gradient-to-br from-purple-600 to-indigo-700 text-white shadow-lg"
+                class="relative flex size-10 items-center justify-center rounded-full bg-gradient-to-br from-teal-600 to-slate-700 text-white shadow-lg"
               >
                 <Mic class="size-5" />
               </span>
             </div>
-            <span class="max-w-[180px] truncate text-[12px] text-purple-600 dark:text-purple-300">
+            <span class="max-w-[180px] truncate text-[12px] text-teal-600 dark:text-teal-300">
               {{ interim || t('roundtable.listening') }}
             </span>
           </div>
@@ -302,7 +302,7 @@ onBeforeUnmount(stopRecognition)
           <!-- 输入框 -->
           <div
             v-if="!recording && inputOpen"
-            class="mt-1.5 w-fit max-w-[85%] min-w-[200px] shrink-0 self-end rounded-2xl rounded-br-none border border-purple-200 bg-white/90 p-2 shadow-2xl ring-1 ring-purple-100/50 backdrop-blur-md sm:max-w-[65%] sm:min-w-[300px] dark:border-purple-800 dark:bg-gray-800/90 dark:ring-purple-900/40"
+            class="mt-1.5 w-fit max-w-[85%] min-w-[200px] shrink-0 self-end rounded-2xl rounded-br-none border border-teal-200 bg-white/90 p-2 shadow-2xl ring-1 ring-teal-100/50 backdrop-blur-md sm:max-w-[65%] sm:min-w-[300px] dark:border-teal-800 dark:bg-gray-800/90 dark:ring-teal-900/40"
           >
             <div class="flex items-end gap-1.5">
               <textarea
@@ -315,7 +315,7 @@ onBeforeUnmount(stopRecognition)
               />
               <button
                 type="button"
-                class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-purple-600 text-white transition-colors hover:bg-purple-700 disabled:opacity-40"
+                class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-teal-600 text-white transition-colors hover:bg-teal-700 disabled:opacity-40"
                 :disabled="!draft.trim() || busy"
                 @click="submit"
               >
@@ -323,7 +323,7 @@ onBeforeUnmount(stopRecognition)
               </button>
               <button
                 type="button"
-                class="flex size-9 shrink-0 items-center justify-center rounded-xl text-gray-400 transition-colors hover:bg-purple-50 hover:text-purple-600"
+                class="flex size-9 shrink-0 items-center justify-center rounded-xl text-gray-400 transition-colors hover:bg-teal-50 hover:text-teal-600"
                 aria-label="关闭消息输入框"
                 @click="toggleInput"
               >
@@ -372,7 +372,7 @@ onBeforeUnmount(stopRecognition)
                         cn(
                           'absolute inset-0 rounded-full border-2 transition-all duration-300',
                           studentActive(p.id)
-                            ? 'border-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.4)] dark:border-purple-400'
+                            ? 'border-teal-500 shadow-[0_0_8px_rgba(168,85,247,0.4)] dark:border-teal-400'
                             : 'border-white dark:border-gray-700',
                         )
                       "
@@ -447,8 +447,8 @@ onBeforeUnmount(stopRecognition)
                   !asrEnabled
                     ? 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-300 dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-600'
                     : recording
-                      ? 'border-purple-600 bg-purple-600 text-white dark:border-purple-500'
-                      : 'border-gray-200 bg-white text-gray-400 hover:border-purple-200 hover:text-purple-600 dark:border-gray-700 dark:bg-gray-800 dark:hover:text-purple-400',
+                      ? 'border-teal-600 bg-teal-600 text-white dark:border-teal-500'
+                      : 'border-gray-200 bg-white text-gray-400 hover:border-teal-200 hover:text-teal-600 dark:border-gray-700 dark:bg-gray-800 dark:hover:text-teal-400',
                 )
               "
               :title="asrEnabled ? t('roundtable.voiceInput') : t('roundtable.asrDisabled')"
@@ -459,7 +459,7 @@ onBeforeUnmount(stopRecognition)
             </button>
             <button
               type="button"
-              class="flex size-8 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-400 shadow-sm transition-all hover:border-purple-200 hover:text-purple-600 active:scale-95 dark:border-gray-700 dark:bg-gray-800 dark:hover:text-purple-400"
+              class="flex size-8 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-400 shadow-sm transition-all hover:border-teal-200 hover:text-teal-600 active:scale-95 dark:border-gray-700 dark:bg-gray-800 dark:hover:text-teal-400"
               @click="toggleInput"
             >
               <MessageSquare class="size-3.5" />
@@ -484,7 +484,7 @@ onBeforeUnmount(stopRecognition)
                     'absolute inset-0 rounded-full border-2 transition-all duration-300',
                     yourTurn
                       ? 'border-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.4)] animate-pulse'
-                      : 'border-white group-hover:border-purple-200 dark:border-gray-700 dark:group-hover:border-purple-600',
+                      : 'border-white group-hover:border-teal-200 dark:border-gray-700 dark:group-hover:border-teal-600',
                   )
                 "
               />
@@ -498,7 +498,7 @@ onBeforeUnmount(stopRecognition)
                   :class="
                     cn(
                       'size-1.5 rounded-full',
-                      yourTurn ? 'animate-pulse bg-purple-500' : 'bg-gray-300 dark:bg-gray-600',
+                      yourTurn ? 'animate-pulse bg-teal-500' : 'bg-gray-300 dark:bg-gray-600',
                     )
                   "
                 />

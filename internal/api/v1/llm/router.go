@@ -9,6 +9,7 @@ func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	settings.PUT("/:id", c.Update)
 	settings.DELETE("/:id", c.Delete)
 	settings.POST("/:id/test", c.Test)
+	settings.POST("/:id/pricing/suggestions", c.SuggestPricing)
 	settings.PATCH("/:id/enabled", c.SetEnabled)
 
 	g.GET("/llm/models/available", c.AvailableModels)

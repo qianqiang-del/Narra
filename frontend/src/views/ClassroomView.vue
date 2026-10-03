@@ -162,7 +162,7 @@ onUnmounted(() => eventController?.abort())
       class="flex flex-1 items-center justify-center bg-gray-50 dark:bg-gray-900"
     >
       <div class="flex flex-col items-center gap-3">
-        <Loader2 class="size-6 animate-spin text-violet-500" />
+        <Loader2 class="size-6 animate-spin text-teal-500" />
         <p class="text-sm text-muted-foreground">{{ t('classroom.loadingClassroom') }}</p>
       </div>
     </div>

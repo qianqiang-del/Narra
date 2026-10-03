@@ -38,8 +38,8 @@ function onClick() {
         'relative inline-flex items-center rounded-full border px-[7px] py-[2px] text-[9.5px] font-semibold tracking-[0.2em] uppercase leading-[1.35] transition-[color,background-color,border-color,box-shadow] duration-300 select-none',
         interactive && 'cursor-pointer active:scale-[0.94]',
         active
-          ? 'border-violet-400/70 bg-violet-500/10 text-violet-600 dark:text-violet-300'
-          : 'border-border bg-background/70 text-muted-foreground hover:border-violet-400/70 hover:bg-violet-50/60 hover:text-violet-600 dark:hover:bg-violet-500/10',
+          ? 'border-teal-400/70 bg-teal-500/10 text-teal-600 dark:text-teal-300'
+          : 'border-border bg-background/70 text-muted-foreground hover:border-teal-400/70 hover:bg-teal-50/60 hover:text-teal-600 dark:hover:bg-teal-500/10',
       )
     "
     @click="onClick"

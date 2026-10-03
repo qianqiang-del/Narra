@@ -90,8 +90,10 @@ func (m *OpenAIModels) GenerateStream(ctx context.Context, request GenerationReq
 			return
 		}
 		inputTokens, outputTokens := 0, 0
+		tokenSource := "estimated"
 		if usage != nil {
 			inputTokens, outputTokens = usage.PromptTokens, usage.CompletionTokens
+			tokenSource = "actual"
 		} else {
 			inputTokens = int(estimateTokens(topicAndHistory(request)))
 			outputTokens = int(estimateTokens(parser.content.String()))
@@ -99,7 +101,7 @@ func (m *OpenAIModels) GenerateStream(ctx context.Context, request GenerationReq
 		sendGenerationChunk(ctx, out, GenerationChunk{
 			NextAction:     parser.nextAction,
 			NextSpeakerKey: parser.nextSpeakerKey,
-			InputTokens:    int32(inputTokens), OutputTokens: int32(outputTokens), Done: true,
+			InputTokens:    int32(inputTokens), OutputTokens: int32(outputTokens), TokenSource: tokenSource, Done: true,
 		})
 		result := &schema.Message{Role: schema.Assistant, Content: parser.content.String()}
 		if usage != nil {
@@ -272,11 +274,16 @@ func (m *OpenAIModels) Generate(ctx context.Context, request GenerationRequest) 
 	}
 
 	inputTokens, outputTokens := estimateUsage(completion, topicAndHistory(request), content)
+	tokenSource := "estimated"
+	if completion != nil && completion.ResponseMeta != nil && completion.ResponseMeta.Usage != nil {
+		tokenSource = "actual"
+	}
 	callbacks.OnEnd(callbackCtx, &model.CallbackOutput{Message: completion})
 	return GenerationResponse{
 		Content:        content,
 		InputTokens:    inputTokens,
 		OutputTokens:   outputTokens,
+		TokenSource:    tokenSource,
 		NextAction:     reply.NextAction,
 		NextSpeakerKey: strings.TrimSpace(reply.NextSpeakerKey),
 	}, nil

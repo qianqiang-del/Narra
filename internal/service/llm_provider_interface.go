@@ -13,5 +13,6 @@ type LLMProviderService interface {
 	Update(ctx context.Context, id uint64, input requestdto.LLMProvider) (*responsedto.LLMProvider, error)
 	Delete(ctx context.Context, id uint64) error
 	Test(ctx context.Context, id uint64) (*responsedto.LLMProviderTestResult, error)
+	SuggestPricing(ctx context.Context, id uint64, modelID string) (*responsedto.LLMPriceSuggestion, error)
 	SetEnabled(ctx context.Context, id uint64, enabled bool) (*responsedto.LLMProvider, error)
 }

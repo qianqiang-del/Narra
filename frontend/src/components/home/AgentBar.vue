@@ -119,7 +119,7 @@ defineExpose({ roleVoices })
           </div>
 
           <!-- auto：不预告角色。角色是在生成课件时才定下来的，这里只留个 Shuffle 表明当前模式 -->
-          <Shuffle v-if="mode === 'auto'" class="size-4 text-violet-400" />
+          <Shuffle v-if="mode === 'auto'" class="size-4 text-teal-400" />
 
           <!-- preset：已选头像 + 溢出计数 -->
           <template v-else>
@@ -257,7 +257,7 @@ defineExpose({ roleVoices })
             >
               <CheckboxRoot
                 :model-value="selectedIds.includes(r.id)"
-                class="flex size-3.5 shrink-0 items-center justify-center rounded border border-border data-[state=checked]:border-violet-500 data-[state=checked]:bg-violet-500 data-[state=checked]:text-white"
+                class="flex size-3.5 shrink-0 items-center justify-center rounded border border-border data-[state=checked]:border-teal-500 data-[state=checked]:bg-teal-500 data-[state=checked]:text-white"
                 @update:model-value="toggleRole(r.id)"
               >
                 <CheckboxIndicator>
@@ -285,12 +285,12 @@ defineExpose({ roleVoices })
         <div v-else class="flex flex-col items-center gap-4 pt-6 pb-3">
           <div class="relative flex items-center justify-center">
             <span
-              class="absolute size-10 animate-ping rounded-full bg-violet-400/20 [animation-duration:3s]"
+              class="absolute size-10 animate-ping rounded-full bg-teal-400/20 [animation-duration:3s]"
             />
             <span
-              class="absolute size-12 animate-pulse rounded-full bg-violet-400/10 [animation-duration:2.5s]"
+              class="absolute size-12 animate-pulse rounded-full bg-teal-400/10 [animation-duration:2.5s]"
             />
-            <Shuffle class="relative size-5 text-violet-400" />
+            <Shuffle class="relative size-5 text-teal-400" />
           </div>
           <p class="text-[11px] text-muted-foreground/60">{{ t('agentBar.autoHint') }}</p>
           <p class="text-[10px] text-muted-foreground/40">{{ t('agentBar.autoVoiceHint') }}</p>

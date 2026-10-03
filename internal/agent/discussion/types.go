@@ -60,6 +60,8 @@ type Request struct {
 	ClassroomTitle       string
 	ClassroomRequirement string
 	LessonMaterial       string
+	ModelID              string
+	ModelPricing         *ModelPricing
 }
 
 // Result 是一次编排的结果，供调用方展示与日志使用。

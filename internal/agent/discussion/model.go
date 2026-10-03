@@ -35,6 +35,7 @@ type GenerationChunk struct {
 	NextSpeakerKey string
 	InputTokens    int32
 	OutputTokens   int32
+	TokenSource    string
 	Done           bool
 	Err            error
 }
@@ -80,6 +81,7 @@ type GenerationResponse struct {
 	Content      string
 	InputTokens  int32
 	OutputTokens int32
+	TokenSource  string // actual / estimated；未知时为空
 
 	// NextAction 是模型对"接下来该怎么走"的判断，取值见 entity.AgentTurnAction*。
 	//
@@ -132,6 +134,16 @@ type Models struct {
 	Model      Model           // 生成某个角色的发言
 	Summarizer Summarizer      // 把过长的上下文压成摘要
 	Extractor  MemoryExtractor // 讨论结束后提炼共享记忆
+	ModelID    string          // 本次运行实际使用的模型 ID
+	Pricing    *ModelPricing   // 本次运行的价格快照；未知时为空
+}
+
+// ModelPricing 是按百万 token 计价的快照。指针价格允许只知道输入或输出一侧，
+// 也允许完全未知；未知价格不应被猜测成 0。
+type ModelPricing struct {
+	InputPerMillion  *float64 `json:"input_per_million"`
+	OutputPerMillion *float64 `json:"output_per_million"`
+	Currency         string   `json:"currency"`
 }
 
 // Generate 返回一段格式固定、内容可辨识的假回复。

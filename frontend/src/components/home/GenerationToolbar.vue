@@ -157,7 +157,7 @@ const pillCls =
 const pillMuted = cn(pillCls, 'border-border/50 text-muted-foreground/70 hover:bg-muted/60 hover:text-foreground')
 const pillActive = cn(
   pillCls,
-  'border-violet-200/60 bg-violet-100 text-violet-700 dark:border-violet-700/50 dark:bg-violet-900/30 dark:text-violet-300',
+  'border-teal-200/60 bg-teal-100 text-teal-700 dark:border-teal-700/50 dark:bg-teal-900/30 dark:text-teal-300',
 )
 
 function onDocMouseDown(e: MouseEvent) {
@@ -185,7 +185,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
       <button
         v-else
         type="button"
-        class="inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full border border-violet-200/70 bg-violet-50 px-2 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-100 dark:border-violet-700/50 dark:bg-violet-900/30 dark:text-violet-300"
+        class="inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full border border-teal-200/70 bg-teal-50 px-2 text-xs font-medium text-teal-700 transition-colors hover:bg-teal-100 dark:border-teal-700/50 dark:bg-teal-900/30 dark:text-teal-300"
         @click="toggle('model')"
       >
         <img
@@ -214,7 +214,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
                 v-model="modelKeyword"
                 type="text"
                 placeholder="搜索服务商"
-                class="h-8 w-full rounded-md border border-input pl-8 text-xs outline-none focus:ring-1 focus:ring-violet-400/40"
+                class="h-8 w-full rounded-md border border-input pl-8 text-xs outline-none focus:ring-1 focus:ring-teal-400/40"
               />
             </div>
             <div class="min-h-0 flex-1 overflow-y-auto">
@@ -225,7 +225,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
                 :class="
                   cn(
                     'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/60',
-                    providerId === p.id && 'bg-violet-50 text-violet-700 dark:bg-violet-900/30',
+                    providerId === p.id && 'bg-teal-50 text-teal-700 dark:bg-teal-900/30',
                   )
                 "
                 @click="pickProvider(p.id)"
@@ -245,7 +245,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
               :class="
                 cn(
                   'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-xs transition-colors hover:bg-muted/60',
-                  modelId === m.id && 'bg-violet-50 text-violet-700 ring-1 ring-violet-200',
+                  modelId === m.id && 'bg-teal-50 text-teal-700 ring-1 ring-teal-200',
                 )
               "
               @click="pickModel(m.id)"
@@ -287,8 +287,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
             cn(
               'flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed p-4 transition-colors',
               materialDragging
-                ? 'border-violet-400 bg-violet-50 dark:bg-violet-900/20'
-                : 'border-muted-foreground/20 hover:border-violet-300',
+                ? 'border-teal-400 bg-teal-50 dark:bg-teal-900/20'
+                : 'border-muted-foreground/20 hover:border-teal-300',
             )
           "
           @dragover.prevent="materialDragging = true"
@@ -314,10 +314,10 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
             :key="m.key"
             class="flex items-center gap-2 rounded-lg border border-border/50 px-2 py-2"
           >
-            <div class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet-100 dark:bg-violet-900/30">
+            <div class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-teal-100 dark:bg-teal-900/30">
               <Loader2
                 v-if="m.status === 'uploading' || m.status === 'pending'"
-                class="size-3.5 animate-spin text-violet-600 dark:text-violet-300"
+                class="size-3.5 animate-spin text-teal-600 dark:text-teal-300"
               />
               <Check v-else-if="m.status === 'ready'" class="size-3.5 text-emerald-600 dark:text-emerald-400" />
               <AlertCircle
@@ -325,7 +325,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
                 class="size-3.5 text-red-500"
               />
               <Clock v-else-if="m.status === 'queued'" class="size-3.5 text-muted-foreground/60" />
-              <FileText v-else class="size-3.5 text-violet-600 dark:text-violet-300" />
+              <FileText v-else class="size-3.5 text-teal-600 dark:text-teal-300" />
             </div>
             <div class="min-w-0 flex-1">
               <p class="truncate text-xs">{{ m.name }}</p>

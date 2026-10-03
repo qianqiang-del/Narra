@@ -69,7 +69,7 @@ const activePageIndex = computed(() => {
             cn(
               'group flex h-8 shrink-0 items-center gap-1.5 rounded-lg pr-1.5 pl-3 text-[12px] font-medium transition-colors',
               course.id === activeCourseId
-                ? 'bg-violet-500/10 text-violet-700 dark:text-violet-300'
+                ? 'bg-teal-500/10 text-teal-700 dark:text-teal-300'
                 : 'text-muted-foreground hover:bg-accent hover:text-foreground',
             )
           "
@@ -88,7 +88,7 @@ const activePageIndex = computed(() => {
               cn(
                 'rounded p-0.5 transition-all',
                 course.id === activeCourseId
-                  ? 'text-violet-500 hover:bg-violet-500/15'
+                  ? 'text-teal-500 hover:bg-teal-500/15'
                   : 'text-muted-foreground/50 hover:bg-accent hover:text-foreground',
               )
             "
@@ -102,7 +102,7 @@ const activePageIndex = computed(() => {
       <button
         type="button"
         :disabled="!activeCourse"
-        class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-violet-600/10 px-3 text-[11px] font-medium text-violet-700 transition-all hover:bg-violet-600/15 hover:shadow-sm disabled:pointer-events-none disabled:opacity-40 dark:text-violet-300"
+        class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-teal-600/10 px-3 text-[11px] font-medium text-teal-700 transition-all hover:bg-teal-600/15 hover:shadow-sm disabled:pointer-events-none disabled:opacity-40 dark:text-teal-300"
         @click="activeCourse && emit('start-learning', activeCourse.id)"
       >
         <Play class="size-3.5" />
@@ -124,7 +124,7 @@ const activePageIndex = computed(() => {
             cn(
               'group flex w-full flex-col gap-1.5 rounded-lg p-1.5 text-left transition-all',
               page.id === activePageId
-                ? 'bg-violet-500/10 ring-1 ring-violet-300 dark:ring-violet-700'
+                ? 'bg-teal-500/10 ring-1 ring-teal-300 dark:ring-teal-700'
                 : 'hover:bg-accent',
             )
           "
@@ -136,7 +136,7 @@ const activePageIndex = computed(() => {
                 cn(
                   'flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold',
                   page.id === activePageId
-                    ? 'bg-violet-600 text-white'
+                    ? 'bg-teal-600 text-white'
                     : 'bg-muted text-muted-foreground',
                 )
               "
@@ -148,7 +148,7 @@ const activePageIndex = computed(() => {
                 cn(
                   'truncate text-xs font-semibold',
                   page.id === activePageId
-                    ? 'text-violet-700 dark:text-violet-300'
+                    ? 'text-teal-700 dark:text-teal-300'
                     : 'text-foreground/70',
                 )
               "
@@ -161,7 +161,7 @@ const activePageIndex = computed(() => {
               cn(
                 'relative aspect-video w-full overflow-hidden rounded-md bg-white ring-1',
                 page.id === activePageId
-                  ? 'ring-violet-300 dark:ring-violet-700'
+                  ? 'ring-teal-300 dark:ring-teal-700'
                   : 'ring-black/5 dark:ring-white/10',
               )
             "

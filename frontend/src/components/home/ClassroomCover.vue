@@ -88,16 +88,16 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
     <!-- 这一页还没生成出来：只画类型占位块 -->
     <div
       v-else
-      class="flex size-full flex-col items-center justify-center gap-2.5 bg-gradient-to-br from-violet-50 to-blue-50 dark:from-violet-900/20 dark:to-blue-900/20"
+      class="flex size-full flex-col items-center justify-center gap-2.5 bg-gradient-to-br from-teal-50 to-blue-50 dark:from-teal-900/20 dark:to-blue-900/20"
     >
       <div
-        class="flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-100 to-blue-100 dark:from-violet-900/40 dark:to-blue-900/40"
+        class="flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-teal-100 to-blue-100 dark:from-teal-900/40 dark:to-blue-900/40"
       >
-        <component :is="fallbackIcon" class="size-5 text-violet-500/60" />
+        <component :is="fallbackIcon" class="size-5 text-teal-500/60" />
       </div>
       <p
         v-if="fallbackTitle"
-        class="max-w-[80%] truncate text-[11px] font-medium text-violet-500/70 dark:text-violet-300/70"
+        class="max-w-[80%] truncate text-[11px] font-medium text-teal-500/70 dark:text-teal-300/70"
       >
         {{ fallbackTitle }}
       </p>

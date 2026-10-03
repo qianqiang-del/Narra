@@ -21,11 +21,12 @@ import (
 type llmProviderService struct {
 	repo          repository.LLMProviderRepository
 	encryptionKey []byte
+	searchTools   PricingSearchTools
 }
 
 // NewLLMProviderService 构造大模型配置服务，encryptionKey 用于 API Key 的加解密。
-func NewLLMProviderService(repo repository.LLMProviderRepository, encryptionKey []byte) LLMProviderService {
-	return &llmProviderService{repo: repo, encryptionKey: encryptionKey}
+func NewLLMProviderService(repo repository.LLMProviderRepository, encryptionKey []byte, searchTools PricingSearchTools) LLMProviderService {
+	return &llmProviderService{repo: repo, encryptionKey: encryptionKey, searchTools: searchTools}
 }
 
 // List 返回全部配置，含未测试和已停用的，供设置页展示。
@@ -81,10 +82,14 @@ func (s *llmProviderService) Create(ctx context.Context, input requestdto.LLMPro
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "加密 API Key 失败", err)
 	}
 	modelJSON, _ := json.Marshal(models)
+	pricingJSON, err := json.Marshal(input.Pricing)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeBadRequest, "模型价格配置无效", err)
+	}
 	item := &entity.LLMProvider{
 		Name: name, Protocol: "openai-compatible", BaseURL: baseURL,
 		APIKeyEncrypted: encrypted, TimeoutSeconds: int32(timeout / time.Second),
-		Models: modelJSON, TestStatus: entity.LLMTestStatusUntested, IsEnabled: false,
+		Models: modelJSON, Pricing: pricingJSON, TestStatus: entity.LLMTestStatusUntested, IsEnabled: false,
 	}
 	if err := s.repo.Create(ctx, item); err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeConflict, "配置名称已存在或保存失败", err)
@@ -122,7 +127,11 @@ func (s *llmProviderService) Update(ctx context.Context, id uint64, input reques
 		}
 	}
 	modelJSON, _ := json.Marshal(models)
-	item.Name, item.BaseURL, item.TimeoutSeconds, item.Models = name, baseURL, int32(timeout/time.Second), modelJSON
+	pricingJSON, err := json.Marshal(input.Pricing)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeBadRequest, "模型价格配置无效", err)
+	}
+	item.Name, item.BaseURL, item.TimeoutSeconds, item.Models, item.Pricing = name, baseURL, int32(timeout/time.Second), modelJSON, pricingJSON
 	if criticalChanged {
 		item.TestStatus = entity.LLMTestStatusUntested
 		item.LastTestModel, item.LastTestError, item.LastTestedAt = nil, nil, nil
@@ -240,14 +249,32 @@ func (s *llmProviderService) toResponse(item entity.LLMProvider) (responsedto.LL
 	if err != nil {
 		return responsedto.LLMProvider{}, apperrors.NewWithErr(apperrors.CodeInternalError, "模型列表无效", err)
 	}
+	pricing, err := decodePricing(item.Pricing)
+	if err != nil {
+		return responsedto.LLMProvider{}, apperrors.NewWithErr(apperrors.CodeInternalError, "模型价格配置无效", err)
+	}
 	return responsedto.LLMProvider{
 		ID: item.ID, Name: item.Name, Protocol: item.Protocol, BaseURL: item.BaseURL,
-		Timeout: (time.Duration(item.TimeoutSeconds) * time.Second).String(), Models: models,
+		Timeout: (time.Duration(item.TimeoutSeconds) * time.Second).String(), Models: models, Pricing: pricing,
 		APIKeyConfigured: item.APIKeyEncrypted != "", TestStatus: item.TestStatus,
 		LastTestModel: item.LastTestModel, LastTestError: item.LastTestError,
 		LastTestedAt: item.LastTestedAt, Enabled: item.IsEnabled,
 		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}, nil
+}
+
+func decodePricing(raw json.RawMessage) (map[string]responsedto.ModelPricing, error) {
+	if len(raw) == 0 {
+		return map[string]responsedto.ModelPricing{}, nil
+	}
+	var pricing map[string]responsedto.ModelPricing
+	if err := json.Unmarshal(raw, &pricing); err != nil {
+		return nil, err
+	}
+	if pricing == nil {
+		pricing = map[string]responsedto.ModelPricing{}
+	}
+	return pricing, nil
 }
 
 // validateLLMInput 校验并归一化名称、地址、超时和模型列表，返回可以直接落库的值。

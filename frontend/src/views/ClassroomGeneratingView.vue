@@ -321,7 +321,7 @@ onUnmounted(() => {
   <main class="relative min-h-screen overflow-hidden bg-slate-50 p-6 dark:bg-slate-950">
     <div class="pointer-events-none absolute inset-0 overflow-hidden">
       <div class="blob absolute -top-32 left-[12%] size-96 rounded-full bg-blue-400/20 blur-3xl" />
-      <div class="blob absolute top-1/3 -right-24 size-96 rounded-full bg-violet-400/20 blur-3xl" style="animation-delay: -3s" />
+      <div class="blob absolute top-1/3 -right-24 size-96 rounded-full bg-teal-400/20 blur-3xl" style="animation-delay: -3s" />
       <div class="blob absolute -bottom-32 left-1/3 size-96 rounded-full bg-emerald-400/15 blur-3xl" style="animation-delay: -6s" />
     </div>
 

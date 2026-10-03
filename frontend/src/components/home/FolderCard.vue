@@ -96,10 +96,10 @@ function onDrop(e: DragEvent) {
     <div
       :class="
         cn(
-          'relative aspect-[16/9] w-full overflow-hidden rounded-2xl bg-gradient-to-br from-violet-50 to-blue-50 ring-1 transition-transform duration-200 group-hover:scale-[1.02] dark:from-violet-900/20 dark:to-blue-900/20',
+          'relative aspect-[16/9] w-full overflow-hidden rounded-2xl bg-gradient-to-br from-teal-50 to-blue-50 ring-1 transition-transform duration-200 group-hover:scale-[1.02] dark:from-teal-900/20 dark:to-blue-900/20',
           dragOver
-            ? 'scale-[1.03] ring-2 ring-violet-500 ring-offset-2 ring-offset-background'
-            : 'ring-violet-200/50 dark:ring-violet-800/40',
+            ? 'scale-[1.03] ring-2 ring-teal-500 ring-offset-2 ring-offset-background'
+            : 'ring-teal-200/50 dark:ring-teal-800/40',
         )
       "
       @click="!deleteOpen && emit('open', folder.id)"
@@ -118,8 +118,8 @@ function onDrop(e: DragEvent) {
 
       <!-- 空文件夹 -->
       <div v-else class="flex size-full items-center justify-center">
-        <div class="flex size-14 items-center justify-center rounded-2xl bg-violet-100 dark:bg-violet-900/40">
-          <Folder class="size-7 text-violet-500" />
+        <div class="flex size-14 items-center justify-center rounded-2xl bg-teal-100 dark:bg-teal-900/40">
+          <Folder class="size-7 text-teal-500" />
         </div>
       </div>
 
@@ -133,7 +133,7 @@ function onDrop(e: DragEvent) {
       <!-- 拖拽悬停遮罩 -->
       <div
         v-if="dragOver"
-        class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-violet-500/20 backdrop-blur-[2px]"
+        class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-teal-500/20 backdrop-blur-[2px]"
       >
         <Folder class="size-8 text-white drop-shadow" />
       </div>
@@ -194,7 +194,7 @@ function onDrop(e: DragEvent) {
     <!-- 信息行 -->
     <div class="mt-2.5 flex items-center gap-2 px-1">
       <span
-        class="inline-flex shrink-0 items-center rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-600 dark:bg-violet-900/30 dark:text-violet-400"
+        class="inline-flex shrink-0 items-center rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-medium text-teal-600 dark:bg-teal-900/30 dark:text-teal-400"
       >
         {{ t('home.folder') }}
       </span>
@@ -205,7 +205,7 @@ function onDrop(e: DragEvent) {
         v-model="draft"
         type="text"
         maxlength="80"
-        class="w-full border-b border-violet-400/60 bg-transparent text-[15px] font-medium text-foreground/90 outline-none placeholder:text-muted-foreground/40"
+        class="w-full border-b border-teal-400/60 bg-transparent text-[15px] font-medium text-foreground/90 outline-none placeholder:text-muted-foreground/40"
         @keydown.enter.prevent="commitRename"
         @keydown.esc="editing = false"
         @blur="commitRename"

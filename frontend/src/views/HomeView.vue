@@ -340,7 +340,7 @@ function openClassroom(id: string) {
         style="animation-duration: 4s"
       />
       <div
-        class="absolute right-1/4 bottom-0 h-96 w-96 animate-pulse rounded-full bg-purple-500/10 blur-3xl"
+        class="absolute right-1/4 bottom-0 h-96 w-96 animate-pulse rounded-full bg-teal-500/10 blur-3xl"
         style="animation-duration: 6s"
       />
     </div>
@@ -369,7 +369,7 @@ function openClassroom(id: string) {
 
       <!-- §5.3 Composer 统一输入卡片 -->
       <div
-        class="w-full rounded-2xl border border-border/60 bg-white/80 shadow-xl shadow-black/[0.03] backdrop-blur-xl transition-shadow focus-within:shadow-2xl focus-within:shadow-violet-500/[0.06] dark:bg-slate-900/80 dark:shadow-black/20"
+        class="w-full rounded-2xl border border-border/60 bg-white/80 shadow-xl shadow-black/[0.03] backdrop-blur-xl transition-shadow focus-within:shadow-2xl focus-within:shadow-teal-500/[0.06] dark:bg-slate-900/80 dark:shadow-black/20"
       >
         <!-- 顶部行：GreetingBar（左） / AgentBar（右） -->
         <div class="relative z-20 flex items-start justify-between">

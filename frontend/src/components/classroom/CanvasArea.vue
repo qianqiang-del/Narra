@@ -66,7 +66,7 @@ const { t } = useI18n()
           v-else
           class="flex size-full flex-col items-center justify-center gap-3 text-gray-400"
         >
-          <Loader2 class="size-6 animate-spin text-violet-500" />
+          <Loader2 class="size-6 animate-spin text-teal-500" />
           <span class="text-[13px]">{{ t('scene.statusGenerating') }}</span>
         </div>
 
@@ -86,7 +86,7 @@ const { t } = useI18n()
           @click="emit('toggle-play')"
         >
           <span
-            class="flex size-16 animate-pulse items-center justify-center rounded-full bg-violet-600/90 text-white shadow-lg shadow-violet-500/30"
+            class="flex size-16 animate-pulse items-center justify-center rounded-full bg-teal-600/90 text-white shadow-lg shadow-teal-500/30"
           >
             <Play class="ml-1 size-7" />
           </span>
