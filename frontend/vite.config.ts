@@ -7,6 +7,8 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
+  // Multiple local dev servers must not overwrite each other's optimized dependencies.
+  cacheDir: `node_modules/.vite-${process.pid}`,
   resolve: {
     alias: {
       // 与旧 Next.js 项目的 @/ → 项目根(src) 别名保持一致的写法
