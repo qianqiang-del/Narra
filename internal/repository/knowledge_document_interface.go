@@ -225,4 +225,8 @@ type KnowledgeDocumentRepository interface {
 	// ListExpiredMaterials 取到期且未关联课堂的课程材料 ID（升序），供后台清理逐个删除。
 	// 只返回 ID：删除要走服务层 Delete，连带清理归档原件与文档图片。
 	ListExpiredMaterials(ctx context.Context, before time.Time) ([]uint64, error)
+
+	// SaveMaterialOutline 写入课程材料的目录与摘要缓存（见 internal/material.Outline）。
+	// 只处理 kind = material 的行；它是生成侧的缓存产物，写失败只影响下次复用，不影响本次生成。
+	SaveMaterialOutline(ctx context.Context, id uint64, outline json.RawMessage) error
 }

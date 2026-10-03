@@ -258,6 +258,17 @@ func (r *knowledgeDocumentRepository) ListExpiredMaterials(ctx context.Context, 
 	return ids, err
 }
 
+// SaveMaterialOutline 写入课程材料的目录与摘要缓存（见 material.Outline）。
+//
+// 只改 material_outline 一列，不做"先读后写"：摘要是生成侧的缓存产物，
+// 与收录链路写的 metadata 互不相干。条件带 kind = material，知识库文档命中 0 行。
+func (r *knowledgeDocumentRepository) SaveMaterialOutline(ctx context.Context, id uint64, outline json.RawMessage) error {
+	return conn(ctx, r.db).
+		Model(&entity.KnowledgeDocument{}).
+		Where("id = ? AND kind = ?", id, entity.KnowledgeDocumentKindMaterial).
+		Update("material_outline", outline).Error
+}
+
 // List 按创建时间倒序分页，条件来自 entity.KnowledgeDocumentQuery。
 //
 // id 也参与排序，因为同一批导入的文档 created_at 可能相同，只按时间排会让翻页时

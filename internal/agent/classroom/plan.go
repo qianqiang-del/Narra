@@ -57,10 +57,12 @@ func planClassroom(ctx context.Context, deps Deps, classroom *entity.Classroom, 
 		return nil, err
 	}
 	// 材料是加法：取不到（文档被删、检索故障）就按没材料排课，绝不阻断规划。
+	// 先为每份材料准备目录+摘要（缓存优先，失败退回代码目录），再交给 Snapshot 组装。
 	// 走 rt.retrievalContext 是为了让"需求相关节选"这步能复用课堂模型做查询扩写。
 	var materialBlocks []material.Block
 	if deps.Materials != nil && len(config.Materials) > 0 {
-		materialBlocks = deps.Materials.Snapshot(rt.retrievalContext(ctx), config.Materials, classroom.Requirement)
+		outlines := buildMaterialOutlines(ctx, deps, rt, classroom, config)
+		materialBlocks = deps.Materials.Snapshot(rt.retrievalContext(ctx), config.Materials, classroom.Requirement, outlines)
 		if len(materialBlocks) == 0 {
 			logger.Warn("本课材料没有可注入的内容",
 				zap.Uint64("classroom_id", classroom.ID),
@@ -84,6 +86,23 @@ func planClassroom(ctx context.Context, deps Deps, classroom *entity.Classroom, 
 		return nil, err
 	}
 	return plan, nil
+}
+
+// buildMaterialOutlines 规划前为材料准备目录+摘要：缓存优先，未命中用本课模型生成。
+// 摘要生成有独立的总超时，失败或到点都返回已有的部分（可能为空），规划照常进行。
+func buildMaterialOutlines(ctx context.Context, deps Deps, rt *runtime, classroom *entity.Classroom, config GenerationConfig) map[uint64]*material.Outline {
+	if deps.Outlines == nil || len(config.Materials) == 0 {
+		return nil
+	}
+	outlineCtx, cancel := context.WithTimeout(ctx, material.OutlineBuildTimeout)
+	defer cancel()
+	outlines := deps.Outlines.Build(outlineCtx, config.Materials, newMaterialSummarizer(rt), config.ModelID)
+	if len(outlines) == 0 {
+		logger.Warn("本课材料没有可用的目录摘要，规划改用代码目录",
+			zap.Uint64("classroom_id", classroom.ID),
+			zap.Int("materials", len(config.Materials)))
+	}
+	return outlines
 }
 
 // generatePlan 让规划 Agent 交卷并校验，不合规就带着错误回灌重试。
@@ -151,6 +170,7 @@ func formatMaterialSection(blocks []material.Block) string {
 	var builder strings.Builder
 	builder.WriteString("## 本课材料\n")
 	builder.WriteString("以下是用户为这门课提供的材料，排课应以其为依据。\n")
+	builder.WriteString("每份材料先给目录与摘要；标注「节选」的表示只带了部分内容，细节会在页面阶段按需从原文取。\n")
 	for _, block := range blocks {
 		builder.WriteString("\n### ")
 		builder.WriteString(block.Name)
