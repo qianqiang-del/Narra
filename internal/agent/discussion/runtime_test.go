@@ -120,6 +120,28 @@ func TestRuntimeFactoryUsesExplicitModelID(t *testing.T) {
 	}
 }
 
+func TestRuntimeFactoryCarriesPricingSnapshot(t *testing.T) {
+	stub := newStubServer(t, `{"content":"收到","next_action":"end"}`, false)
+	input, output := 2.0, 8.0
+	pricing, _ := json.Marshal(map[string]any{"qwen-max": map[string]any{"input_per_million": input, "output_per_million": output, "currency": "CNY"}})
+	provider := testProvider(t, stub.server.URL, `["qwen-max"]`)
+	provider.Pricing = pricing
+	models, err := NewRuntimeFactory(&fakeProviderFinder{provider: provider}, testEncryptionKey).Build(context.Background(), 1, "qwen-max")
+	if err != nil {
+		t.Fatalf("建模型能力失败: %v", err)
+	}
+	if models.ModelID != "qwen-max" || models.Pricing == nil || *models.Pricing.InputPerMillion != input || *models.Pricing.OutputPerMillion != output || models.Pricing.Currency != "CNY" {
+		t.Fatalf("价格快照没有随运行模型带出: %#v", models)
+	}
+}
+
+func TestPricingForModelIgnoresLegacyCatalog(t *testing.T) {
+	raw := json.RawMessage(`{"old-model":{"input_per_million":2,"output_per_million":8,"currency":"CNY","source":"catalog"}}`)
+	if got := pricingForModel(raw, "old-model"); got != nil {
+		t.Fatalf("旧示例价格不能用于费用估算: %+v", got)
+	}
+}
+
 // TestRuntimeFactoryFallsBackToFirstModel 验证快照没选模型时取列表第一个。
 func TestRuntimeFactoryFallsBackToFirstModel(t *testing.T) {
 	stub := newStubServer(t, `{"content":"收到","next_action":"continue"}`, false)

@@ -31,6 +31,7 @@ type Provider struct {
 	APIKeyEncrypted string
 	TimeoutSeconds  int32
 	Models          json.RawMessage
+	Pricing         json.RawMessage
 }
 
 // RuntimeFactory 按课堂配置现建一套模型能力。
@@ -91,6 +92,7 @@ func (f entityProviderFinder) FindByID(ctx context.Context, id uint64) (*Provide
 		APIKeyEncrypted: provider.APIKeyEncrypted,
 		TimeoutSeconds:  provider.TimeoutSeconds,
 		Models:          provider.Models,
+		Pricing:         provider.Pricing,
 	}, nil
 }
 
@@ -143,11 +145,35 @@ func (f *RuntimeFactory) Build(ctx context.Context, providerID uint64, modelID s
 		return Models{}, fmt.Errorf("建讨论模型：%w", err)
 	}
 
+	pricing := pricingForModel(provider.Pricing, modelID)
 	return Models{
 		Model:      models,
 		Summarizer: models,
 		Extractor:  models,
+		ModelID:    modelID,
+		Pricing:    pricing,
 	}, nil
+}
+
+func pricingForModel(raw json.RawMessage, modelID string) *ModelPricing {
+	var entries map[string]struct {
+		InputPerMillion  *float64 `json:"input_per_million"`
+		OutputPerMillion *float64 `json:"output_per_million"`
+		Currency         string   `json:"currency"`
+		Source           string   `json:"source"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &entries) != nil {
+		return nil
+	}
+	entry, ok := entries[modelID]
+	if !ok || entry.Source == "catalog" || (entry.InputPerMillion == nil && entry.OutputPerMillion == nil) {
+		return nil
+	}
+	currency := entry.Currency
+	if currency == "" {
+		currency = "USD"
+	}
+	return &ModelPricing{InputPerMillion: entry.InputPerMillion, OutputPerMillion: entry.OutputPerMillion, Currency: currency}
 }
 
 // decryptAPIKey 解出明文密钥。

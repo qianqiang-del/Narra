@@ -24,6 +24,7 @@ type LLMProvider struct {
 	APIKeyEncrypted string          `gorm:"column:api_key_encrypted;type:text;not null;default:'';comment:加密后的 API Key；明文不落库，接口也不返回" json:"-"`
 	TimeoutSeconds  int32           `gorm:"column:timeout_seconds;not null;default:60;check:llm_providers_timeout_check,timeout_seconds BETWEEN 1 AND 600;comment:单次调用超时秒数，允许 1 ~ 600" json:"timeout_seconds"`
 	Models          json.RawMessage `gorm:"column:models;type:jsonb;not null;default:'[]';check:llm_providers_models_check,jsonb_typeof(models) = 'array' AND jsonb_array_length(models) > 0;comment:可用模型 ID 列表（JSON 数组，至少一个元素），按整条配置测试与启停" json:"models"`
+	Pricing         json.RawMessage `gorm:"column:pricing;type:jsonb;not null;default:'{}';comment:模型价格配置，按模型 ID 保存输入输出单价与来源" json:"pricing"`
 	TestStatus      string          `gorm:"column:test_status;type:varchar(20);not null;default:untested;check:llm_providers_test_status_check,test_status IN ('untested', 'success', 'failed');comment:连通性测试结果，取值 untested（没测过）/ success / failed" json:"test_status"`
 	LastTestModel   *string         `gorm:"column:last_test_model;type:varchar(160);comment:最近一次测试挑的模型 ID；没测过时为空" json:"last_test_model"`
 	LastTestError   *string         `gorm:"column:last_test_error;type:text;comment:最近一次测试失败的报错原文；成功时为空" json:"last_test_error"`

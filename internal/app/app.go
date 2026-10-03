@@ -381,7 +381,7 @@ func (a *App) initDependencies() error {
 		return fmt.Errorf("创建课程材料消费组件失败: %w", err)
 	}
 
-	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey)
+	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey, a.mcpManager)
 	// 重排配置是「多存一条、同时只启用一条」：设置页增删改测，检索侧只读启用中的那条。
 	// 先做启动对齐（没有启用记录时关闭精排），之后的变动由服务层的 reload 热更新。
 	rerankSettingSvc := service.NewRerankSettingService(rerankSettingRepo, encryptionKey, rerankManager)
@@ -501,7 +501,8 @@ func (a *App) initDependencies() error {
 	}
 
 	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo)
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, classroomSvc, folderSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, uploadDir, parser, knowledgeIngest)
+	traceSvc := service.NewTraceService(runRepo, turnRepo, traceSpanRepo)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, classroomSvc, folderSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, traceSvc, uploadDir, parser, knowledgeIngest)
 	return nil
 }
 

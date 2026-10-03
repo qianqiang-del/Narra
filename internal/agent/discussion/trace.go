@@ -89,7 +89,7 @@ func (o *Orchestrator) recordModelSpan(log *zap.Logger, run *entity.Orchestratio
 		TraceID: run.TraceID, SpanID: spanID, RunID: run.ID, TurnID: &turn.ID,
 		Kind: entity.TraceSpanKindModel, Name: "chat.completion", Status: status,
 		StartedAt: startedAt, EndedAt: &endedAt,
-		Attributes: traceAttributes(map[string]any{"attempt": attempt, "input_tokens": response.InputTokens, "output_tokens": response.OutputTokens}),
+		Attributes: traceAttributes(map[string]any{"attempt": attempt, "input_tokens": response.InputTokens, "output_tokens": response.OutputTokens, "token_source": response.TokenSource}),
 	}
 	if agentSpanID != "" {
 		span.ParentSpanID = &agentSpanID

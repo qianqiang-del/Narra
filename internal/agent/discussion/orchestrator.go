@@ -427,10 +427,7 @@ func (o *Orchestrator) openRun(ctx context.Context, request Request, maxTurns in
 		Status:              entity.RunStatusQueued,
 		MaxTurns:            int16(maxTurns),
 		OrchestratorVersion: orchestratorVersion,
-		ConfigSnapshot: json.RawMessage(fmt.Sprintf(
-			`{"orchestrator_version":%q,"max_turns":%d,"participants":%d}`,
-			orchestratorVersion, maxTurns, len(request.Participants),
-		)),
+		ConfigSnapshot:      runConfigSnapshot(request, maxTurns),
 	}
 
 	if err := o.deps.Tx.Run(ctx, func(ctx context.Context) error {
@@ -443,6 +440,23 @@ func (o *Orchestrator) openRun(ctx context.Context, request Request, maxTurns in
 		return nil, fmt.Errorf("标记运行开始失败: %w", err)
 	}
 	return run, nil
+}
+
+func runConfigSnapshot(request Request, maxTurns int) json.RawMessage {
+	config := map[string]any{
+		"orchestrator_version": orchestratorVersion,
+		"max_turns":            maxTurns,
+		"participants":         len(request.Participants),
+		"model_id":             request.ModelID,
+	}
+	if request.ModelPricing != nil {
+		config["pricing"] = request.ModelPricing
+	}
+	raw, err := json.Marshal(config)
+	if err != nil {
+		return json.RawMessage(`{"orchestrator_version":"discussion-v1"}`)
+	}
+	return raw
 }
 
 // speak 跑完一个回合：建回合记录 → 叫模型 → 写消息 → 收尾回合。
@@ -670,7 +684,7 @@ func (o *Orchestrator) speakStreaming(
 			}
 		}
 		if chunk.Done {
-			response = GenerationResponse{Content: content.String(), InputTokens: chunk.InputTokens, OutputTokens: chunk.OutputTokens, NextAction: chunk.NextAction, NextSpeakerKey: chunk.NextSpeakerKey}
+			response = GenerationResponse{Content: content.String(), InputTokens: chunk.InputTokens, OutputTokens: chunk.OutputTokens, TokenSource: chunk.TokenSource, NextAction: chunk.NextAction, NextSpeakerKey: chunk.NextSpeakerKey}
 			completed = true
 		}
 	}

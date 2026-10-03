@@ -88,6 +88,24 @@ func (c *Controller) Test(ctx *gin.Context) {
 	response.Success(ctx, result)
 }
 
+func (c *Controller) SuggestPricing(ctx *gin.Context) {
+	id, ok := parseID(ctx)
+	if !ok {
+		return
+	}
+	var input requestdto.LLMPriceSuggestion
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		response.BadRequest(ctx, "请求参数错误")
+		return
+	}
+	item, err := c.svc.SuggestPricing(ctx.Request.Context(), id, input.ModelID)
+	if err != nil {
+		response.BizError(ctx, err)
+		return
+	}
+	response.Success(ctx, item)
+}
+
 func (c *Controller) SetEnabled(ctx *gin.Context) {
 	id, ok := parseID(ctx)
 	if !ok {
