@@ -92,11 +92,11 @@ const volumeSlider =
   '[writing-mode:vertical-lr] [direction:rtl] ' +
   '[&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none ' +
   '[&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:rounded-full ' +
-  '[&::-webkit-slider-thumb]:bg-violet-500 [&::-webkit-slider-thumb]:shadow-sm ' +
-  'dark:[&::-webkit-slider-thumb]:bg-violet-400 ' +
+  '[&::-webkit-slider-thumb]:bg-teal-500 [&::-webkit-slider-thumb]:shadow-sm ' +
+  'dark:[&::-webkit-slider-thumb]:bg-teal-400 ' +
   '[&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:rounded-full ' +
-  '[&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-violet-500 ' +
-  'dark:[&::-moz-range-thumb]:bg-violet-400'
+  '[&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-teal-500 ' +
+  'dark:[&::-moz-range-thumb]:bg-teal-400'
 
 const volumeIcon = () => (props.volume === 0 ? VolumeX : props.volume < 0.5 ? Volume1 : Volume2)
 
@@ -174,7 +174,7 @@ function cycleSpeed() {
           cn(
             'h-5 w-8 cursor-pointer rounded text-[11px] font-semibold tabular-nums transition-colors',
             speed !== 1
-              ? 'bg-violet-500/10 text-violet-600 dark:text-violet-300'
+              ? 'bg-teal-500/10 text-teal-600 dark:text-teal-300'
               : 'text-gray-500 hover:bg-gray-500/[0.08] dark:text-gray-400',
           )
         "
@@ -199,7 +199,7 @@ function cycleSpeed() {
       </button>
 
       <!-- 播放/暂停 -->
-      <button type="button" :class="cn(ctrlBtn, playing && 'text-violet-600')" @click="emit('toggle-play')">
+      <button type="button" :class="cn(ctrlBtn, playing && 'text-teal-600')" @click="emit('toggle-play')">
         <Pause v-if="playing" class="size-4" />
         <Play v-else class="size-4 text-gray-500" />
       </button>
@@ -222,14 +222,14 @@ function cycleSpeed() {
     <!-- 右 -->
     <button
       type="button"
-      :class="cn(ctrlBtn, autoPlay && 'text-violet-600')"
+      :class="cn(ctrlBtn, autoPlay && 'text-teal-600')"
       @click="emit('toggle-auto-play')"
     >
       <Repeat class="size-4" :class="!autoPlay && 'text-gray-400'" />
     </button>
     <button
       type="button"
-      :class="cn(ctrlBtn, whiteboardOpen && 'text-violet-600')"
+      :class="cn(ctrlBtn, whiteboardOpen && 'text-teal-600')"
       @click="emit('toggle-whiteboard')"
     >
       <PencilLine class="size-4" :class="!whiteboardOpen && 'text-gray-400'" />

@@ -85,7 +85,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
           :class="
             cn(
               'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-700',
-              locale === l.code && 'bg-purple-50 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400',
+              locale === l.code && 'bg-teal-50 text-teal-600 dark:bg-teal-900/20 dark:text-teal-400',
             )
           "
           @click="pickLocale(l.code)"
@@ -120,7 +120,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
           :class="
             cn(
               'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-700',
-              mode === opt.value && 'bg-purple-50 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400',
+              mode === opt.value && 'bg-teal-50 text-teal-600 dark:bg-teal-900/20 dark:text-teal-400',
             )
           "
           @click="pickTheme(opt.value)"

@@ -70,7 +70,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
       >
         <div class="relative shrink-0">
           <div
-            class="size-8 overflow-hidden rounded-full ring-[1.5px] ring-border/30 transition-shadow group-hover:ring-violet-400/60"
+            class="size-8 overflow-hidden rounded-full ring-[1.5px] ring-border/30 transition-shadow group-hover:ring-teal-400/60"
           >
             <img :src="profileStore.profile.avatar" alt="" class="size-full object-cover" />
           </div>
@@ -100,7 +100,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         >
           <!-- 头像 + 昵称行 -->
           <div class="flex items-center gap-2">
-            <div class="size-8 shrink-0 overflow-hidden rounded-full ring-[1.5px] ring-violet-300/70">
+            <div class="size-8 shrink-0 overflow-hidden rounded-full ring-[1.5px] ring-teal-300/70">
               <img :src="profileStore.profile.avatar" alt="" class="size-full object-cover" />
             </div>
 
@@ -122,13 +122,13 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
               @click="startEditName"
             >
               <span class="truncate text-[13px] font-semibold text-foreground">{{ profileStore.displayName }}</span>
-              <Pencil class="size-3 shrink-0 text-muted-foreground/40 group-hover/name:text-violet-500" />
+              <Pencil class="size-3 shrink-0 text-muted-foreground/40 group-hover/name:text-teal-500" />
             </button>
 
             <button
               v-if="editingName"
               type="button"
-              class="flex size-5 shrink-0 items-center justify-center rounded text-violet-500 hover:bg-violet-100"
+              class="flex size-5 shrink-0 items-center justify-center rounded text-teal-500 hover:bg-teal-100"
               @click="commitName"
             >
               <Check class="size-3.5" />
@@ -152,7 +152,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
               :class="
                 cn(
                   'size-7 overflow-hidden rounded-full bg-gray-50 transition-transform hover:scale-110 active:scale-95 dark:bg-gray-800',
-                  profileStore.profile.avatar === src && 'ring-2 ring-violet-400',
+                  profileStore.profile.avatar === src && 'ring-2 ring-teal-400',
                 )
               "
               @click="pickAvatar(src)"

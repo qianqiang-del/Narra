@@ -388,8 +388,8 @@ async function retryFailed() {
             busy
               ? 'pointer-events-none border-border opacity-60'
               : dragging
-                ? 'cursor-pointer border-violet-400 bg-violet-50/60 dark:bg-violet-950/20'
-                : 'cursor-pointer border-border hover:border-violet-300 hover:bg-muted/40'
+                ? 'cursor-pointer border-teal-400 bg-teal-50/60 dark:bg-teal-950/20'
+                : 'cursor-pointer border-border hover:border-teal-300 hover:bg-muted/40'
           "
           @dragover.prevent="dragging = true"
           @dragleave.prevent="dragging = false"
@@ -460,7 +460,7 @@ async function retryFailed() {
           rows="8"
           :disabled="busy"
           :placeholder="t('knowledge.text.placeholder')"
-          class="mt-4 w-full resize-y rounded-xl border border-input bg-background px-3 py-2 text-[13px] leading-6 outline-none transition-colors placeholder:text-zinc-500 focus:border-violet-400 disabled:opacity-60"
+          class="mt-4 w-full resize-y rounded-xl border border-input bg-background px-3 py-2 text-[13px] leading-6 outline-none transition-colors placeholder:text-zinc-500 focus:border-teal-400 disabled:opacity-60"
         />
 
         <!-- 标题与提交：正文录入必填，文件导入可选（留空回落到正文首个标题） -->
@@ -478,7 +478,7 @@ async function retryFailed() {
                     : 'knowledge.upload.titlePlaceholder',
               )
             "
-            class="min-w-0 flex-1 rounded-lg border border-input bg-background px-3 py-2 text-[13px] outline-none transition-colors placeholder:text-zinc-500 focus:border-violet-400 disabled:opacity-60"
+            class="min-w-0 flex-1 rounded-lg border border-input bg-background px-3 py-2 text-[13px] outline-none transition-colors placeholder:text-zinc-500 focus:border-teal-400 disabled:opacity-60"
           />
           <button
             type="button"

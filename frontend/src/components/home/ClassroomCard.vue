@@ -162,7 +162,7 @@ function onDragStart(e: DragEvent) {
     <!-- 信息行 -->
     <div class="mt-2.5 flex items-center gap-2 px-1">
       <span
-        class="inline-flex shrink-0 items-center rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-600 dark:bg-violet-900/30 dark:text-violet-400"
+        class="inline-flex shrink-0 items-center rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-medium text-teal-600 dark:bg-teal-900/30 dark:text-teal-400"
       >
         {{ t('home.classroomCount', { count: classroom.pages, date: dateLabel }) }}
       </span>

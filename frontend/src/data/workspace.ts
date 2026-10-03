@@ -58,11 +58,11 @@ const PAGE_BASE = `<!DOCTYPE html>
     background: #ffffff; color: #1f2329;
   }
   .page { width: 1280px; height: 720px; padding: 64px 80px; display: flex; flex-direction: column; position: relative; }
-  .kicker { font-size: 15px; font-weight: 600; letter-spacing: .12em; color: #722ed1; text-transform: uppercase; }
+  .kicker { font-size: 15px; font-weight: 600; letter-spacing: .12em; color: #0f766e; text-transform: uppercase; }
   h1 { font-size: 44px; font-weight: 800; color: #171a1f; margin-top: 10px; }
   .sub { font-size: 19px; color: #646a73; margin-top: 10px; }
   .footer-band {
-    margin-top: auto; background: linear-gradient(90deg, #4f6ef7, #722ed1);
+    margin-top: auto; background: linear-gradient(90deg, #4f6ef7, #0f766e);
     color: #fff; font-size: 19px; font-weight: 600; text-align: center;
     padding: 18px 32px; border-radius: 10px;
   }
@@ -99,9 +99,9 @@ const AGENT_TOOL_PAGES: CoursewarePage[] = [
   <h1 style="font-size: 56px; line-height: 1.25;">让 Agent 学会<br />使用工具</h1>
   <p class="sub" style="max-width: 620px;">从 Tool 的组成结构讲起，理解 Function Calling 机制，最后亲手完成一次完整的工具调用。</p>
   <div style="display: flex; gap: 12px; margin-top: 40px;">
-    <span style="background:#722ed1; color:#fff; font-size:15px; font-weight:600; padding:10px 22px; border-radius:999px;">6 个章节</span>
-    <span style="background:#fff; color:#722ed1; border:1px solid #d6bef5; font-size:15px; font-weight:600; padding:10px 22px; border-radius:999px;">约 25 分钟</span>
-    <span style="background:#fff; color:#722ed1; border:1px solid #d6bef5; font-size:15px; font-weight:600; padding:10px 22px; border-radius:999px;">含随堂检测</span>
+    <span style="background:#0f766e; color:#fff; font-size:15px; font-weight:600; padding:10px 22px; border-radius:999px;">6 个章节</span>
+    <span style="background:#fff; color:#0f766e; border:1px solid #d6bef5; font-size:15px; font-weight:600; padding:10px 22px; border-radius:999px;">约 25 分钟</span>
+    <span style="background:#fff; color:#0f766e; border:1px solid #d6bef5; font-size:15px; font-weight:600; padding:10px 22px; border-radius:999px;">含随堂检测</span>
   </div>
 </div>` +
       PAGE_END,
@@ -206,11 +206,11 @@ const AGENT_TOOL_PAGES: CoursewarePage[] = [
   <p class="sub">模型与宿主程序之间的标准化握手协议</p>
   <div style="display: flex; align-items: stretch; gap: 14px; margin-top: 40px;">
     <div class="card" style="flex:1; text-align:center;"><h3>① 用户提问</h3><p>"北京今天天气怎么样？"</p></div>
-    <div style="align-self:center; font-size:26px; color:#722ed1;">→</div>
+    <div style="align-self:center; font-size:26px; color:#0f766e;">→</div>
     <div class="card" style="flex:1; text-align:center;"><h3>② 模型决策</h3><p>输出 tool_call：<br />get_weather(city="北京")</p></div>
-    <div style="align-self:center; font-size:26px; color:#722ed1;">→</div>
+    <div style="align-self:center; font-size:26px; color:#0f766e;">→</div>
     <div class="card" style="flex:1; text-align:center;"><h3>③ 宿主执行</h3><p>真正调用天气 API，拿到 25°C 晴</p></div>
-    <div style="align-self:center; font-size:26px; color:#722ed1;">→</div>
+    <div style="align-self:center; font-size:26px; color:#0f766e;">→</div>
     <div class="card" style="flex:1; text-align:center;"><h3>④ 结果回填</h3><p>模型基于结果生成自然语言回答</p></div>
   </div>
   <div class="card" style="margin-top: 28px;">

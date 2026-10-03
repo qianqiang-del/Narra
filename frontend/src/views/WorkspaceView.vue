@@ -381,7 +381,7 @@ function startLearning(courseId: string) {
         @mousedown="rail.start"
       >
         <div
-          class="absolute top-1/2 right-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-border transition-colors group-hover:bg-violet-400"
+          class="absolute top-1/2 right-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-border transition-colors group-hover:bg-teal-400"
         />
       </div>
     </div>
@@ -413,7 +413,7 @@ function startLearning(courseId: string) {
         @mousedown="chat.start"
       >
         <div
-          class="absolute top-1/2 right-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-border transition-colors group-hover:bg-violet-400"
+          class="absolute top-1/2 right-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-border transition-colors group-hover:bg-teal-400"
         />
       </div>
       <!-- 折叠后的展开把手 -->

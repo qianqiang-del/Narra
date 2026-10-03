@@ -106,7 +106,7 @@ function generating(scene: Scene): boolean {
               : scene.status === 'complete'
                 ? 'bg-amber-50 ring-1 ring-amber-200 dark:bg-amber-950/20'
                 : scene.id === activeId
-                  ? 'bg-purple-50 ring-1 ring-purple-200 dark:bg-purple-900/20'
+                  ? 'bg-teal-50 ring-1 ring-teal-200 dark:bg-teal-900/20'
                   : viewable(scene)
                     ? 'hover:bg-gray-50/80 dark:hover:bg-gray-800/50'
                     : 'opacity-80',
@@ -123,7 +123,7 @@ function generating(scene: Scene): boolean {
                 scene.status === 'complete'
                   ? 'bg-amber-500 text-white'
                   : scene.id === activeId
-                    ? 'bg-purple-600 text-white shadow-sm shadow-purple-500/30'
+                    ? 'bg-teal-600 text-white shadow-sm shadow-teal-500/30'
                     : 'bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
               )
             "
@@ -137,7 +137,7 @@ function generating(scene: Scene): boolean {
                 scene.status === 'failed'
                   ? 'text-red-600'
                   : scene.id === activeId
-                    ? 'text-purple-700 dark:text-purple-300'
+                    ? 'text-teal-700 dark:text-teal-300'
                     : 'text-gray-600 dark:text-gray-300',
               )
             "
@@ -222,7 +222,7 @@ function generating(scene: Scene): boolean {
       @mousedown="emit('resize-start', $event)"
     >
       <div
-        class="absolute top-1/2 right-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-gray-300 transition-colors group-hover:bg-purple-400"
+        class="absolute top-1/2 right-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-gray-300 transition-colors group-hover:bg-teal-400"
       />
     </div>
   </aside>

@@ -159,9 +159,9 @@ const slideUnits = computed<SlideUnit[]>(() => {
         <!-- 小节标题 -->
         <h2
           v-if="unit.type === 'heading'"
-          class="flex items-center gap-2.5 pt-1 text-[16px] font-bold text-indigo-900 md:text-[17px] dark:text-indigo-200"
+          class="flex items-center gap-2.5 pt-1 text-[16px] font-bold text-slate-900 md:text-[17px] dark:text-slate-200"
         >
-          <span class="h-4 w-1 shrink-0 rounded-full bg-indigo-500" />
+          <span class="h-4 w-1 shrink-0 rounded-full bg-slate-500" />
           <span>{{ unit.text }}</span>
         </h2>
 
@@ -231,7 +231,7 @@ const slideUnits = computed<SlideUnit[]>(() => {
               )
             "
           >
-            <span class="mt-2 size-1.5 shrink-0 rounded-full bg-violet-500" />
+            <span class="mt-2 size-1.5 shrink-0 rounded-full bg-teal-500" />
             <span class="text-[15px] leading-relaxed text-gray-600 dark:text-gray-300"><strong v-if="row.label" class="font-semibold text-gray-800 dark:text-gray-100">{{ row.label }}：</strong>{{ row.text }}</span>
           </div>
         </div>
@@ -275,7 +275,7 @@ const slideUnits = computed<SlideUnit[]>(() => {
         cn(
           'shrink-0 rounded-2xl border bg-white/75 p-5 transition-all duration-300 dark:bg-gray-800/60',
           props.activeContentKey === item.key
-            ? 'border-violet-300 ring-2 ring-violet-200/70 dark:border-violet-700 dark:ring-violet-900/50'
+            ? 'border-teal-300 ring-2 ring-teal-200/70 dark:border-teal-700 dark:ring-teal-900/50'
             : 'border-gray-200 dark:border-gray-700',
         )
       "
@@ -301,7 +301,7 @@ const slideUnits = computed<SlideUnit[]>(() => {
                 ? 'border-emerald-400 bg-emerald-50 text-emerald-800 dark:bg-emerald-900/25 dark:text-emerald-200'
                 : revealedOf(item.key) && pickedOf(item.key) === opt
                   ? 'border-red-300 bg-red-50 text-red-700 dark:bg-red-900/25 dark:text-red-200'
-                  : 'border-gray-200 bg-white text-gray-700 hover:border-violet-300 hover:bg-violet-50/50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:border-violet-600',
+                  : 'border-gray-200 bg-white text-gray-700 hover:border-teal-300 hover:bg-teal-50/50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:border-teal-600',
             )
           "
           @click="pickQuiz(item.key, opt)"
@@ -323,7 +323,7 @@ const slideUnits = computed<SlideUnit[]>(() => {
 
       <p
         v-if="revealedOf(item.key) && item.explanation"
-        class="mt-3 rounded-xl bg-violet-50 px-4 py-2.5 text-[13px] leading-6 text-violet-800 dark:bg-violet-950/30 dark:text-violet-200"
+        class="mt-3 rounded-xl bg-teal-50 px-4 py-2.5 text-[13px] leading-6 text-teal-800 dark:bg-teal-950/30 dark:text-teal-200"
       >
         {{ item.explanation }}
       </p>
@@ -351,7 +351,7 @@ const slideUnits = computed<SlideUnit[]>(() => {
     <h2 class="text-3xl font-bold text-gray-800 dark:text-gray-100">{{ scene.title }}</h2>
     <div v-for="(block, index) in scene.blocks" :key="index" class="text-[15px] leading-relaxed text-gray-700 dark:text-gray-200">
       <h3 v-if="block.type === 'heading'" class="text-xl font-semibold">{{ block.content || block.text }}</h3>
-      <div v-else-if="block.type === 'callout'" class="rounded-xl border border-violet-200 bg-violet-50 p-4 text-violet-900 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-100">{{ block.content || block.text }}</div>
+      <div v-else-if="block.type === 'callout'" class="rounded-xl border border-teal-200 bg-teal-50 p-4 text-teal-900 dark:border-teal-800 dark:bg-teal-950/30 dark:text-teal-100">{{ block.content || block.text }}</div>
       <li v-else-if="block.type === 'list-item'" class="ml-5 list-disc">{{ block.content || block.text }}</li>
       <p v-else>{{ block.content || block.text }}</p>
     </div>
