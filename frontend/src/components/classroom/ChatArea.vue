@@ -5,18 +5,20 @@
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ArrowDown, ArrowLeft, BookOpen, MessageCircle, MessageSquare, PanelRightClose, PanelRightOpen, Plus, Send, Square, Users } from 'lucide-vue-next'
+import { Activity, ArrowDown, ArrowLeft, BookOpen, MessageCircle, MessageSquare, PanelRightClose, PanelRightOpen, Plus, Send, Square, Users } from 'lucide-vue-next'
 import ChatMessage from './ChatMessage.vue'
+import TraceTimeline from './TraceTimeline.vue'
 
 import { cn } from '@/lib/utils'
 import { registerAudio } from '@/lib/audioPlayback'
 import { discussionStatus } from '@/lib/discussionAppearance'
+import type { DiscussionTrace } from '@/lib/discussionTrace'
 import type { Bubble, ChatNote, ChatSession, Participant } from '@/types/classroom'
 
 const props = defineProps<{
   collapsed: boolean
   width: number
-  tab: 'lecture' | 'chat'
+  tab: 'lecture' | 'trace' | 'chat'
   sessions: ChatSession[]
   hasActiveSession: boolean
   notes: ChatNote[]
@@ -37,10 +39,11 @@ const props = defineProps<{
   participants?: Participant[]
   streamingIds?: Set<string>
   closing?: boolean
+  trace: DiscussionTrace
 }>()
 
 const emit = defineEmits<{
-  (e: 'update:tab', v: 'lecture' | 'chat'): void
+  (e: 'update:tab', v: 'lecture' | 'trace' | 'chat'): void
   (e: 'toggle-collapse'): void
   (e: 'resize-start', ev: MouseEvent): void
   (e: 'open-session', id: string): void
@@ -131,7 +134,7 @@ function playAudio(path?: string | null, text?: string, id?: string) {
             cn(
               'relative flex h-full flex-1 items-center justify-center gap-1.5 border-b-2 text-[13px] font-medium transition-colors',
               tab === 'lecture'
-                ? 'border-violet-500 text-violet-700 dark:text-violet-300'
+                ? 'border-teal-600 text-teal-800 dark:text-teal-300'
                 : 'border-transparent text-gray-400 hover:text-gray-600 dark:hover:text-gray-300',
             )
           "
@@ -142,11 +145,25 @@ function playAudio(path?: string | null, text?: string, id?: string) {
         </button>
         <button
           type="button"
+          :class="cn(
+            'relative flex h-full flex-1 items-center justify-center gap-1.5 border-b-2 text-[13px] font-medium transition-colors',
+            tab === 'trace'
+              ? 'border-teal-600 text-teal-800 dark:text-teal-300'
+              : 'border-transparent text-gray-400 hover:text-gray-600 dark:hover:text-gray-300',
+          )"
+          @click="emit('update:tab', 'trace')"
+        >
+          <Activity class="size-3.5" />
+          {{ t('chat.trace') }}
+          <span v-if="trace.status === 'running'" class="absolute top-2 right-3 size-1.5 animate-ping rounded-full bg-teal-500" />
+        </button>
+        <button
+          type="button"
           :class="
             cn(
               'relative flex h-full flex-1 items-center justify-center gap-1.5 border-b-2 text-[13px] font-medium transition-colors',
               tab === 'chat'
-                ? 'border-violet-500 text-violet-700 dark:text-violet-300'
+                ? 'border-teal-500 text-teal-700 dark:text-teal-300'
                 : 'border-transparent text-gray-400 hover:text-gray-600 dark:hover:text-gray-300',
             )
           "
@@ -190,13 +207,16 @@ function playAudio(path?: string | null, text?: string, id?: string) {
         :key="n.id"
         type="button"
         :disabled="running || sending"
-        :class="n.id === activeNoteId ? 'w-full rounded-xl border border-purple-300 bg-purple-50 p-3 text-left ring-2 ring-purple-200 dark:border-purple-700 dark:bg-purple-950/30' : 'w-full rounded-xl border border-gray-100 bg-white p-3 text-left dark:border-gray-800 dark:bg-gray-900'"
+        :class="n.id === activeNoteId ? 'w-full rounded-xl border border-teal-300 bg-teal-50 p-3 text-left ring-2 ring-teal-200 dark:border-teal-700 dark:bg-teal-950/30' : 'w-full rounded-xl border border-gray-100 bg-white p-3 text-left dark:border-gray-800 dark:bg-gray-900'"
         @click="playAudio(n.audioPath, n.body, n.id)"
       >
         <div class="text-[13px] font-semibold text-gray-800 dark:text-gray-100">{{ n.title }}</div>
         <p class="mt-1 text-[12px] leading-relaxed text-gray-500 dark:text-gray-400">{{ n.body }}</p>
       </button>
     </div>
+
+    <!-- 轨迹 -->
+    <TraceTimeline v-else-if="tab === 'trace'" :trace="trace" :conversation-id="activeConversationId" />
 
     <!-- 对话 -->
     <div v-else class="flex min-h-0 flex-1 flex-col bg-[#f8faf9] dark:bg-zinc-950">
@@ -275,7 +295,7 @@ function playAudio(path?: string | null, text?: string, id?: string) {
       @mousedown="emit('resize-start', $event)"
     >
       <div
-        class="absolute top-1/2 left-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-gray-300 transition-colors group-hover:bg-purple-400"
+        class="absolute top-1/2 left-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-gray-300 transition-colors group-hover:bg-teal-400"
       />
     </div>
   </div>

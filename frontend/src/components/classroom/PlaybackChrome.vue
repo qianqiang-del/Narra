@@ -36,6 +36,7 @@ import {
   type Conversation,
 } from '@/api/conversation'
 import { applyDiscussionEvent, createDiscussionDisplay } from '@/lib/classroomDiscussion'
+import { applyTraceEvent, createDiscussionTrace, type DiscussionTrace } from '@/lib/discussionTrace'
 import { nextVisibleText } from '@/lib/typewriter'
 import { cn } from '@/lib/utils'
 import { getActiveAudio, pauseActiveAudio, registerAudio, setActiveRate, setActiveVolume, stopActiveAudio, unregisterAudio } from '@/lib/audioPlayback'
@@ -123,7 +124,7 @@ const thinking = ref(false)
 const yourTurn = ref(false)
 const recording = ref(false)
 
-const chatTab = ref<'lecture' | 'chat'>('chat')
+const chatTab = ref<'lecture' | 'trace' | 'chat'>('chat')
 const chatView = ref<'list' | 'conversation'>('list')
 const chatDraft = ref('')
 const discussionError = ref('')
@@ -136,6 +137,7 @@ const loadingMessages = ref(false)
 const sending = ref(false)
 const closingDiscussion = ref(false)
 const streamingMessageIds = ref(new Set<string>())
+const discussionTrace = ref<DiscussionTrace>(createDiscussionTrace())
 const discussionBusy = computed(() => discussionRunning.value || sending.value || closingDiscussion.value || loadingConversations.value || loadingMessages.value)
 const discussionActive = computed(() => activeConversationId.value !== null && (discussionRunning.value || sending.value || display.bubbles.length > 0))
 let display = createDiscussionDisplay([])
@@ -223,6 +225,7 @@ async function consumeEvents(conversationId: number, controller: AbortController
       for await (const event of watchConversationEvents(conversationId, { after, signal: controller.signal })) {
         if (controller.signal.aborted || activeConversationId.value !== conversationId) return
         reportedFailure = false
+        applyTraceEvent(discussionTrace.value, event)
         applyDiscussionEvent(display, event)
         lastSequenceByConversation.set(conversationId, display.lastSequence)
         if (event.eventType === 'run.completed' || event.eventType === 'run.failed' || event.eventType === 'run.waiting_user') {
@@ -253,6 +256,7 @@ async function selectConversation(id: number) {
   chatView.value = 'conversation'
   sessions.value = sessions.value.map((item) => ({ ...item, active: item.id === String(id) }))
   display = createDiscussionDisplay([])
+  discussionTrace.value = createDiscussionTrace()
   discussionRunning.value = false
   syncDiscussion()
   try {
@@ -267,6 +271,7 @@ async function selectConversation(id: number) {
     }
     if (generation !== conversationGeneration) return
     display = createDiscussionDisplay(history)
+    discussionTrace.value = createDiscussionTrace()
     display.lastSequence = lastSequenceByConversation.get(id) ?? 0
     discussionRunning.value = false
     syncDiscussion()
@@ -588,6 +593,7 @@ function newSession() {
   chatView.value = 'list'
   sessions.value = sessions.value.map((item) => ({ ...item, active: false }))
   display = createDiscussionDisplay([])
+  discussionTrace.value = createDiscussionTrace()
   discussionRunning.value = false
   syncDiscussion()
 }
@@ -623,6 +629,7 @@ async function sendMessage(text: string) {
     const pending = display.bubbles.find((item) => item.id === pendingId)
     if (pending) pending.id = `message-${started.messageId}`
     discussionRunning.value = true
+    chatTab.value = 'chat'
     if (!eventController) {
       eventController = new AbortController()
       void consumeEvents(conversationId, eventController)
@@ -653,6 +660,7 @@ async function stopDiscussion() {
     chatView.value = 'list'
     discussionRunning.value = false
     display = createDiscussionDisplay([])
+    discussionTrace.value = createDiscussionTrace()
     syncDiscussion()
     sessions.value = sessions.value.map((item) => ({ ...item, active: false }))
     toast(t('roundtable.discussionEnded'))
@@ -855,6 +863,7 @@ onBeforeUnmount(() => {
       :participants="participants"
       :streaming-ids="streamingMessageIds"
       :closing="closingDiscussion"
+      :trace="discussionTrace"
       @update:tab="chatTab = $event"
       @toggle-collapse="toggleChat"
       @resize-start="startChatResize"
@@ -874,7 +883,7 @@ onBeforeUnmount(() => {
     <UiTooltip v-if="whiteboardOpen" :content="t('whiteboard.minimize')" side="top">
       <button
         type="button"
-        class="absolute bottom-[200px] left-1/2 z-[120] -translate-x-1/2 rounded-full bg-white/90 px-3 py-1.5 text-[11px] font-medium text-purple-600 shadow-lg ring-1 ring-purple-200 backdrop-blur dark:bg-gray-800/90 dark:ring-purple-800"
+        class="absolute bottom-[200px] left-1/2 z-[120] -translate-x-1/2 rounded-full bg-white/90 px-3 py-1.5 text-[11px] font-medium text-teal-600 shadow-lg ring-1 ring-teal-200 backdrop-blur dark:bg-gray-800/90 dark:ring-teal-800"
         @click="whiteboardOpen = false"
       >
         {{ t('whiteboard.title') }}
