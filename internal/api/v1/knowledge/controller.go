@@ -572,7 +572,18 @@ func (c *Controller) Reembed(ctx *gin.Context) {
 //
 // 提供它是为了让"不走文件"的场景也能用同一条链路（外部系统同步、编辑器保存），
 // 同时它也把整条链路的输入缩到最短 —— 排查问题时用一条 curl 就能跑完。
+//
+// 它是同步链路：切分 + 向量化可能要几十批 embedding 请求，总时长会超过
+// http.Server 的 WriteTimeout（60s）。写死线一旦到点，后端其实已经收录成功，
+// 客户端却只看到连接被断 —— 用户重提交就是第二篇文档、再烧一遍向量额度。
+// 与 SSE 同样的处理：解除这条连接的写死线（见 pkg/sse.Start）。单批 embedding
+// 有自己的超时与重试上限，整条链路仍然有界（600 切片 / 每批 16 ≈ 38 批）。
+//
+// 注意：如果部署时前面挂了 nginx 等反代，反代自己的读超时也要相应调大，
+// 否则连接会在反代那一层被掐断。
 func (c *Controller) IngestText(ctx *gin.Context) {
+	_ = http.NewResponseController(ctx.Writer).SetWriteDeadline(time.Time{})
+
 	var input requestdto.KnowledgeIngestText
 	if err := ctx.ShouldBindJSON(&input); err != nil {
 		response.BadRequest(ctx, "请求格式无效，需要 title 和 content")

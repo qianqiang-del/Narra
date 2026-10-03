@@ -1,11 +1,11 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 
+import { ApiError } from '@/api/client'
 import {
   fetchKnowledgeDocuments,
   fetchKnowledgeDocument,
   fetchKnowledgeDocumentPreview,
-  fetchKnowledgeParserStatus,
   fetchKnowledgeUploadLimits,
   fetchKnowledgeEmbeddingStatus,
   deleteKnowledgeDocument,
@@ -21,11 +21,17 @@ import {
   type KnowledgeDocument,
   type KnowledgeDocumentKind,
   type KnowledgeEmbeddingStatus,
-  type KnowledgeParserStatus,
   type KnowledgeReembedResult,
   type KnowledgeUploadLimits,
   type KnowledgeUploadRecord,
 } from '@/api/knowledge'
+import {
+  createSettleClock,
+  isIngestSettled,
+  parserStatusNeedsRefresh,
+  pollDocumentUntilSettled,
+  useIngestParserStatus,
+} from '@/lib/ingest-wait'
 
 /**
  * 一次批量上传里单个文件在界面上的状态。
@@ -80,18 +86,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   /** 搜索防抖：每敲一个字打一次请求太吵，300ms 内的连续输入只发最后一次 */
   const SEARCH_DEBOUNCE_MS = 300
-
-  /** 轮询上限。一份大文档解析几分钟很正常，但不能无限等 */
-  const POLL_TIMEOUT_MS = 15 * 60 * 1000
-
-  /**
-   * 环境准备连续多久没有进展就算卡住。
-   *
-   * 首次上传时后端可能在准备解析环境，这一步本身就可能超过 POLL_TIMEOUT_MS ——
-   * 它不该被算成"这份文档处理超时"（否则提示刚出现，界面就先报超时，而后台一切正常）。
-   * 判据不是"正在准备"就无限等，而是"进度还在变"：连续这么久没有推进才视为卡住。
-   */
-  const PREPARE_STALL_MS = 10 * 60 * 1000
 
   /** 主页数据：已收录的文档。按页从服务端取回后依次累加 */
   const readyDocuments = ref<KnowledgeDocument[]>([])
@@ -165,18 +159,11 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   /**
    * 解析环境状态，供"首次上传需要先准备环境"的提示使用。
    *
-   * 失败静默：它只是提示，探测不到就当不知道 —— 不该因为一次状态探测失败把上传拦住。
-   * 环境备好之后 ready 为真，提示自然消失，前端不需要自己记"是不是第一次"。
+   * 状态本体与刷新逻辑在 lib/ingest-wait 里（首页材料等待读的是同一份）：
+   * 两边各持一个 ref 会出现"知识库说环境好了、首页还在按没准备好等"的分裂。
+   * 失败静默：探测不到就当不知道，不该因为一次状态探测失败把上传拦住。
    */
-  const parserStatus = ref<KnowledgeParserStatus | null>(null)
-
-  async function loadParserStatus() {
-    try {
-      parserStatus.value = await fetchKnowledgeParserStatus()
-    } catch {
-      /* 提示用，探测失败不影响上传 */
-    }
-  }
+  const { parserStatus, refreshParserStatus: loadParserStatus } = useIngestParserStatus()
 
   /**
    * 取一次批量上传限制（选择文件时的预检用）。
@@ -327,80 +314,16 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   }
 
   /**
-   * 文档是否已经到终态（ready / failed）。终态之后不会再有变化：
-   * 服务端推完最后一帧就关流，轮询也该停。
-   */
-  function isSettled(document: KnowledgeDocument): boolean {
-    return document.status === 'ready' || document.status === 'failed'
-  }
-
-  /**
-   * "处理超时"与"环境准备卡住"的判据，SSE 与轮询两条路共用一份。
-   *
-   * 首次上传时后端可能在准备解析环境（分钟级），这段等待不该吃掉"文档处理超时"
-   * 的窗口：准备期间只看进度有没有在动，准备结束后窗口从头算（见 PREPARE_STALL_MS）。
-   * 上限本身是必须的：一份卡在 pending 的文档（例如 worker 没起来）会把界面永远
-   * 锁在"处理中"，而 uploading 一直为真，用户连下一份都传不了。
-   */
-  function createSettleClock() {
-    let deadline = Date.now() + POLL_TIMEOUT_MS
-    let lastProgress = ''
-    let progressChangedAt = Date.now()
-    let wasPreparing = false
-
-    return {
-      /** 到点或卡住时抛出。SSE 路每秒调一次（没有事件也要查），轮询路每轮调一次 */
-      check() {
-        if (parserStatus.value?.preparing) {
-          const progress = parserStatus.value.progress
-          if (progress !== lastProgress) {
-            lastProgress = progress
-            progressChangedAt = Date.now()
-          }
-          if (Date.now() - progressChangedAt >= PREPARE_STALL_MS) {
-            throw new Error('解析环境准备似乎卡住了，请稍后刷新查看状态')
-          }
-          wasPreparing = true
-          return
-        }
-        if (wasPreparing) {
-          // 准备刚结束：之前那段时间是环境准备，不是这一份文档的处理时长
-          wasPreparing = false
-          deadline = Date.now() + POLL_TIMEOUT_MS
-        }
-        if (Date.now() >= deadline) {
-          throw new Error('文档处理超时，请稍后刷新查看状态')
-        }
-      },
-    }
-  }
-
-  /**
    * 逐次轮询直到终态，返回最后那一帧。
    *
-   * 它现在是 SSE 的兜底路径（流建不起来或中途断开），逻辑与升级前完全一样：
-   * 每秒问一次详情，顺便按需问解析环境状态。
+   * 它现在是 SSE 的兜底路径（流建不起来或中途断开），轮询节奏与超时口径全部复用
+   * lib/ingest-wait 的共享实现 —— 与首页材料等待是同一套判据。
    */
   async function pollUntilSettled(
     document: KnowledgeDocument,
     clock = createSettleClock(),
   ): Promise<KnowledgeDocument> {
-    let current = document
-    while (!isSettled(current)) {
-      // 只在"还没问过"或"能力开着但环境没好"时问：
-      // 环境备好之后（或压根没开解析能力）这个接口就没必要再打了。
-      const unknown = parserStatus.value === null
-      const pendingSetup = parserStatus.value?.enabled === true && !parserStatus.value.ready
-      if (unknown || pendingSetup) {
-        await loadParserStatus()
-      }
-
-      clock.check()
-
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-      current = await fetchKnowledgeDocument(current.id)
-    }
-    return current
+    return pollDocumentUntilSettled(document, { clock })
   }
 
   /**
@@ -456,7 +379,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     }
 
     // 流正常结束却没到终态（服务端提前关流）：同样回退轮询，而不是把非终态当结果。
-    if (!isSettled(current)) {
+    if (!isIngestSettled(current)) {
       console.warn('知识库进度流提前结束，已回退到每秒轮询', current.status)
       return pollUntilSettled(current, clock)
     }
@@ -548,15 +471,26 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    * HTTP/1.1 连接（6 条），连列表刷新都会被排队。上传记录接口本来就是为"看投递
    * 结果"准备的，一次请求覆盖整批，逐项状态再从记录映射回 uploadTasks。
    *
-   * 网络抖动只跳过本轮；到达总时限后保留最后一帧状态，提示用户刷新 —— 与单篇
-   * 进度流的超时口径一致（POLL_TIMEOUT_MS）。
+   * 超时口径与单篇进度流共用 lib/ingest-wait 的秒表：首次上传时后端在准备解析
+   * 环境（分钟级），这段时间不催、只看进度；准备结束才重新计 15 分钟。真到点
+   * （或准备长时间无进展）时把还没收敛的任务标成失败并带上原因 —— 停更让界面
+   * 一直转圈是最糟的收场，用户既看不到结果也没有重试入口。
+   *
+   * 网络抖动只跳过本轮；下一轮继续。
    */
   async function trackUploadTasks(documentIds: number[]): Promise<void> {
     const remaining = new Set(documentIds)
-    const deadline = Date.now() + POLL_TIMEOUT_MS
+    const clock = createSettleClock()
 
     while (remaining.size > 0) {
       await new Promise((resolve) => setTimeout(resolve, BATCH_POLL_INTERVAL_MS))
+
+      // 与单篇轮询同一套判据：还没探测过、或能力开着但环境没好时，问一次状态。
+      // 秒表靠它识别"正在准备解析环境"，准备期间不判文档超时。
+      if (parserStatusNeedsRefresh(parserStatus.value)) {
+        await loadParserStatus()
+      }
+
       try {
         const records = await fetchUploadRecords({ page: 1, size: RECORD_PAGE_SIZE })
         for (const record of records.list) {
@@ -578,7 +512,22 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       } catch {
         /* 网络抖动：下一轮再试，不打断整批跟踪 */
       }
-      if (Date.now() >= deadline) break
+
+      if (remaining.size === 0) break
+
+      // 先处理完这一轮的状态再判超时：刚好在到点时收敛的文档不该被误标失败。
+      try {
+        clock.check()
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : '收录等待超时，请刷新查看状态'
+        for (const id of remaining) {
+          const task = uploadTasks.value.find((item) => item.documentId === id)
+          if (!task) continue
+          task.status = 'failed'
+          task.error = reason
+        }
+        break
+      }
     }
 
     // 终态之后整表重拉：切片数、字符数、记录状态都是后端在收尾事务里补的。
@@ -662,11 +611,31 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    *
    * 重试期间同样置 uploading 锁住弹层入口：这是一次会占队列位的写操作，
    * 但不再有"后台在跑就不许上传"的全局禁止 —— 队列没满就能继续提交。
+   *
+   * 对 409 做分流：批量看板会把"等待超时"的任务标成 failed，那种情况下文档其实
+   * 还在服务端跑（或已经 ready），盲目重试会撞"不需要重试"的 409。回读真实状态 ——
+   * 还在跑就接着等、ready 直接收敛；仍是 failed 才是真的不能重试（队列满 / 原件
+   * 已不在），把原错误抛给调用方。
    */
   async function retry(documentId: number): Promise<KnowledgeDocument> {
     uploading.value = true
     try {
-      const document = await retryKnowledgeDocument(documentId)
+      let document: KnowledgeDocument
+      try {
+        document = await retryKnowledgeDocument(documentId)
+      } catch (error) {
+        if (!(error instanceof ApiError && error.code === 409)) throw error
+
+        const current = await fetchKnowledgeDocument(documentId)
+        if (current.status === 'failed') throw error
+        if (isIngestSettled(current)) {
+          await load()
+          return current
+        }
+        const settled = await watchUntilSettled(current)
+        await load()
+        return settled
+      }
       await refreshRecordsQuietly()
 
       const settled = await watchUntilSettled(document)

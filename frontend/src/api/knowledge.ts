@@ -402,29 +402,6 @@ export async function fetchKnowledgeDocument(id: number): Promise<KnowledgeDocum
   return toDocument(await request<KnowledgeDocumentDTO>(`/knowledge/documents/${id}`))
 }
 
-/**
- * 轮询一篇文档直到收录结束（ready / failed）。
- *
- * 首页材料提交时用：批量上传后逐篇等就绪，再带着文档 ID 建课。
- * 逐篇轮询而不是一批开 N 条 SSE —— 与知识库页的批量上传保持同一个取舍
- * （避免一批文件占满浏览器对同源的连接数，见 stores/knowledge.ts）。
- * 超时抛 Error('timeout')，调用方决定是跳过还是报错。
- */
-export async function waitForKnowledgeDocument(
-  id: number,
-  options: { timeoutMs?: number; intervalMs?: number } = {},
-): Promise<KnowledgeDocument> {
-  const timeoutMs = options.timeoutMs ?? 10 * 60 * 1000
-  const intervalMs = options.intervalMs ?? 1500
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const document = await fetchKnowledgeDocument(id)
-    if (document.status === 'ready' || document.status === 'failed') return document
-    if (Date.now() >= deadline) throw new Error('timeout')
-    await new Promise((resolve) => setTimeout(resolve, intervalMs))
-  }
-}
-
 /** 进度流上的事件名，与后端 controller 的 eventDocument / eventParser / eventError 对齐 */
 const STREAM_DOCUMENT = 'document'
 const STREAM_PARSER = 'parser'

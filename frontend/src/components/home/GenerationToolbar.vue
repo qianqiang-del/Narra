@@ -16,6 +16,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { toast } from 'vue-sonner'
 import {
   AlertCircle,
   Bot,
@@ -34,6 +35,7 @@ import {
 import UiTooltip from '@/components/ui/UiTooltip.vue'
 import { findProviderLogo } from '@/data/providers'
 import type { AvailableLlmModel } from '@/api/llm'
+import { SUPPORTED_EXTENSIONS } from '@/api/knowledge'
 import { materialFingerprint, type SelectedMaterial, type SelectedMaterialStatus } from '@/lib/materials'
 import { useUploadLimits } from '@/lib/upload-limits'
 import { cn } from '@/lib/utils'
@@ -50,7 +52,7 @@ const webSearch = defineModel<boolean>('webSearch', { default: false })
 const materials = defineModel<SelectedMaterial[]>('materials', { default: () => [] })
 
 const props = defineProps<{ availableModels: AvailableLlmModel[] }>()
-const emit = defineEmits<{ configure: [] }>()
+const emit = defineEmits<{ configure: []; retryMaterial: [key: string] }>()
 
 const rootRef = ref<HTMLElement | null>(null)
 const openMenu = ref<'model' | 'material' | null>(null)
@@ -104,32 +106,79 @@ function removeMaterial(key: string) {
   materials.value = materials.value.filter((m) => m.key !== key)
 }
 
-/** 失败/被拒的材料退回待上传，用户重新提交时再试一次。 */
+/**
+ * 请求重试一份失败/被拒的材料。
+ *
+ * 这里只把 key 交给 HomeView —— 重试方式取决于服务端状态（有没有文档、文档是不是
+ * 真失败），由它统一处理：能原地重排就原地重排，没有文档的才退回上传。
+ */
 function retryMaterial(material: SelectedMaterial) {
-  material.status = 'queued'
-  material.documentId = null
-  material.error = ''
+  emit('retryMaterial', material.key)
 }
 
+/** 与后端解析能力对齐的可选扩展名；选择框用它，拖拽/粘贴由下面的预检兜底 */
+const acceptAttr = SUPPORTED_EXTENSIONS.join(',')
+
+/**
+ * 把用户选中的一批文件并入待上传列表。
+ *
+ * 先在前端挡几道（扩展名、单份大小、份数、合计大小）—— 与知识库弹层的 pickFiles
+ * 同一套判据，不能只依赖后端：服务端是先把整个 multipart 包收完（最多 100MB）
+ * 才检查文件数，超份数时整包白传白写盘；不支持的格式与超单份上限则是逐项拒绝，
+ * 用户点重试还会把注定失败的文件重传一遍。
+ *
+ * 跳过与整次不生效的分工也和弹层一致：格式不支持、单份超限只跳过该文件并提示；
+ * 份数 / 合计超限则整次选择不生效（部分收下会让用户以为剩下的还有机会，
+ * 实际是这次请求发不出去）。真正的拒绝始终来自服务端。
+ */
 function addFiles(files: File[]) {
-  const seen = new Set(materials.value.map((m) => materialFingerprint(m.file)))
+  if (files.length === 0) return
+
+  const accepted: File[] = []
   for (const file of files) {
+    const name = file.name.toLowerCase()
+    if (!SUPPORTED_EXTENSIONS.some((ext) => name.endsWith(ext))) {
+      toast.error(t('toolbar.materialUnsupported', { formats: SUPPORTED_EXTENSIONS.join(' / ') }))
+      continue
+    }
+    if (file.size > uploadLimits.value.maxFileBytes) {
+      toast.error(t('toolbar.materialTooLarge', { limit: uploadLimits.value.maxFileBytes >> 20 }))
+      continue
+    }
+    accepted.push(file)
+  }
+  if (accepted.length === 0) return
+
+  // 去重：同名 + 同大小 + 同修改时间视为同一份材料，已在列表里的跳过。
+  const seen = new Set(materials.value.map((m) => materialFingerprint(m.file)))
+  const merged = [...materials.value]
+  for (const file of accepted) {
     const fingerprint = materialFingerprint(file)
     if (seen.has(fingerprint)) continue
     seen.add(fingerprint)
-    materials.value = [
-      ...materials.value,
-      {
-        key: `${fingerprint}:${Date.now()}`,
-        file,
-        name: file.name,
-        size: file.size,
-        status: 'queued',
-        documentId: null,
-        error: '',
-      },
-    ]
+    merged.push({
+      key: `${fingerprint}:${Date.now()}`,
+      file,
+      name: file.name,
+      size: file.size,
+      status: 'queued',
+      documentId: null,
+      error: '',
+    })
   }
+
+  if (merged.length > uploadLimits.value.maxFiles) {
+    toast.error(t('toolbar.materialTooMany', { limit: uploadLimits.value.maxFiles }))
+    return
+  }
+  const total = merged.reduce((sum, material) => sum + material.size, 0)
+  if (total > uploadLimits.value.maxBatchBytes) {
+    toast.error(
+      t('toolbar.materialBatchTooLarge', { limit: uploadLimits.value.maxBatchBytes >> 20 }),
+    )
+    return
+  }
+  materials.value = merged
 }
 
 function onFilePick(e: Event) {
@@ -303,7 +352,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
             type="file"
             multiple
             class="hidden"
-            accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.markdown,image/*"
+            :accept="acceptAttr"
             @change="onFilePick"
           />
         </label>
