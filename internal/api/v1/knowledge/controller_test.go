@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
 	"narra/internal/service"
@@ -263,5 +264,74 @@ func TestEventsRejectsMissingDocumentWithJSON(t *testing.T) {
 	}
 	if envelope.Code == 0 || !strings.Contains(envelope.Message, "不存在") {
 		t.Fatalf("信封 = %+v，期望非 0 code 且带上原因", envelope)
+	}
+}
+
+// stubSlowIngestService 只实现 IngestText：慢速收录，用来验证写死线已被解除。
+// 其余方法由嵌入的 nil 接口兜底 —— 一旦 handler 用了别的方法，测试会以 panic 当场暴露。
+type stubSlowIngestService struct {
+	service.KnowledgeService
+	delay time.Duration
+}
+
+func (s *stubSlowIngestService) IngestText(
+	ctx context.Context,
+	input requestdto.KnowledgeIngestText,
+) (responsedto.KnowledgeDocument, error) {
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+		return responsedto.KnowledgeDocument{}, ctx.Err()
+	}
+	return responsedto.KnowledgeDocument{
+		ID:     1,
+		Title:  input.Title,
+		Status: entity.KnowledgeDocumentStatusReady,
+	}, nil
+}
+
+// 正文收录是同步长请求：处理时长超过 http.Server 的 WriteTimeout 时，响应也必须
+// 完整送达（handler 里解除了写死线）。修复前，handler 睡过 50ms 后响应写不出去，
+// 客户端只能拿到被断开的连接 —— 这正是"实际成功、界面报网络错误"的根因。
+func TestIngestTextSurvivesServerWriteTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	controller := NewController(
+		&stubSlowIngestService{delay: 150 * time.Millisecond},
+		t.TempDir(),
+		nil,
+		config.KnowledgeIngestConfig{},
+	)
+	engine := gin.New()
+	RegisterRoutes(engine.Group("/api/v1"), controller)
+
+	server := httptest.NewUnstartedServer(engine)
+	// 写死线压到 50ms：正常响应的 handler 睡过它之后，未解除死线的写必定失败。
+	server.Config.WriteTimeout = 50 * time.Millisecond
+	server.Start()
+	defer server.Close()
+
+	payload := strings.NewReader(`{"title":"慢速正文","content":"hello"}`)
+	response, err := http.Post(
+		server.URL+"/api/v1/knowledge/documents/text",
+		"application/json",
+		payload,
+	)
+	if err != nil {
+		t.Fatalf("请求失败，写死线可能把响应掐断了: %v", err)
+	}
+	defer response.Body.Close()
+
+	var envelope struct {
+		Code int                           `json:"code"`
+		Data responsedto.KnowledgeDocument `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		t.Fatalf("响应不是完整 JSON，写死线可能把响应掐断了: %v", err)
+	}
+	if envelope.Code != 0 {
+		t.Fatalf("code = %d，期望 0", envelope.Code)
+	}
+	if envelope.Data.Title != "慢速正文" {
+		t.Fatalf("data.title = %q，期望 慢速正文", envelope.Data.Title)
 	}
 }

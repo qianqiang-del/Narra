@@ -15,7 +15,11 @@ import { toast } from 'vue-sonner'
 
 import { createClassroom } from '@/api/classroom'
 import { ApiError } from '@/api/client'
-import { uploadKnowledgeFiles, waitForKnowledgeDocument } from '@/api/knowledge'
+import {
+  fetchKnowledgeDocument,
+  retryKnowledgeDocument,
+  uploadKnowledgeFiles,
+} from '@/api/knowledge'
 import AgentBar from '@/components/home/AgentBar.vue'
 import GenerationToolbar from '@/components/home/GenerationToolbar.vue'
 import GreetingBar from '@/components/home/GreetingBar.vue'
@@ -24,6 +28,7 @@ import RecentSection from '@/components/home/RecentSection.vue'
 import SettingsDialog from '@/components/home/SettingsDialog.vue'
 import TopPillToolbar from '@/components/home/TopPillToolbar.vue'
 import UiTooltip from '@/components/ui/UiTooltip.vue'
+import { pollDocumentUntilSettled } from '@/lib/ingest-wait'
 import { MATERIAL_PURPOSE, type SelectedMaterial } from '@/lib/materials'
 import { cn } from '@/lib/utils'
 import { useLlmStore } from '@/stores/llm'
@@ -129,8 +134,11 @@ function pickedRoleVoices(): Record<string, string> {
   return picked
 }
 
-/** 材料等待收录的上限：超时就跳过该材料，不把提交无限期挂住。 */
-const MATERIAL_WAIT_MS = 10 * 60 * 1000
+/**
+ * 材料状态的轮询间隔。比单篇重试的 1s 略慢：首页可能同时有多份材料在等，
+ * 与知识库批量上传的 1.5s 保持同一个节奏。
+ */
+const MATERIAL_POLL_INTERVAL_MS = 1500
 
 /** 材料上传的共享 Promise：上传进行中时，提交与 watcher 都等同一轮，不重复发请求。 */
 let materialUploadPromise: Promise<void> | null = null
@@ -139,7 +147,7 @@ let materialUploadPromise: Promise<void> | null = null
  * 把待上传的材料送进知识库（选中即上传，不等到提交）。
  *
  * 失败/被拒的材料留在列表里由用户处置（重试会退回 queued、再次触发这里）；
- * 上传只负责入库，等收录完成是 waitForPendingMaterials 的事。
+ * 上传只负责入库，等收录完成是 waitPendingMaterials 的事。
  */
 async function runMaterialUpload(): Promise<void> {
   // 循环而不是只跑一轮：上传期间用户可能又选了文件（watcher 拿到的是同一个 Promise）。
@@ -190,8 +198,10 @@ let materialWaitPromise: Promise<void> | null = null
 /**
  * 后台轮询待收录材料直到终态（ready / failed），把状态实时刷到列表上。
  *
- * 与知识库页的批量上传同一个效果：不用等用户点生成，材料自己从「处理中」
- * 收敛到「已就绪 / 失败」。失败项点重试会退回 queued，重新上传后再进这一轮。
+ * 与知识库页共用 lib/ingest-wait 的等待口径：首次上传 PDF 等文件时后端在准备
+ * 解析环境（分钟级），这段时间不算"材料处理超时"，准备结束才重新计时。不用等
+ * 用户点生成，材料自己从「处理中」收敛到「已就绪 / 失败」；失败项由用户重试
+ * （有文档的原地重排，没有的退回 queued 重新上传）。
  */
 async function runMaterialWait(): Promise<void> {
   for (;;) {
@@ -200,8 +210,8 @@ async function runMaterialWait(): Promise<void> {
     await Promise.all(
       pending.map(async (material) => {
         try {
-          const document = await waitForKnowledgeDocument(material.documentId as number, {
-            timeoutMs: MATERIAL_WAIT_MS,
+          const document = await pollDocumentUntilSettled(material.documentId as number, {
+            intervalMs: MATERIAL_POLL_INTERVAL_MS,
           })
           if (document.status === 'ready') {
             material.status = 'ready'
@@ -212,7 +222,8 @@ async function runMaterialWait(): Promise<void> {
           }
         } catch (error) {
           material.status = 'failed'
-          material.error = error instanceof ApiError ? error.message : t('toolbar.materialTimeout')
+          // 超时/准备卡住带的是具体原因（见 lib/ingest-wait），原样展示。
+          material.error = error instanceof Error ? error.message : t('toolbar.materialTimeout')
         }
       }),
     )
@@ -235,6 +246,62 @@ function uploadQueuedMaterials(): Promise<void> {
     })
   }
   return materialUploadPromise
+}
+
+/**
+ * 正在原地重排的材料 key。防连点：第二次请求会撞上"已不是失败态"的 409，
+ * 把第一次已经成功的重排覆盖成失败。
+ */
+const retryingMaterials = new Set<string>()
+
+/**
+ * 重试一份失败/被拒的材料。
+ *
+ * 有服务端文档的走**原地重排**（与知识库弹层的重试同一条路）：先回读文档的真实状态 ——
+ *   - ready：它其实已经收录完了（列表状态是上次等待超时留下的），直接收敛；
+ *   - pending / processing：之前那次"失败"是前端等待超时误判，服务端还在照常收录，
+ *     接着等即可，不重新上传；
+ *   - failed：确实是收录失败，调 retry 让后端复用服务器上的原件原地重跑，
+ *     不新建文档、不重传文件。
+ *
+ * 探测期间材料保持 failed 不置 pending：后台等待循环只认 pending，提前置上会让它
+ * 抢在 retry 落库前看到旧文档的 failed 终态，把材料重新定死成失败。
+ *
+ * 没有 documentId 的（上传就没成功、被服务端拒绝）服务器上没有可重排的对象，
+ * 退回 queued 由 runMaterialUpload 重传 —— 这是本地文件唯一的用法。
+ */
+async function retryMaterial(key: string): Promise<void> {
+  const material = materials.value.find((item) => item.key === key)
+  if (!material || (material.status !== 'failed' && material.status !== 'rejected')) return
+  if (retryingMaterials.has(key)) return
+
+  if (material.documentId === null) {
+    material.status = 'queued'
+    material.error = ''
+    return
+  }
+
+  retryingMaterials.add(key)
+  try {
+    const document = await fetchKnowledgeDocument(material.documentId)
+    if (document.status === 'ready') {
+      material.status = 'ready'
+      material.error = ''
+      return
+    }
+    if (document.status === 'failed') {
+      await retryKnowledgeDocument(material.documentId)
+    }
+    // 服务端确认在收录（原地重排成功，或本来还在跑）：置 pending 进入等待。
+    material.status = 'pending'
+    material.error = ''
+    void waitPendingMaterials()
+  } catch (error) {
+    material.status = 'failed'
+    material.error = error instanceof ApiError ? error.message : t('toolbar.materialRetryFailed')
+  } finally {
+    retryingMaterials.delete(key)
+  }
 }
 
 // 选中文件（或点重试退回 queued）后立刻上传：解析与向量化在用户写需求的这段时间里
@@ -406,6 +473,7 @@ function openClassroom(id: string) {
               v-model:materials="materials"
               :available-models="availableModels"
               @configure="openModelSettings"
+              @retry-material="retryMaterial"
             />
           </div>
 
