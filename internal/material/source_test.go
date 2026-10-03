@@ -90,7 +90,7 @@ func TestSnapshotSmallDocumentIsFullText(t *testing.T) {
 	}}
 	source := newTestSource(t, docs, &fakeChunks{}, &fakeRetriever{})
 
-	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7, Name: "讲义.md"}}, "")
+	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7, Name: "讲义.md"}}, "", nil)
 	if len(blocks) != 1 {
 		t.Fatalf("期望 1 个材料块，实际 %d", len(blocks))
 	}
@@ -119,7 +119,7 @@ func TestSnapshotFallsBackToTitleAndSkipsUnavailable(t *testing.T) {
 		{DocumentID: 7},
 		{DocumentID: 8},
 		{DocumentID: 9},
-	}, "")
+	}, "", nil)
 	if len(blocks) != 1 || blocks[0].DocumentID != 7 {
 		t.Fatalf("只该保留可检索的材料: %+v", blocks)
 	}
@@ -143,7 +143,7 @@ func TestSnapshotStructuredDocumentUsesSectionOutline(t *testing.T) {
 	retriever := &fakeRetriever{}
 	source := newTestSource(t, docs, chunks, retriever)
 
-	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7, Name: "书.md"}}, "")
+	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7, Name: "书.md"}}, "", nil)
 	if len(blocks) != 1 {
 		t.Fatalf("期望 1 个材料块，实际 %d", len(blocks))
 	}
@@ -170,7 +170,7 @@ func TestSnapshotUnstructuredDocumentUsesWindowOutline(t *testing.T) {
 	chunks.chunks[7] = items
 	source := newTestSource(t, docs, chunks, &fakeRetriever{})
 
-	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7}}, "")
+	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7}}, "", nil)
 	if len(blocks) != 1 {
 		t.Fatalf("期望 1 个材料块，实际 %d", len(blocks))
 	}
@@ -199,7 +199,7 @@ func TestSnapshotAddsRetrievalExcerptsForBigDocuments(t *testing.T) {
 	}}
 	source := newTestSource(t, docs, chunks, retriever)
 
-	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7, Name: "书.md"}}, "令牌桶")
+	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7, Name: "书.md"}}, "令牌桶", nil)
 	if len(blocks) != 2 {
 		t.Fatalf("期望 纲要 + 节选 两个块，实际 %d", len(blocks))
 	}
@@ -220,7 +220,7 @@ func TestSnapshotSharedBudgetAcrossSmallDocuments(t *testing.T) {
 	}}
 	source := newTestSource(t, docs, &fakeChunks{}, &fakeRetriever{})
 
-	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7}, {DocumentID: 8}}, "")
+	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7}, {DocumentID: 8}}, "", nil)
 	if len(blocks) != 2 {
 		t.Fatalf("期望 2 个材料块，实际 %d", len(blocks))
 	}
@@ -277,5 +277,99 @@ func TestRetrievePropagatesError(t *testing.T) {
 	source := newTestSource(t, &fakeDocuments{}, &fakeChunks{}, &fakeRetriever{err: errors.New("向量服务不可用")})
 	if _, err := source.Retrieve(context.Background(), []uint64{7}, "查询", 3); err == nil {
 		t.Fatal("检索失败应当把错误交给调用方")
+	}
+}
+
+func TestSnapshotSummaryLayerKeepsEveryMaterial(t *testing.T) {
+	documents := make(map[uint64]*entity.KnowledgeDocument, 10)
+	refs := make([]Ref, 0, 10)
+	outlines := make(map[uint64]*Outline, 10)
+	for index := 0; index < 10; index++ {
+		id := uint64(index + 1)
+		documents[id] = readyDocument("材料", strings.Repeat("正", 5000))
+		refs = append(refs, Ref{DocumentID: id, Name: "材料"})
+		outlines[id] = &Outline{
+			Version: OutlineVersion,
+			Summary: "这份材料讲测试内容",
+			Sections: []SectionOutline{
+				{Path: "第一章", Chars: 5000, Summary: "讲测试"},
+			},
+		}
+	}
+	source := newTestSource(t, &fakeDocuments{documents: documents}, &fakeChunks{}, &fakeRetriever{})
+
+	blocks := source.Snapshot(context.Background(), refs, "", outlines)
+	seen := make(map[uint64]bool, len(blocks))
+	for _, block := range blocks {
+		if block.DocumentID != 0 {
+			seen[block.DocumentID] = true
+		}
+	}
+	for _, ref := range refs {
+		if !seen[ref.DocumentID] {
+			t.Fatalf("材料 %d 在规划输入里消失了: %+v", ref.DocumentID, blocks)
+		}
+	}
+}
+
+func TestSnapshotOutlineShareIsCapped(t *testing.T) {
+	docs := &fakeDocuments{documents: map[uint64]*entity.KnowledgeDocument{
+		7: readyDocument("书", strings.Repeat("正", SmallDocChars+1)),
+	}}
+	outlines := map[uint64]*Outline{
+		7: {Version: OutlineVersion, Summary: strings.Repeat("摘", 2000)},
+	}
+	source := newTestSource(t, docs, &fakeChunks{}, &fakeRetriever{})
+
+	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7}}, "", outlines)
+	if len(blocks) != 1 {
+		t.Fatalf("期望 1 个摘要块，实际 %d", len(blocks))
+	}
+	if runeLen(blocks[0].Text) != PerMaterialOutlineChars || !blocks[0].Truncated {
+		t.Fatalf("摘要层应封顶到 %d 字并标记截断: truncated=%v chars=%d",
+			PerMaterialOutlineChars, blocks[0].Truncated, runeLen(blocks[0].Text))
+	}
+}
+
+func TestSnapshotSmallDocumentKeepsFullTextAfterSummary(t *testing.T) {
+	content := strings.Repeat("正", 3000)
+	docs := &fakeDocuments{documents: map[uint64]*entity.KnowledgeDocument{
+		7: readyDocument("讲义", content),
+	}}
+	outlines := map[uint64]*Outline{
+		7: {Version: OutlineVersion, Summary: "讲了测试内容"},
+	}
+	source := newTestSource(t, docs, &fakeChunks{}, &fakeRetriever{})
+
+	blocks := source.Snapshot(context.Background(), []Ref{{DocumentID: 7}}, "", outlines)
+	if len(blocks) != 2 {
+		t.Fatalf("期望 摘要 + 全文 两块，实际 %d", len(blocks))
+	}
+	if !strings.Contains(blocks[0].Text, "文档摘要") {
+		t.Fatalf("第一块应是摘要: %+v", blocks[0])
+	}
+	if blocks[1].Text != content || blocks[1].Truncated {
+		t.Fatalf("第二块应是小材料全文: truncated=%v chars=%d", blocks[1].Truncated, runeLen(blocks[1].Text))
+	}
+}
+
+func TestRenderGeneratedOutlineFallsBackToPreview(t *testing.T) {
+	text := renderGeneratedOutline(&Outline{
+		HasHeadings: false,
+		Summary:     "整篇摘要",
+		Sections: []SectionOutline{
+			{Path: "第 1 段", Chars: 4000, Preview: "首片预览"},
+			{Path: "第 2 段", Chars: 3800, Summary: "第二段摘要"},
+		},
+	})
+	for _, want := range []string{
+		"文档摘要：整篇摘要",
+		"分段：",
+		"第 1 段（约 4000 字）：首片预览",
+		"第 2 段（约 3800 字）：第二段摘要",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("渲染缺少 %q:\n%s", want, text)
+		}
 	}
 }

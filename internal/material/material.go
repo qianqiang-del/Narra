@@ -1,8 +1,9 @@
 // Package material 是课程材料在生成侧的消费运行时。
 //
 // 它把 classrooms.generation_config 里的材料引用（document_id）变成模型能读到的文本：
-//   - Snapshot：规划阶段用。小材料全文，大材料"结构纲要 + 需求相关节选"，
-//     由代码在固定的时机调用，不经过模型选不选工具；
+//   - Snapshot：规划阶段用。预算分两层：摘要层给每份材料保底（文档摘要 + 章节摘要，
+//     无标题材料是伪分段 + 文档摘要），正文层用剩余预算给小材料全文、给大材料
+//     "需求相关节选"；由代码在固定的时机调用，不经过模型选不选工具；
 //   - Retrieve：页面阶段用。只在本课材料的切片里按页内容检索，作为调研证据的补充。
 //
 // 本包只依赖窄接口（由 repository / service 满足），不 import 服务层实现；
@@ -25,6 +26,11 @@ const (
 	SmallDocChars = 6000
 	// PlannerBudgetChars 是规划阶段所有材料文本的总预算。
 	PlannerBudgetChars = 8000
+	// SummaryLayerBudgetChars 是摘要层的总盘子：先从总预算里划出它，
+	// 给每份材料保底一块目录+摘要，保证没有材料会因顺序或大小被挤掉。
+	SummaryLayerBudgetChars = 4000
+	// PerMaterialOutlineChars 是单份材料摘要层的封顶字数，防止一份大材料霸屏。
+	PerMaterialOutlineChars = 800
 	// PageTopK 是每页调研从本课材料里召回的条数。
 	PageTopK = 5
 	// snapshotTopK 是规划阶段"需求相关节选"的召回条数。
@@ -66,7 +72,8 @@ type Hit struct {
 type Source interface {
 	// Snapshot 返回规划用的材料文本。永不报错：单份材料读不到就跳过并记日志。
 	// query 是用户需求，用来为大材料补充"需求相关节选"；为空时只给纲要。
-	Snapshot(ctx context.Context, refs []Ref, query string) []Block
+	// outlines 是调用方预生成的材料目录+摘要（可为空）；缺失的材料退回代码目录。
+	Snapshot(ctx context.Context, refs []Ref, query string, outlines map[uint64]*Outline) []Block
 
 	// Retrieve 只在这些文档的切片里按 query 召回。documentIDs 为空时返回空。
 	Retrieve(ctx context.Context, documentIDs []uint64, query string, topK int) ([]Hit, error)

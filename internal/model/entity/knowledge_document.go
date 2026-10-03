@@ -86,6 +86,11 @@ type KnowledgeDocument struct {
 
 	Metadata json.RawMessage `gorm:"column:metadata;type:jsonb;not null;index:knowledge_documents_metadata_idx,type:gin;comment:扩展信息 JSON：分类、标签、作者，以及解析器身份、耗时与失败原因等处理产物" json:"metadata"` // 扩展信息：分类、标签、作者，以及解析失败原因等处理产物
 
+	// MaterialOutline 是课程材料的目录与章节摘要（结构见 internal/material.Outline），
+	// 由生成侧用本课模型惰性生成、按 content_checksum 缓存；NULL 表示还没生成。
+	// 只有 kind = material 的行会写它；生成失败不影响课堂生成，读取方退回代码目录。
+	MaterialOutline json.RawMessage `gorm:"column:material_outline;type:jsonb;comment:课程材料的目录与章节摘要 JSON，由生成侧按内容校验和缓存；NULL 表示还没生成，仅 kind=material 使用" json:"material_outline,omitempty"`
+
 	// CreatedAt / UpdatedAt 遮蔽 BaseModel 的同名字段，只为给它们挂索引。
 	// 遮蔽在 GORM schema 里是安全的：直接声明的字段 BindNames 更短，会覆盖嵌入字段
 	// （schema.go 的 FieldsByDBName 去重逻辑），autoCreateTime / autoUpdateTime 行为不变。

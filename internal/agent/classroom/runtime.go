@@ -52,7 +52,9 @@ type Deps struct {
 	AudioDir   string
 	Tools      ToolSource
 	// Materials 是课程材料的消费入口；为 nil 时生成侧忽略材料（测试或旧装配）。
-	Materials     material.Source
+	Materials material.Source
+	// Outlines 是材料目录+摘要的构建器；为 nil 时规划退回代码目录（测试或旧装配）。
+	Outlines      material.OutlineBuilder
 	EncryptionKey []byte
 	// PageConcurrency 是同时生成的页面数，TTSPoolSize 是同时发出的语音合成请求数；两者不大于 0 时按缺省值。
 	PageConcurrency int
@@ -199,6 +201,26 @@ func (r *runtime) generateOnce(ctx context.Context, messages []*schema.Message, 
 	})
 
 	message, err := r.chatModel.Generate(runCtx, messages, model.WithTools(tools), model.WithToolChoice(choice))
+	if err != nil {
+		callbacks.OnError(runCtx, err)
+		return nil, err
+	}
+	callbacks.OnEnd(runCtx, &model.CallbackOutput{Message: message})
+	return message, nil
+}
+
+// generateText 调一次普通文本生成（不带工具），并登记观测。
+//
+// 与 generateOnce 的区别只在"不下发工具"：材料摘要这类纯文本任务不需要工具，
+// 带 tool_choice 反而会被部分 Provider 拒绝。回调登记的方式与 generateOnce 一致。
+func (r *runtime) generateText(ctx context.Context, messages []*schema.Message) (*schema.Message, error) {
+	runCtx := callbacks.ReuseHandlers(ctx, &callbacks.RunInfo{
+		Type:      "NarraOpenAI",
+		Component: components.ComponentOfChatModel,
+	})
+	runCtx = callbacks.OnStart(runCtx, &model.CallbackInput{Messages: messages})
+
+	message, err := r.chatModel.Generate(runCtx, messages)
 	if err != nil {
 		callbacks.OnError(runCtx, err)
 		return nil, err

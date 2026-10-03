@@ -381,6 +381,13 @@ func (a *App) initDependencies() error {
 		return fmt.Errorf("创建课程材料消费组件失败: %w", err)
 	}
 
+	// 材料目录+摘要：首次建课时用本课模型惰性生成，写回 knowledge_documents.material_outline，
+	// 后续课堂按内容校验和命中缓存；生成失败退回代码目录（见 internal/material/outline.go）。
+	materialOutlines, err := material.NewOutlineBuilder(knowledgeDocumentRepo, knowledgeDocumentRepo, knowledgeDocumentRepo)
+	if err != nil {
+		return fmt.Errorf("创建课程材料摘要组件失败: %w", err)
+	}
+
 	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey, a.mcpManager)
 	// 重排配置是「多存一条、同时只启用一条」：设置页增删改测，检索侧只读启用中的那条。
 	// 先做启动对齐（没有启用记录时关闭精排），之后的变动由服务层的 reload 热更新。
@@ -414,6 +421,7 @@ func (a *App) initDependencies() error {
 		AudioDir:        audioDir,
 		Tools:           a.mcpManager,
 		Materials:       materialSource,
+		Outlines:        materialOutlines,
 		EncryptionKey:   encryptionKey,
 		PageConcurrency: a.cfg.Classroom.PageConcurrency,
 		TTSPoolSize:     a.cfg.Classroom.TTSPoolSize,
