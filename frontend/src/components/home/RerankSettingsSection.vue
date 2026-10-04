@@ -105,7 +105,7 @@ function statusText(item: RerankModel) {
 
 <template>
   <section class="space-y-5">
-    <div class="flex items-center justify-between gap-3">
+    <div class="flex items-center justify-between gap-3 pr-8">
       <h3 class="text-sm font-semibold">已保存的配置</h3>
       <button v-if="!formOpen" type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700" @click="resetForm()">
         <Plus class="size-3.5" />新增配置

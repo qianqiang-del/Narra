@@ -418,6 +418,16 @@ function openEmbedding() {
       <DialogContent
         class="fixed top-1/2 left-1/2 z-[101] flex h-[min(620px,calc(100dvh-2rem))] w-[calc(100vw-2rem)] max-w-[760px] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-background shadow-2xl focus:outline-none"
       >
+        <button
+          type="button"
+          class="absolute top-4 right-4 rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          :aria-label="t('common.close')"
+          :title="t('common.close')"
+          @click="open = false"
+        >
+          <X class="size-4" />
+        </button>
+
         <aside class="flex w-44 shrink-0 flex-col border-r border-border bg-muted/35 p-3 sm:w-52">
           <DialogTitle class="px-2 py-2 text-base font-semibold tracking-tight">
             {{ t('settings.title') }}
@@ -425,19 +435,19 @@ function openEmbedding() {
           <nav class="mt-3 space-y-1" :aria-label="t('settings.title')">
             <button
               type="button"
-              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'llm' ? 'bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
-              @click="openLlm"
-            >
-              <Bot class="size-4" />
-              {{ t('settings.llm') }}
-            </button>
-            <button
-              type="button"
               :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'theme' ? 'bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
               @click="activeSection = 'theme'"
             >
               <Palette class="size-4" />
               {{ t('settings.theme') }}
+            </button>
+            <button
+              type="button"
+              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'llm' ? 'bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
+              @click="openLlm"
+            >
+              <Bot class="size-4" />
+              {{ t('settings.llm') }}
             </button>
             <button
               type="button"
@@ -467,14 +477,6 @@ function openEmbedding() {
         </aside>
 
         <main class="min-w-0 flex-1 overflow-y-auto p-6">
-          <button
-            type="button"
-            class="absolute top-4 right-4 rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            @click="open = false"
-          >
-            <X class="size-4" />
-          </button>
-
           <section v-if="activeSection === 'theme'" class="space-y-5">
             <div>
               <h2 class="text-lg font-semibold tracking-tight">{{ t('settings.theme') }}</h2>
@@ -603,7 +605,7 @@ function openEmbedding() {
           <RerankSettingsSection v-else-if="activeSection === 'rerank'" />
 
           <section v-else-if="activeSection === 'mcp'" class="space-y-5">
-            <div class="flex items-center justify-between">
+            <div class="flex items-start justify-between gap-3 pr-8">
               <div>
                 <h2 class="text-lg font-semibold tracking-tight">{{ t('settings.mcpTools') }}</h2>
                 <DialogDescription class="mt-1 text-[13px] text-muted-foreground">

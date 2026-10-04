@@ -80,7 +80,14 @@ const isPresenting = ref(false)
 const controlsVisible = ref(true)
 
 const settingsOpen = ref(false)
+const settingsSection = ref<'theme' | 'llm' | 'embedding' | 'mcp'>('theme')
 const proMode = ref(false)
+
+/** 点击设置入口：默认落在主题页。 */
+function openSettings() {
+  settingsSection.value = 'theme'
+  settingsOpen.value = true
+}
 
 const exporting = ref(false)
 const exportPercent = ref(0)
@@ -784,7 +791,7 @@ onBeforeUnmount(() => {
         @back="router.push({ name: 'home' })"
         @toggle-pro="togglePro"
         @export="onExport"
-        @open-settings="settingsOpen = true"
+        @open-settings="openSettings"
       />
 
       <!-- 舞台：高度 = 100% - (Header + Roundtable) -->
@@ -937,6 +944,6 @@ onBeforeUnmount(() => {
       </div>
     </Transition>
 
-    <SettingsDialog v-model:open="settingsOpen" />
+    <SettingsDialog v-model:open="settingsOpen" v-model:section="settingsSection" />
   </div>
 </template>
