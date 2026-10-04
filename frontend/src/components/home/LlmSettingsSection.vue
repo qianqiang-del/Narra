@@ -203,7 +203,7 @@ function statusText(provider: LlmProvider) {
 
 <template>
   <section ref="settingsPanel" class="space-y-5">
-    <div class="flex items-start justify-between gap-3">
+    <div class="flex items-start justify-between gap-3 pr-8">
       <div>
         <h2 class="text-lg font-semibold tracking-tight">大模型</h2>
         <p class="mt-1 text-[13px] text-muted-foreground">配置 OpenAI 兼容服务，测试成功并启用后可用于生成课堂。</p>

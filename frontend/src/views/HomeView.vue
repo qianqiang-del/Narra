@@ -113,6 +113,12 @@ function openModelSettings() {
   settingsOpen.value = true
 }
 
+/** 点击设置入口：默认落在主题页。 */
+function openSettings() {
+  settingsSection.value = 'theme'
+  settingsOpen.value = true
+}
+
 /** textarea 自增高（140~300px） */
 function autoGrow() {
   const el = textareaRef.value
@@ -413,7 +419,7 @@ function openClassroom(id: string) {
     </div>
 
     <!-- §5.1 右上角悬浮胶囊工具栏 -->
-    <TopPillToolbar @open-settings="settingsOpen = true" />
+    <TopPillToolbar @open-settings="openSettings" />
 
     <!-- §5.3 Hero 区 -->
     <div class="relative z-20 mt-[10vh] flex w-full max-w-[800px] flex-col items-center">
