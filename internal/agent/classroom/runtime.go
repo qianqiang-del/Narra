@@ -167,11 +167,12 @@ func (r *runtime) generateToolCall(ctx context.Context, messages []*schema.Messa
 	if !r.allowForcedToolChoice() {
 		choice = schema.ToolChoiceAllowed
 	}
-	message, err := r.generateOnce(ctx, messages, tools, choice)
+	observationName := "tool-call-" + info.Name
+	message, err := r.generateOnce(ctx, observationName, messages, tools, choice)
 	if err != nil && choice == schema.ToolChoiceForced && isToolChoiceRejected(err) {
 		logger.Warn("Provider 不支持强制工具调用，改用自动选择", zap.String("tool", info.Name), zap.Error(err))
 		r.markForcedUnsupported()
-		message, err = r.generateOnce(ctx, messages, tools, schema.ToolChoiceAllowed)
+		message, err = r.generateOnce(ctx, observationName, messages, tools, schema.ToolChoiceAllowed)
 	}
 	if err != nil {
 		return "", err
@@ -189,8 +190,9 @@ func (r *runtime) generateToolCall(ctx context.Context, messages []*schema.Messa
 // 手动调模型不会被登记，得用 ReuseHandlers 把 RunInfo 换成 ChatModel 身份。
 // tools 与 tool_choice 一并写进 CallbackInput —— 页规划这一次调用里一个工具都没下发，
 // 复现"这一页为什么没查资料"时，请求侧只有这两个字段说得清。
-func (r *runtime) generateOnce(ctx context.Context, messages []*schema.Message, tools []*schema.ToolInfo, choice schema.ToolChoice) (*schema.Message, error) {
+func (r *runtime) generateOnce(ctx context.Context, observationName string, messages []*schema.Message, tools []*schema.ToolInfo, choice schema.ToolChoice) (*schema.Message, error) {
 	runCtx := callbacks.ReuseHandlers(ctx, &callbacks.RunInfo{
+		Name:      observationName,
 		Type:      "NarraOpenAI",
 		Component: components.ComponentOfChatModel,
 	})
@@ -213,8 +215,9 @@ func (r *runtime) generateOnce(ctx context.Context, messages []*schema.Message, 
 //
 // 与 generateOnce 的区别只在"不下发工具"：材料摘要这类纯文本任务不需要工具，
 // 带 tool_choice 反而会被部分 Provider 拒绝。回调登记的方式与 generateOnce 一致。
-func (r *runtime) generateText(ctx context.Context, messages []*schema.Message) (*schema.Message, error) {
+func (r *runtime) generateText(ctx context.Context, observationName string, messages []*schema.Message) (*schema.Message, error) {
 	runCtx := callbacks.ReuseHandlers(ctx, &callbacks.RunInfo{
+		Name:      observationName,
 		Type:      "NarraOpenAI",
 		Component: components.ComponentOfChatModel,
 	})
@@ -240,8 +243,9 @@ func (r *runtime) generateText(ctx context.Context, messages []*schema.Message) 
 // 注入回调，手动调模型不会被登记。这里用 ReuseHandlers 把 RunInfo 换成 ChatModel 身份、
 // 同时保留 ctx 里已注册的 langfuse handler，这次调用才会作为一条 GENERATION 进观测。
 // 注意不能用 EnsureRunInfo——它发现 runInfo 已存在就原样返回，换不掉身份。
-func (r *runtime) streamCompletion(ctx context.Context, messages []*schema.Message, maxTokens ...int) (string, error) {
+func (r *runtime) streamCompletion(ctx context.Context, observationName string, messages []*schema.Message, maxTokens ...int) (string, error) {
 	runCtx := callbacks.ReuseHandlers(ctx, &callbacks.RunInfo{
+		Name:      observationName,
 		Type:      "NarraOpenAI",
 		Component: components.ComponentOfChatModel,
 	})
