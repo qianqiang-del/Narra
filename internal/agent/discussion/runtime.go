@@ -46,14 +46,19 @@ type RuntimeFactory struct {
 	// 留着引用的话，调用方之后改了那个切片，这里读到的密文就解不开了 —— 而且报的是
 	// "解密失败"这种看起来像数据坏了的错。
 	encryptionKey []byte
+	toolSource    DiscussionToolSource
 }
 
 // NewRuntimeFactory 创建模型运行时工厂。
-func NewRuntimeFactory(providers ProviderFinder, encryptionKey []byte) *RuntimeFactory {
+func NewRuntimeFactory(providers ProviderFinder, encryptionKey []byte, sources ...DiscussionToolSource) *RuntimeFactory {
 	key := make([]byte, len(encryptionKey))
 	copy(key, encryptionKey)
 
-	return &RuntimeFactory{providers: providers, encryptionKey: key}
+	factory := &RuntimeFactory{providers: providers, encryptionKey: key}
+	if len(sources) > 0 {
+		factory.toolSource = sources[0]
+	}
+	return factory
 }
 
 // ProviderLookup 是按 ID 取一条大模型配置的能力，签名与仓储那一层一致。
@@ -146,6 +151,7 @@ func (f *RuntimeFactory) Build(ctx context.Context, providerID uint64, modelID s
 	}
 
 	pricing := pricingForModel(provider.Pricing, modelID)
+	models.EnableTeachingTools(f.toolSource)
 	return Models{
 		Model:      models,
 		Summarizer: models,
@@ -157,23 +163,26 @@ func (f *RuntimeFactory) Build(ctx context.Context, providerID uint64, modelID s
 
 func pricingForModel(raw json.RawMessage, modelID string) *ModelPricing {
 	var entries map[string]struct {
-		InputPerMillion  *float64 `json:"input_per_million"`
-		OutputPerMillion *float64 `json:"output_per_million"`
-		Currency         string   `json:"currency"`
-		Source           string   `json:"source"`
+		InputPerMillion  *float64   `json:"input_per_million"`
+		OutputPerMillion *float64   `json:"output_per_million"`
+		Currency         string     `json:"currency"`
+		Source           string     `json:"source"`
+		PricingMode      string     `json:"pricing_mode"`
+		BillingNote      string     `json:"billing_note"`
+		ConfirmedAt      *time.Time `json:"confirmed_at"`
 	}
 	if len(raw) == 0 || json.Unmarshal(raw, &entries) != nil {
 		return nil
 	}
 	entry, ok := entries[modelID]
-	if !ok || entry.Source == "catalog" || (entry.InputPerMillion == nil && entry.OutputPerMillion == nil) {
+	if !ok || entry.Source != "user" || (entry.InputPerMillion == nil && entry.OutputPerMillion == nil) {
 		return nil
 	}
 	currency := entry.Currency
 	if currency == "" {
 		currency = "USD"
 	}
-	return &ModelPricing{InputPerMillion: entry.InputPerMillion, OutputPerMillion: entry.OutputPerMillion, Currency: currency}
+	return &ModelPricing{InputPerMillion: entry.InputPerMillion, OutputPerMillion: entry.OutputPerMillion, Currency: currency, Source: entry.Source, PricingMode: entry.PricingMode, BillingNote: entry.BillingNote, ConfirmedAt: entry.ConfirmedAt}
 }
 
 // decryptAPIKey 解出明文密钥。

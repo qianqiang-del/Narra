@@ -65,10 +65,11 @@ type messageDeltaPayload struct {
 
 // messageCompletedPayload：一条消息完成，带完整正文供对齐。
 type messageCompletedPayload struct {
-	TurnID     uint64 `json:"turn_id"`
-	MessageID  uint64 `json:"message_id"`
-	Content    string `json:"content"`
-	TokenCount int32  `json:"token_count"`
+	TurnID     uint64              `json:"turn_id"`
+	MessageID  uint64              `json:"message_id"`
+	Content    string              `json:"content"`
+	TokenCount int32               `json:"token_count"`
+	Whiteboard *WhiteboardArtifact `json:"whiteboard,omitempty"`
 }
 
 // agentCompletedPayload：某个回合结束。

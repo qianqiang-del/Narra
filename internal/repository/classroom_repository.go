@@ -11,6 +11,19 @@ import (
 
 type classroomRepository struct{ db *gorm.DB }
 
+// UpdateDiscussionConfig 仅更新讨论配置，避免覆盖仍在生成中的课堂数据。
+func (r *classroomRepository) UpdateDiscussionConfig(ctx context.Context, id uint64, config json.RawMessage) error {
+	result := conn(ctx, r.db).Model(&entity.Classroom{}).Where("id = ?", id).
+		Update("discussion_config", string(config))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func NewClassroomRepository(db *gorm.DB) ClassroomRepository {
 	return &classroomRepository{db: db}
 }

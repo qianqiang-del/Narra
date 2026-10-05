@@ -531,6 +531,7 @@ func (o *Orchestrator) speak(
 			ClassroomTitle:       request.ClassroomTitle,
 			ClassroomRequirement: request.ClassroomRequirement,
 			LessonMaterial:       request.LessonMaterial,
+			WebSearch:            request.WebSearch,
 		})
 	}
 	if err != nil {
@@ -548,6 +549,7 @@ func (o *Orchestrator) speak(
 		Content:          response.Content,
 		Status:           entity.MessageStatusCompleted,
 		TokenCount:       response.OutputTokens,
+		Metadata:         whiteboardMetadata(response.Whiteboard),
 	}
 	// 下一步动作必须落库：它是"这场讨论为什么停、下一轮该谁上"的唯一依据，
 	// 也是事后查"讨论怎么跑偏了"的第一手线索。
@@ -576,6 +578,7 @@ func (o *Orchestrator) speak(
 				MessageID:  message.ID,
 				Content:    response.Content,
 				TokenCount: response.OutputTokens,
+				Whiteboard: response.Whiteboard,
 			}); err != nil {
 			return err
 		}
@@ -585,6 +588,7 @@ func (o *Orchestrator) speak(
 		if err := o.deps.Turns.Finish(ctx, turn.ID, repository.TurnResult{
 			Status:       entity.AgentTurnStatusCompleted,
 			NextAction:   &nextAction,
+			InputTokens:  response.InputTokens,
 			OutputTokens: response.OutputTokens,
 			FinishedAt:   finishedAt,
 		}); err != nil {
@@ -612,13 +616,14 @@ func (o *Orchestrator) speak(
 	o.recordAgentSpan(log, run, turn, agentSpanID, rootSpanID, agentSpanStartedAt, participant, entity.TraceSpanStatusOK, nextAction, nil)
 
 	return TurnOutcome{
-		TurnID:       turn.ID,
-		TurnNo:       turn.TurnNo,
-		AgentName:    participant.Name,
-		MessageID:    message.ID,
-		Content:      response.Content,
-		OutputTokens: response.OutputTokens,
-		NextAction:   nextAction,
+		TurnID:         turn.ID,
+		TurnNo:         turn.TurnNo,
+		AgentName:      participant.Name,
+		MessageID:      message.ID,
+		Content:        response.Content,
+		OutputTokens:   response.OutputTokens,
+		NextAction:     nextAction,
+		NextSpeakerKey: response.NextSpeakerKey,
 	}, nil
 }
 
@@ -638,7 +643,7 @@ func (o *Orchestrator) speakStreaming(
 	history []HistoryMessage,
 	model StreamingModel,
 ) (TurnOutcome, error) {
-	modelRequest := GenerationRequest{Participant: participant, Participants: request.Participants, Topic: topic, TurnNo: turnNo, History: history, Guidance: request.guidance, ClassroomTitle: request.ClassroomTitle, ClassroomRequirement: request.ClassroomRequirement, LessonMaterial: request.LessonMaterial}
+	modelRequest := GenerationRequest{Participant: participant, Participants: request.Participants, Topic: topic, TurnNo: turnNo, History: history, Guidance: request.guidance, ClassroomTitle: request.ClassroomTitle, ClassroomRequirement: request.ClassroomRequirement, LessonMaterial: request.LessonMaterial, WebSearch: request.WebSearch}
 	message := &entity.ConversationMessage{
 		ConversationID:   request.ConversationID,
 		SenderType:       entity.MessageSenderAgent,
@@ -684,7 +689,7 @@ func (o *Orchestrator) speakStreaming(
 			}
 		}
 		if chunk.Done {
-			response = GenerationResponse{Content: content.String(), InputTokens: chunk.InputTokens, OutputTokens: chunk.OutputTokens, TokenSource: chunk.TokenSource, NextAction: chunk.NextAction, NextSpeakerKey: chunk.NextSpeakerKey}
+			response = GenerationResponse{Content: content.String(), InputTokens: chunk.InputTokens, OutputTokens: chunk.OutputTokens, TokenSource: chunk.TokenSource, NextAction: chunk.NextAction, NextSpeakerKey: chunk.NextSpeakerKey, Whiteboard: chunk.Whiteboard, ToolCalls: chunk.ToolCalls}
 			completed = true
 		}
 	}
@@ -701,11 +706,11 @@ func (o *Orchestrator) speakStreaming(
 	finishedAt := time.Now().UTC()
 	nextAction := normalizeNextAction(response.NextAction)
 	if err := o.deps.Tx.Run(ctx, func(ctx context.Context) error {
-		if err := o.deps.Messages.Finish(ctx, message.ID, entity.MessageStatusCompleted, response.OutputTokens); err != nil {
+		if err := o.deps.Messages.Finish(ctx, message.ID, entity.MessageStatusCompleted, response.OutputTokens, whiteboardMetadata(response.Whiteboard)); err != nil {
 			return err
 		}
 		if err := o.appendEvent(ctx, request.ConversationID, &run.ID, &turn.ID,
-			entity.ConversationEventMessageCompleted, messageCompletedPayload{TurnID: turn.ID, MessageID: message.ID, Content: response.Content, TokenCount: response.OutputTokens}); err != nil {
+			entity.ConversationEventMessageCompleted, messageCompletedPayload{TurnID: turn.ID, MessageID: message.ID, Content: response.Content, TokenCount: response.OutputTokens, Whiteboard: response.Whiteboard}); err != nil {
 			return err
 		}
 		if err := o.deps.Turns.AttachOutputMessage(ctx, turn.ID, message.ID); err != nil {

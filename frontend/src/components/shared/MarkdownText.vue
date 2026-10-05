@@ -14,6 +14,21 @@ function renderInline(nodes: MarkdownInlineNode[]): VNode[] {
 }
 
 function renderBlock(node: MarkdownBlockNode): VNode {
+  if (node.type === 'table') {
+    const cellProps = (index: number) => ({ class: 'border-b border-border px-3 py-2 align-top break-words', style: { textAlign: node.alignments[index] } })
+    const headerCells = node.headers.map((cell, index) => h('th', {
+      ...cellProps(index),
+      scope: 'col',
+      class: `${cellProps(index).class} font-semibold`,
+    }, renderInline(cell)))
+    const rows = node.rows.map((row) => h('tr', {}, row.map((cell, index) => h('td', cellProps(index), renderInline(cell)))))
+    return h('div', { class: 'my-2 max-w-full overflow-x-auto rounded-md border border-border', tabindex: 0, role: 'region', 'aria-label': '表格' }, [
+      h('table', { class: 'w-full border-collapse text-sm' }, [
+        h('thead', { class: 'bg-muted/70' }, [h('tr', {}, headerCells)]),
+        h('tbody', {}, rows),
+      ]),
+    ])
+  }
   if (node.type === 'paragraph') {
     return h('p', { class: 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]' }, renderInline(node.children))
   }

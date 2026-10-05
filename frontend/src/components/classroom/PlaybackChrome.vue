@@ -21,7 +21,6 @@ import ClassroomHeader from '@/components/classroom/ClassroomHeader.vue'
 import Roundtable from '@/components/classroom/Roundtable.vue'
 import SceneSidebar from '@/components/classroom/SceneSidebar.vue'
 import SettingsDialog from '@/components/home/SettingsDialog.vue'
-import UiTooltip from '@/components/ui/UiTooltip.vue'
 import { useResizable } from '@/composables/useResizable'
 import type { Classroom, Scene } from '@/types/scene'
 import type { Bubble, ChatNote, ChatSession, Participant } from '@/types/classroom'
@@ -35,7 +34,7 @@ import {
   watchConversationEvents,
   type Conversation,
 } from '@/api/conversation'
-import { applyDiscussionEvent, createDiscussionDisplay } from '@/lib/classroomDiscussion'
+import { applyDiscussionEvent, createDiscussionDisplay, type WhiteboardEntry } from '@/lib/classroomDiscussion'
 import { applyTraceEvent, createDiscussionTrace, type DiscussionTrace } from '@/lib/discussionTrace'
 import { nextVisibleText } from '@/lib/typewriter'
 import { cn } from '@/lib/utils'
@@ -142,8 +141,11 @@ const discussionRunning = ref(false)
 const loadingConversations = ref(false)
 const loadingMessages = ref(false)
 const sending = ref(false)
+const modelBusy = ref(true)
 const closingDiscussion = ref(false)
 const streamingMessageIds = ref(new Set<string>())
+const discussionWhiteboards = ref<WhiteboardEntry[]>([])
+const selectedWhiteboardId = ref<string | null>(null)
 const discussionTrace = ref<DiscussionTrace>(createDiscussionTrace())
 const discussionBusy = computed(() => discussionRunning.value || sending.value || closingDiscussion.value || loadingConversations.value || loadingMessages.value)
 const discussionActive = computed(() => activeConversationId.value !== null && (discussionRunning.value || sending.value || display.bubbles.length > 0))
@@ -161,6 +163,12 @@ function conversationSession(item: Conversation): ChatSession {
 
 function syncDiscussion() {
   streamingMessageIds.value = new Set(display.streamingIds)
+  discussionWhiteboards.value = [...display.whiteboards]
+  if (selectedWhiteboardId.value && display.whiteboards.some((item) => item.id === selectedWhiteboardId.value)) {
+    // Keep the user's selected board while new SSE events arrive.
+  } else {
+    selectedWhiteboardId.value = display.whiteboards.at(-1)?.id ?? null
+  }
   syncDisplayedBubbles()
   thinking.value = display.thinking
   speaking.value = display.speaking
@@ -606,7 +614,7 @@ function newSession() {
 }
 
 async function sendMessage(text: string) {
-  if (discussionBusy.value || !text.trim()) return
+  if (discussionBusy.value || modelBusy.value || !text.trim()) return
   const classroomId = Number(props.classroom.id)
   if (!Number.isSafeInteger(classroomId) || classroomId <= 0) {
     toast('课堂 ID 无效')
@@ -815,6 +823,8 @@ onBeforeUnmount(() => {
           :stats="stats"
           :active-content-key="activeContentKey"
           :discussion-active="discussionActive"
+          :whiteboards="discussionWhiteboards"
+          :selected-whiteboard-id="selectedWhiteboardId"
           @toggle-sidebar="toggleSidebar"
           @prev="prev"
           @next="next"
@@ -823,6 +833,8 @@ onBeforeUnmount(() => {
           @update:speed="speed = $event"
           @toggle-auto-play="toggleAutoPlay"
           @toggle-whiteboard="whiteboardOpen = !whiteboardOpen"
+          @select-whiteboard="selectedWhiteboardId = $event"
+          @close-whiteboard="whiteboardOpen = false"
           @toggle-fullscreen="toggleFullscreen"
           @toggle-chat="toggleChat"
           @stop-discussion="stopDiscussion"
@@ -834,7 +846,7 @@ onBeforeUnmount(() => {
         :bubbles="bubbles"
         :speaking="speaking"
         :thinking="thinking"
-        :busy="discussionBusy"
+        :busy="discussionBusy || modelBusy"
         :your-turn="yourTurn"
         :recording="recording"
         :participants="participants"
@@ -847,6 +859,7 @@ onBeforeUnmount(() => {
 
     <!-- 右：聊天面板 -->
     <ChatArea
+      :classroom-id="Number(classroom.id)"
       :collapsed="chatCollapsed"
       :width="chatWidth"
       :tab="chatTab"
@@ -872,6 +885,7 @@ onBeforeUnmount(() => {
       :closing="closingDiscussion"
       :trace="discussionTrace"
       @update:tab="chatTab = $event"
+      @model-busy="modelBusy = $event"
       @toggle-collapse="toggleChat"
       @resize-start="startChatResize"
       @open-session="openSession"
@@ -885,17 +899,6 @@ onBeforeUnmount(() => {
       @input-activate="pauseLectureForDiscussion"
       @end-session="stopDiscussion"
     />
-
-    <!-- 白板占位入口（完整白板后续补） -->
-    <UiTooltip v-if="whiteboardOpen" :content="t('whiteboard.minimize')" side="top">
-      <button
-        type="button"
-        class="absolute bottom-[200px] left-1/2 z-[120] -translate-x-1/2 rounded-full bg-white/90 px-3 py-1.5 text-[11px] font-medium text-teal-600 shadow-lg ring-1 ring-teal-200 backdrop-blur dark:bg-gray-800/90 dark:ring-teal-800"
-        @click="whiteboardOpen = false"
-      >
-        {{ t('whiteboard.title') }}
-      </button>
-    </UiTooltip>
 
     <!-- 切换场景确认弹窗 -->
     <Transition

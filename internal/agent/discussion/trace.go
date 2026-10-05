@@ -61,6 +61,25 @@ func (o *Orchestrator) recordRootSpan(log *zap.Logger, run *entity.Orchestration
 	o.recordSpan(log, span)
 }
 
+func (o *Orchestrator) recordToolSpans(log *zap.Logger, run *entity.OrchestrationRun, turn *entity.AgentTurn, parentID string, calls []ToolCallReport) {
+	for _, call := range calls {
+		status := entity.TraceSpanStatusOK
+		if call.Failed {
+			status = entity.TraceSpanStatusError
+		}
+		ended := call.EndedAt
+		span := &entity.AgentTraceSpan{
+			TraceID: run.TraceID, SpanID: o.traceID(log), RunID: run.ID, TurnID: &turn.ID,
+			Kind: entity.TraceSpanKindTool, Name: truncate(call.Name, 100), Status: status,
+			StartedAt: call.StartedAt, EndedAt: &ended, Attributes: traceAttributes(map[string]any{"tool_name": call.Name}),
+		}
+		if parentID != "" {
+			span.ParentSpanID = &parentID
+		}
+		o.recordSpan(log, span)
+	}
+}
+
 func (o *Orchestrator) recordAgentSpan(log *zap.Logger, run *entity.OrchestrationRun, turn *entity.AgentTurn, spanID, rootSpanID string, startedAt time.Time, participant Participant, status, nextAction string, cause error) {
 	endedAt := time.Now().UTC()
 	span := &entity.AgentTraceSpan{
@@ -80,6 +99,7 @@ func (o *Orchestrator) recordAgentSpan(log *zap.Logger, run *entity.Orchestratio
 }
 
 func (o *Orchestrator) recordModelSpan(log *zap.Logger, run *entity.OrchestrationRun, turn *entity.AgentTurn, spanID, agentSpanID string, startedAt time.Time, request GenerationRequest, attempt int, response GenerationResponse, cause error) {
+	defer o.recordToolSpans(log, run, turn, spanID, response.ToolCalls)
 	endedAt := time.Now().UTC()
 	status := entity.TraceSpanStatusOK
 	if cause != nil {

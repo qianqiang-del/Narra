@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { nextTick, reactive, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { Bot, Eye, EyeOff, Plus, Search, Trash2, Wifi, X } from 'lucide-vue-next'
+import { Bot, Eye, EyeOff, Plus, Trash2, Wifi, X } from 'lucide-vue-next'
+import PricingSearchButton from './PricingSearchButton.vue'
 import { useLlmStore } from '@/stores/llm'
 import { suggestLlmModelPricing } from '@/api/llm'
 import { ApiError } from '@/api/client'
 import type { LlmProvider } from '@/api/llm'
 import type { ModelPricing } from '@/api/llm'
+import type { LlmPriceCandidate } from '@/api/llm'
 import { copyModelPricing, shouldAutoLookupPricing } from '@/lib/modelPricing'
 import { cn } from '@/lib/utils'
 
@@ -25,6 +27,8 @@ const showApiKey = ref(false)
 const settingsPanel = ref<HTMLElement | null>(null)
 const pricingLoading = ref<Record<string, boolean>>({})
 const pricingErrors = ref<Record<string, string>>({})
+const pricingCandidates = ref<Record<string, LlmPriceCandidate[]>>({})
+const pricingNotices = ref<Record<string, string>>({})
 const searchUnavailable = ref(false)
 const attemptedPrices = new Set<string>()
 let formVersion = 0
@@ -46,6 +50,8 @@ function resetForm(provider?: LlmProvider) {
   attemptedPrices.clear()
   pricingLoading.value = {}
   pricingErrors.value = {}
+  pricingCandidates.value = {}
+  pricingNotices.value = {}
   searchUnavailable.value = false
   editingId.value = provider?.id ?? null
   Object.assign(form, {
@@ -97,11 +103,16 @@ async function detectPrice(index: number, force = false) {
     if (version !== formVersion || !formOpen.value ||
       (form.pricing[model] !== previousPrice && form.pricing[model]?.source === 'user')) return
     searchUnavailable.value = false
-    if (suggestion.found && suggestion.pricing) form.pricing[model] = suggestion.pricing
-    else pricingErrors.value[model] = '未找到可核对的单价，请从服务商计费页面手动填写。'
+    if (suggestion.found && suggestion.candidates.length > 0) {
+      pricingCandidates.value[model] = suggestion.candidates
+      delete pricingNotices.value[model]
+    } else {
+      pricingCandidates.value[model] = []
+      pricingNotices.value[model] = suggestion.reason || '未找到可核对的价格候选，请从服务商计费页面手动填写。'
+    }
   } catch (e) {
     if (version === formVersion) {
-      if (e instanceof ApiError && e.code === 503 && e.message.includes('web_search')) {
+      if (e instanceof ApiError && e.code === 503 && e.message.includes('联网搜索 MCP')) {
         searchUnavailable.value = true
       } else {
         pricingErrors.value[model] = e instanceof Error ? e.message : String(e)
@@ -112,16 +123,37 @@ async function detectPrice(index: number, force = false) {
   }
 }
 
+function adoptCandidate(model: string, candidate: LlmPriceCandidate) {
+  if (!candidateCanBeAdopted(candidate)) return
+  const checkedAt = new Date().toISOString()
+  form.pricing[model] = {
+    inputPerMillion: candidate.inputPerMillion, outputPerMillion: candidate.outputPerMillion,
+    currency: candidate.currency.toUpperCase(), source: 'user', pricingMode: 'token_price',
+    billingNote: candidate.billingNote, confirmedAt: checkedAt, sourceUrl: candidate.sourceUrl, checkedAt,
+  }
+  delete pricingErrors.value[model]
+  pricingNotices.value[model] = '已采用该候选；保存后才会用于费用计算。'
+}
+
+function candidateCanBeAdopted(candidate: LlmPriceCandidate): boolean {
+  return candidate.pricingMode === 'token_price' &&
+    candidate.inputPerMillion !== null && Number.isFinite(candidate.inputPerMillion) && candidate.inputPerMillion >= 0 &&
+    candidate.outputPerMillion !== null && Number.isFinite(candidate.outputPerMillion) && candidate.outputPerMillion >= 0 &&
+    /^[A-Za-z]{3}$/.test(candidate.currency)
+}
+
 function updatePrice(model: string, field: 'inputPerMillion' | 'outputPerMillion', value: string) {
   const current = form.pricing[model] ?? { inputPerMillion: null, outputPerMillion: null, currency: 'USD', source: 'user' }
-  form.pricing[model] = { ...current, [field]: value === '' ? null : Number(value), source: 'user', sourceUrl: undefined, checkedAt: null }
+  form.pricing[model] = { ...current, [field]: value === '' ? null : Number(value), source: 'user', pricingMode: 'token_price', billingNote: undefined, confirmedAt: new Date().toISOString(), sourceUrl: undefined, checkedAt: null }
   delete pricingErrors.value[model]
+  delete pricingNotices.value[model]
 }
 
 function updateCurrency(model: string, value: string) {
   const current = pricingFor(model)
-  form.pricing[model] = { ...current, currency: value.toUpperCase(), source: 'user', sourceUrl: undefined, checkedAt: null }
+  form.pricing[model] = { ...current, currency: value.toUpperCase(), source: 'user', pricingMode: 'token_price', billingNote: undefined, confirmedAt: new Date().toISOString(), sourceUrl: undefined, checkedAt: null }
   delete pricingErrors.value[model]
+  delete pricingNotices.value[model]
 }
 
 function pricingFor(model: string): ModelPricing {
@@ -263,9 +295,7 @@ function statusText(provider: LlmProvider) {
           <div v-for="(_, index) in form.models" :key="index" class="space-y-1.5">
             <div class="flex gap-2">
               <input v-model="form.models[index]" required maxlength="160" placeholder="gpt-4o-mini" class="min-w-0 flex-1 rounded-lg border border-input bg-background px-3 py-2 font-mono text-sm outline-none focus:border-teal-400" @blur="detectPrice(index)" />
-              <button v-if="editingId" type="button" :disabled="pricingLoading[form.models[index].trim()]" class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border px-2 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50" @click="detectPrice(index, true)">
-                <Search class="size-3.5" />{{ pricingLoading[form.models[index].trim()] ? '查询中' : '联网查价' }}
-              </button>
+              <PricingSearchButton v-if="editingId" :loading="!!pricingLoading[form.models[index].trim()]" @search="detectPrice(index, true)" />
               <button type="button" class="rounded-lg border border-border px-2 text-muted-foreground hover:text-destructive" @click="removeModel(index)"><Trash2 class="size-4" /></button>
             </div>
             <div class="grid grid-cols-3 gap-2 rounded-md bg-muted/40 px-2 py-2 text-[11px] text-muted-foreground">
@@ -279,7 +309,29 @@ function statusText(provider: LlmProvider) {
                 <input :value="pricingFor(form.models[index].trim()).currency" maxlength="3" pattern="[A-Za-z]{3}" placeholder="USD" class="mt-1 w-full rounded border border-input bg-background px-2 py-1 text-xs uppercase text-foreground" @input="updateCurrency(form.models[index].trim(), ($event.target as HTMLInputElement).value)" />
               </label>
             </div>
-            <p class="text-[11px] text-muted-foreground">{{ pricingFor(form.models[index].trim()).source === 'user' ? '手动填写' : pricingFor(form.models[index].trim()).source === 'search' ? '联网搜索建议，保存前请核对' : '价格未填写' }}</p>
+            <div v-if="pricingCandidates[form.models[index].trim()]?.length" class="space-y-2 rounded-md border border-teal-200 bg-teal-50/60 p-2 text-xs">
+              <p class="font-medium text-teal-900">联网查到的价格候选（请确认后采用）</p>
+              <div v-for="(candidate, candidateIndex) in pricingCandidates[form.models[index].trim()]" :key="candidateIndex" class="rounded border border-teal-100 bg-white/80 p-2">
+                <div class="flex items-start justify-between gap-2">
+                  <div class="min-w-0">
+                    <p class="font-medium text-foreground">
+                      {{ candidate.pricingMode === 'token_price' ? `输入 ${candidate.inputPerMillion} / 输出 ${candidate.outputPerMillion} ${candidate.currency} / 百万 Token` : candidate.pricingMode === 'multiplier' ? `倍率${candidate.group ? `（${candidate.group}）` : ''}` : '价格模式未确认' }}
+                    </p>
+                    <p v-if="candidate.billingNote" class="mt-1 text-muted-foreground">{{ candidate.billingNote }}</p>
+                    <p v-if="candidate.pricingMode === 'multiplier'" class="mt-1 text-muted-foreground">
+                      <span v-if="candidate.modelRatio != null">模型倍率 {{ candidate.modelRatio }} </span>
+                      <span v-if="candidate.completionRatio != null">输出倍率 {{ candidate.completionRatio }} </span>
+                      <span v-if="candidate.groupRatio != null">分组倍率 {{ candidate.groupRatio }}</span>
+                    </p>
+                    <p v-if="candidate.pricingMode === 'multiplier'" class="mt-1 text-amber-700">倍率缺少基础币价，不能直接计算真实费用。</p>
+                    <a v-if="candidate.sourceUrl" :href="candidate.sourceUrl" target="_blank" rel="noopener noreferrer" class="mt-1 block truncate text-teal-700 underline">来源：{{ candidate.sourceUrl }}</a>
+                  </div>
+                  <button v-if="candidateCanBeAdopted(candidate)" type="button" class="shrink-0 rounded border border-teal-300 px-2 py-1 text-[11px] text-teal-800 hover:bg-teal-100" @click="adoptCandidate(form.models[index].trim(), candidate)">采用此候选</button>
+                </div>
+              </div>
+            </div>
+            <p v-if="pricingNotices[form.models[index].trim()]" class="text-[11px] text-muted-foreground">{{ pricingNotices[form.models[index].trim()] }}</p>
+            <p class="text-[11px] text-muted-foreground">{{ pricingFor(form.models[index].trim()).source === 'user' ? (pricingFor(form.models[index].trim()).sourceUrl ? '已确认联网候选' : '手动填写') : pricingFor(form.models[index].trim()).source === 'search' ? '旧搜索建议，需重新确认后用于费用计算' : '价格未填写' }}</p>
             <p v-if="pricingErrors[form.models[index].trim()]" class="text-xs text-destructive">{{ pricingErrors[form.models[index].trim()] }}</p>
             <a v-if="sourceURLFor(form.models[index].trim())" :href="sourceURLFor(form.models[index].trim())" target="_blank" rel="noopener noreferrer" class="block truncate text-xs text-teal-700 underline hover:text-teal-800">价格来源：{{ sourceURLFor(form.models[index].trim()) }}</a>
             <p v-if="checkedAtFor(form.models[index].trim())" class="text-[11px] text-muted-foreground">查询时间：{{ checkedAtFor(form.models[index].trim()) }}</p>

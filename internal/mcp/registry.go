@@ -8,6 +8,7 @@ import (
 )
 
 type ToolDescriptor struct {
+	ReadOnly    bool
 	ID          string
 	ServerID    string
 	RemoteName  string

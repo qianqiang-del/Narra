@@ -23,6 +23,41 @@ func NewController(svc service.DiscussionService) *Controller {
 	return &Controller{svc: svc}
 }
 
+// Settings reads the effective model selection for one classroom.
+func (c *Controller) Settings(ctx *gin.Context) {
+	id, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.BadRequest(ctx, "课程 ID 无效")
+		return
+	}
+	result, err := c.svc.GetSettings(ctx.Request.Context(), id)
+	if err != nil {
+		response.BizError(ctx, err)
+		return
+	}
+	response.Success(ctx, result)
+}
+
+// UpdateSettings applies to subsequent discussions only, not running ones.
+func (c *Controller) UpdateSettings(ctx *gin.Context) {
+	id, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.BadRequest(ctx, "课程 ID 无效")
+		return
+	}
+	var input requestdto.DiscussionSettings
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		response.BadRequest(ctx, "请求体格式错误")
+		return
+	}
+	result, err := c.svc.UpdateSettings(ctx.Request.Context(), id, input)
+	if err != nil {
+		response.BizError(ctx, err)
+		return
+	}
+	response.Success(ctx, result)
+}
+
 // Start 在一条对话里发一句话，触发一趟多 Agent 讨论。
 //
 //	POST /api/v1/conversations/:id/discussions

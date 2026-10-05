@@ -31,6 +31,7 @@ import UiTooltip from '@/components/ui/UiTooltip.vue'
 import { pollDocumentUntilSettled } from '@/lib/ingest-wait'
 import { MATERIAL_PURPOSE, type SelectedMaterial } from '@/lib/materials'
 import { cn } from '@/lib/utils'
+import { isSelectedModel } from '@/lib/modelSelection'
 import { useLlmStore } from '@/stores/llm'
 import { useProfileStore } from '@/stores/profile'
 import { useLibraryStore } from '@/stores/library'
@@ -81,27 +82,16 @@ const teacherVoice = ref('')
 const agentBarRef = ref<InstanceType<typeof AgentBar> | null>(null)
 
 const hasProvider = computed(() => availableModels.value.length > 0)
-const canSubmit = computed(() => requirement.value.trim().length > 0 && hasProvider.value && providerId.value !== null && modelId.value !== '' && !generating.value)
-
-function selectFirstAvailableModel() {
-  const currentStillExists = availableModels.value.some(
-    (item) => item.providerId === providerId.value && item.modelId === modelId.value,
-  )
-  if (currentStillExists) return
-  const first = availableModels.value[0]
-  providerId.value = first?.providerId ?? null
-  modelId.value = first?.modelId ?? ''
-}
+const selectedModelAvailable = computed(() => availableModels.value.some((row) => isSelectedModel(row, { providerId: providerId.value, modelId: modelId.value })))
+const canSubmit = computed(() => requirement.value.trim().length > 0 && selectedModelAvailable.value && !generating.value)
 
 onMounted(async () => {
   const results = await Promise.allSettled([
     llmStore.loadAvailableModels(), library.loadClassrooms(), library.loadFolders(),
   ])
   if (results[2]?.status === 'rejected') toast.error('加载文件夹失败')
-  selectFirstAvailableModel()
 })
 
-watch(availableModels, selectFirstAvailableModel)
 watch(settingsOpen, async (value, oldValue) => {
   if (!value && oldValue) {
     try { await llmStore.loadAvailableModels() } catch { /* 保留当前空状态 */ }
@@ -350,6 +340,7 @@ async function submit() {
   }
   if (!canSubmit.value) return
   const provider = providerId.value
+  const model = modelId.value
   if (provider === null) return
   generating.value = true
   try {
@@ -358,7 +349,7 @@ async function submit() {
       requirement: requirement.value.trim(),
       mode: interactiveMode.value ? 'interactive' : 'vocational',
       llm_provider_id: provider,
-      llm_model_id: modelId.value,
+      llm_model_id: model,
       web_search: webSearch.value,
       bio: profileStore.profile.bio.trim(),
       materials: usableMaterials.map((material) => ({
@@ -475,6 +466,7 @@ function openClassroom(id: string) {
             <GenerationToolbar
               v-model:provider-id="providerId"
               v-model:model-id="modelId"
+              :disabled="generating"
               v-model:web-search="webSearch"
               v-model:materials="materials"
               :available-models="availableModels"

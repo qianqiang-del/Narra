@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"narra/internal/model/entity"
@@ -30,6 +31,8 @@ type StreamingModel interface {
 // Delta 只包含可展示的正文；Done=true 的最后一块携带动作和 token 用量。
 // Err 表示上游中断或协议解析失败，此时调用方不得把本轮标记为完成。
 type GenerationChunk struct {
+	Whiteboard     *WhiteboardArtifact
+	ToolCalls      []ToolCallReport
 	Delta          string
 	NextAction     string
 	NextSpeakerKey string
@@ -58,6 +61,7 @@ type Summarizer interface {
 // 只带"角色现在需要知道的"：他是谁、大家在聊什么、之前谁说过什么。
 // 不带 trace_id、库句柄这类东西 —— 那些是编排层的事，模型不需要也不该看到。
 type GenerationRequest struct {
+	WebSearch            bool
 	Guidance             string
 	ClassroomTitle       string
 	ClassroomRequirement string
@@ -78,6 +82,8 @@ type HistoryMessage struct {
 
 // GenerationResponse 是一次发言结果。
 type GenerationResponse struct {
+	Whiteboard   *WhiteboardArtifact
+	ToolCalls    []ToolCallReport
 	Content      string
 	InputTokens  int32
 	OutputTokens int32
@@ -141,9 +147,13 @@ type Models struct {
 // ModelPricing 是按百万 token 计价的快照。指针价格允许只知道输入或输出一侧，
 // 也允许完全未知；未知价格不应被猜测成 0。
 type ModelPricing struct {
-	InputPerMillion  *float64 `json:"input_per_million"`
-	OutputPerMillion *float64 `json:"output_per_million"`
-	Currency         string   `json:"currency"`
+	InputPerMillion  *float64   `json:"input_per_million"`
+	OutputPerMillion *float64   `json:"output_per_million"`
+	Currency         string     `json:"currency"`
+	Source           string     `json:"source,omitempty"`
+	PricingMode      string     `json:"pricing_mode,omitempty"`
+	BillingNote      string     `json:"billing_note,omitempty"`
+	ConfirmedAt      *time.Time `json:"confirmed_at,omitempty"`
 }
 
 // Generate 返回一段格式固定、内容可辨识的假回复。

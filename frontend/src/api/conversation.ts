@@ -25,7 +25,16 @@ export interface ConversationMessage {
   replyToMessageId: number | null
   tokenCount: number
   metadata: Record<string, unknown> | null
+  /** 公共教学白板；从消息 metadata.whiteboard 归一化而来。 */
+  whiteboard: WhiteboardArtifact | null
   createdAt: string
+}
+
+/** 讨论 Agent 可展示给用户的教学白板内容。 */
+export interface WhiteboardArtifact {
+  title: string
+  kind: 'steps' | 'table' | 'concepts' | string
+  content: string
 }
 
 interface ConversationDTO {
@@ -68,6 +77,10 @@ function toConversation(item: ConversationDTO): Conversation {
 }
 
 function toConversationMessage(item: ConversationMessageDTO): ConversationMessage {
+  const candidate = item.metadata?.whiteboard
+  const whiteboard = candidate && typeof candidate === 'object'
+    ? candidate as Record<string, unknown>
+    : null
   return {
     id: item.id,
     conversationId: item.conversation_id,
@@ -80,6 +93,9 @@ function toConversationMessage(item: ConversationMessageDTO): ConversationMessag
     replyToMessageId: item.reply_to_message_id ?? null,
     tokenCount: item.token_count,
     metadata: item.metadata ?? null,
+    whiteboard: whiteboard && typeof whiteboard.title === 'string' && typeof whiteboard.kind === 'string' && typeof whiteboard.content === 'string'
+      ? { title: whiteboard.title, kind: whiteboard.kind, content: whiteboard.content }
+      : null,
     createdAt: item.created_at,
   }
 }
@@ -203,6 +219,7 @@ export interface MessageCompletedPayload {
   message_id: number
   content: string
   token_count: number
+  whiteboard?: WhiteboardArtifact
 }
 
 /** agent.completed：某个回合结束 */

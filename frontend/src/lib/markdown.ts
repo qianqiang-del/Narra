@@ -9,6 +9,31 @@ export type MarkdownBlockNode =
   | { type: 'heading'; level: number; children: MarkdownInlineNode[] }
   | { type: 'list'; ordered: boolean; items: MarkdownInlineNode[][] }
   | { type: 'codeBlock'; language: string; value: string }
+  | { type: 'table'; headers: MarkdownInlineNode[][]; alignments: ('left' | 'center' | 'right')[]; rows: MarkdownInlineNode[][][] }
+
+function tableCells(line: string): string[] {
+  const value = line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '')
+  const cells: string[] = []
+  let cell = ''
+  let codeFence = 0
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === '\\' && value[i + 1] === '|') {
+      cell += '|'
+      i++
+    } else if (value[i] === '`') {
+      const run = /^`+/.exec(value.slice(i))![0].length
+      if (!codeFence) codeFence = run
+      else if (codeFence === run) codeFence = 0
+      cell += '`'.repeat(run)
+      i += run - 1
+    } else if (value[i] === '|' && !codeFence) {
+      cells.push(cell.trim())
+      cell = ''
+    } else cell += value[i]
+  }
+  cells.push(cell.trim())
+  return cells
+}
 
 function normalizeMarkdown(source: string): string {
   return source
@@ -72,7 +97,8 @@ export function parseMarkdown(source: string): MarkdownBlockNode[] {
     }
   }
 
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex]
     const fence = /^```\s*([\w-]*)\s*$/.exec(line)
     if (code) {
       if (fence) {
@@ -85,6 +111,22 @@ export function parseMarkdown(source: string): MarkdownBlockNode[] {
       flushParagraph()
       flushList()
       code = { language: fence[1] ?? '', lines: [] }
+      continue
+    }
+
+    const headers = tableCells(line)
+    const separators = tableCells(lines[lineIndex + 1] ?? '')
+    if (line.includes('|') && headers.length === separators.length && separators.every((cell) => /^:?-{3,}:?$/.test(cell))) {
+      flushParagraph()
+      flushList()
+      const alignments = separators.map((cell): 'left' | 'center' | 'right' => cell.endsWith(':') ? (cell.startsWith(':') ? 'center' : 'right') : 'left')
+      const rows: MarkdownInlineNode[][][] = []
+      lineIndex++
+      while (lineIndex + 1 < lines.length && lines[lineIndex + 1].trim() && lines[lineIndex + 1].includes('|') && !/^```/.test(lines[lineIndex + 1])) {
+        const cells = tableCells(lines[++lineIndex])
+        rows.push(headers.map((_, index) => parseInline(cells[index] ?? '')))
+      }
+      nodes.push({ type: 'table', headers: headers.map(parseInline), alignments, rows })
       continue
     }
 

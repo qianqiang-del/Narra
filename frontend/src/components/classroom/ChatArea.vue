@@ -8,6 +8,7 @@ import { useI18n } from 'vue-i18n'
 import { Activity, ArrowDown, ArrowLeft, BookOpen, MessageCircle, MessageSquare, PanelRightClose, PanelRightOpen, Plus, Send, Square, Users } from 'lucide-vue-next'
 import ChatMessage from './ChatMessage.vue'
 import TraceTimeline from './TraceTimeline.vue'
+import DiscussionModelSelector from './DiscussionModelSelector.vue'
 
 import { cn } from '@/lib/utils'
 import { registerAudio } from '@/lib/audioPlayback'
@@ -16,6 +17,7 @@ import type { DiscussionTrace } from '@/lib/discussionTrace'
 import type { Bubble, ChatNote, ChatSession, Participant } from '@/types/classroom'
 
 const props = defineProps<{
+  classroomId?: number
   collapsed: boolean
   width: number
   tab: 'lecture' | 'trace' | 'chat'
@@ -43,6 +45,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  (e: 'model-busy', value: boolean): void
   (e: 'update:tab', v: 'lecture' | 'trace' | 'chat'): void
   (e: 'toggle-collapse'): void
   (e: 'resize-start', ev: MouseEvent): void
@@ -61,6 +64,11 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const messageList = ref<HTMLElement | null>(null)
 const followMessages = ref(true)
+const modelBusy = ref(!!props.classroomId)
+function onModelBusy(value: boolean) {
+  modelBusy.value = value
+  emit('model-busy', value)
+}
 const activeTitle = computed(() => props.sessions.find((item) => item.active)?.title || t('workspace.newSession'))
 const status = computed(() => discussionStatus(props))
 const statusText = computed(() => status.value === 'speaking'
@@ -89,7 +97,7 @@ function participantFor(message: Bubble) {
 }
 function send() {
   const text = props.draft.trim()
-  if (!text || props.busy || props.error) return
+  if (!text || props.busy || modelBusy.value || props.error) return
   followMessages.value = true
   emit('send', text)
 }
@@ -200,6 +208,8 @@ function playAudio(path?: string | null, text?: string, id?: string) {
       </button>
     </div>
 
+    <DiscussionModelSelector v-if="classroomId" v-show="tab === 'chat'" :classroom-id="classroomId" :disabled="sending || closing" :running="running" @busy="onModelBusy" />
+
     <!-- 笔记 -->
     <div v-if="tab === 'lecture'" class="scrollbar-hide flex-1 space-y-2 overflow-y-auto p-3">
       <button
@@ -283,7 +293,7 @@ function playAudio(path?: string | null, text?: string, id?: string) {
         <button v-if="!followMessages" type="button" class="mx-auto mb-2 flex items-center gap-1 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-teal-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-teal-300" @click="scrollToLatest"><ArrowDown class="size-3" />{{ t('chat.latest') }}</button>
         <form class="mx-3 mt-2 flex shrink-0 items-end gap-2 rounded-md border border-zinc-200 bg-white p-2 transition-colors focus-within:border-teal-600 focus-within:ring-2 focus-within:ring-teal-600/10 dark:border-zinc-700 dark:bg-zinc-900 dark:focus-within:border-teal-400" @submit.prevent="send">
           <textarea :value="draft" rows="2" class="max-h-28 min-w-0 flex-1 resize-none bg-transparent px-1 py-1 text-[13px] leading-5 text-zinc-800 outline-none placeholder:text-zinc-400 dark:text-zinc-100" :placeholder="t('chat.inputPlaceholder')" :aria-label="t('chat.inputPlaceholder')" @input="emit('update:draft', ($event.target as HTMLTextAreaElement).value)" @focus="emit('input-activate')" @keydown="onKeydown" />
-          <button type="submit" :disabled="busy || !!error || !draft.trim()" :aria-label="t('workspace.send')" :title="t('workspace.send')" class="flex size-8 shrink-0 items-center justify-center rounded-md bg-teal-700 text-white transition-colors hover:bg-teal-800 disabled:opacity-40 dark:bg-teal-600 dark:hover:bg-teal-500"><Send class="size-3.5" /></button>
+          <button type="submit" :disabled="busy || modelBusy || !!error || !draft.trim()" :aria-label="t('workspace.send')" :title="t('workspace.send')" class="flex size-8 shrink-0 items-center justify-center rounded-md bg-teal-700 text-white transition-colors hover:bg-teal-800 disabled:opacity-40 dark:bg-teal-600 dark:hover:bg-teal-500"><Send class="size-3.5" /></button>
         </form>
         <p class="px-4 py-2 text-[10px] text-zinc-400">{{ t('chat.keyboardHint') }}</p>
       </template>

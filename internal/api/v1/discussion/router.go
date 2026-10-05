@@ -4,7 +4,7 @@ import "github.com/gin-gonic/gin"
 
 // RegisterRoutes 挂载讨论触发入口。
 //
-// 只有这一条：发一条消息、开一趟讨论。讨论的**过程**（谁开始说话了、说了什么、
+// 发一条消息、开一趟讨论，以及读取/更新课堂模型设置。讨论的**过程**（谁开始说话了、说了什么、
 // 什么时候结束）不在这里 —— 它走 GET /conversations/:id/events 那条事件流，
 // 由 SSE 那一层按序号读出来推给前端（先落库、再推送）。
 //
@@ -13,4 +13,6 @@ import "github.com/gin-gonic/gin"
 // 不与 SSE 那条链路互相牵扯。
 func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	g.POST("/conversations/:id/discussions", c.Start)
+	g.GET("/classrooms/:id/discussion-settings", c.Settings)
+	g.PATCH("/classrooms/:id/discussion-settings", c.UpdateSettings)
 }
