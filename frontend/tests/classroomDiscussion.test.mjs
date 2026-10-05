@@ -20,6 +20,21 @@ test('history restores speaker snapshots and user messages', () => {
   ])
 })
 
+test('history restores whiteboards in message order and ignores malformed metadata', () => {
+  const display = createDiscussionDisplay([
+    { id: 10, senderType: 'agent', senderSnapshot: { name: '陈老师', role: '主讲' }, content: '第一张', whiteboard: { title: '先看这里', kind: 'steps', content: '步骤一' } },
+    { id: 11, senderType: 'agent', senderSnapshot: { name: '小助手', role: '辅助' }, content: '无白板', whiteboard: null },
+    { id: 12, senderType: 'agent', senderSnapshot: { name: '笔记君', role: '记录' }, content: '空白板', whiteboard: { title: ' ', kind: 'table', content: '内容' } },
+    { id: 13, senderType: 'agent', senderSnapshot: { name: '杠精同学', role: '质疑' }, content: '错误白板', whiteboard: { title: '缺内容', kind: 'table' } },
+    { id: 14, senderType: 'agent', senderSnapshot: { name: '好奇宝宝', role: '提问' }, content: '第二张', whiteboard: { title: '再看这里', kind: 'concepts', content: '概念' } },
+  ])
+
+  assert.deepEqual(display.whiteboards, [
+    { id: 'whiteboard-10', messageId: 10, title: '先看这里', kind: 'steps', content: '步骤一' },
+    { id: 'whiteboard-14', messageId: 14, title: '再看这里', kind: 'concepts', content: '概念' },
+  ])
+})
+
 test('SSE deltas append once and completed content replaces the stream', () => {
   const display = createDiscussionDisplay([])
   applyDiscussionEvent(display, event(1, 'agent.started', { turn_id: 2, agent_name: '小明', agent_id: 3 }))
@@ -29,6 +44,43 @@ test('SSE deltas append once and completed content replaces the stream', () => {
   applyDiscussionEvent(display, event(3, 'message.delta', { turn_id: 2, message_id: 20, delta: '第二' }))
   assert.deepEqual(display.bubbles, [{ id: 'message-20', from: 'agent', name: '小明', text: '完整正文' }])
   assert.equal(display.lastSequence, 4)
+})
+
+test('message.completed adds a whiteboard and ignores replayed sequence numbers', () => {
+  const display = createDiscussionDisplay([])
+  applyDiscussionEvent(display, event(1, 'agent.started', { turn_id: 2, agent_name: '小明', agent_id: 3 }))
+  applyDiscussionEvent(display, event(2, 'message.completed', {
+    turn_id: 2,
+    message_id: 20,
+    content: '完整正文',
+    whiteboard: { title: '关键结论', kind: 'concepts', content: '结论内容' },
+  }))
+  applyDiscussionEvent(display, event(2, 'message.completed', {
+    turn_id: 2,
+    message_id: 20,
+    content: '不应覆盖',
+    whiteboard: { title: '重复事件', kind: 'steps', content: '不应新增' },
+  }))
+
+  assert.deepEqual(display.whiteboards, [
+    { id: 'whiteboard-20', messageId: 20, title: '关键结论', kind: 'concepts', content: '结论内容' },
+  ])
+  assert.equal(display.bubbles[0].text, '完整正文')
+  assert.equal(display.lastSequence, 2)
+})
+
+test('message.completed ignores an empty whiteboard without failing the event', () => {
+  const display = createDiscussionDisplay([])
+  applyDiscussionEvent(display, event(1, 'agent.started', { turn_id: 2, agent_name: '小明', agent_id: 3 }))
+  applyDiscussionEvent(display, event(2, 'message.completed', {
+    turn_id: 2,
+    message_id: 20,
+    content: '完整正文',
+    whiteboard: { title: '', kind: 'steps', content: '   ' },
+  }))
+
+  assert.deepEqual(display.whiteboards, [])
+  assert.equal(display.bubbles[0].text, '完整正文')
 })
 
 test('replaying old deltas never duplicates a history message', () => {

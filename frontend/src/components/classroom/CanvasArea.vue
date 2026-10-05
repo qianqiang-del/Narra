@@ -9,6 +9,8 @@ import { Loader2, Play } from 'lucide-vue-next'
 import CanvasToolbar from '@/components/classroom/CanvasToolbar.vue'
 import ClassroomComplete from '@/components/classroom/ClassroomComplete.vue'
 import SceneRenderer from '@/components/classroom/SceneRenderer.vue'
+import WhiteboardPanel from '@/components/classroom/WhiteboardPanel.vue'
+import type { WhiteboardEntry } from '@/lib/classroomDiscussion'
 import type { Scene } from '@/types/scene'
 
 defineProps<{
@@ -27,6 +29,8 @@ defineProps<{
   courseComplete: boolean
   stats: { scenes: number; minutes: number; agents: number; messages: number }
   activeContentKey?: string | null
+  whiteboards: WhiteboardEntry[]
+  selectedWhiteboardId: string | null
 }>()
 
 const emit = defineEmits<{
@@ -41,6 +45,8 @@ const emit = defineEmits<{
   (e: 'toggle-fullscreen'): void
   (e: 'toggle-chat'): void
   (e: 'stop-discussion'): void
+  (e: 'select-whiteboard', id: string): void
+  (e: 'close-whiteboard'): void
 }>()
 
 const { t } = useI18n()
@@ -59,7 +65,17 @@ const { t } = useI18n()
         <ClassroomComplete v-if="courseComplete" :stats="stats" />
 
         <!-- 场景内容；按场景 id 重建，切页时重置作答状态与 iframe -->
-        <SceneRenderer v-else-if="scene.status === 'ready'" :key="scene.id" :scene="scene" :active-content-key="activeContentKey" />
+        <template v-else-if="scene.status === 'ready'">
+          <SceneRenderer :key="scene.id" :scene="scene" :active-content-key="activeContentKey" />
+
+          <WhiteboardPanel
+            v-if="whiteboardOpen"
+            :artifacts="whiteboards"
+            :selected-id="selectedWhiteboardId"
+            @select="emit('select-whiteboard', $event)"
+            @close="emit('close-whiteboard')"
+          />
+        </template>
 
         <!-- 生成中 -->
         <div

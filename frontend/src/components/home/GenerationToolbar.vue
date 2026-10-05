@@ -4,8 +4,7 @@
  *
  * 子项：模型选择器 | 分隔线 | 课程材料 | 联网搜索
  *
- * 模型/解析服务商数据当前为静态表（原项目从服务端配置接口拉取）。
- * 接入 Go 后端后替换为 `GET /api/providers`。
+ * 模型列表来自服务端，生成时只使用选定的服务商与模型这一对 ID。
  *
  * 媒体生成：原版是 4 个 Tab 的弹层（Image / Video / TTS / ASR），本项目按需求全部删掉：
  * - 去掉 Image（文生图）与 Video（文生视频）
@@ -21,19 +20,18 @@ import {
   AlertCircle,
   Bot,
   Check,
-  ChevronDown,
   Clock,
   FileText,
   Globe2,
   Loader2,
   Paperclip,
   RotateCcw,
-  Search,
   X,
 } from 'lucide-vue-next'
 
 import UiTooltip from '@/components/ui/UiTooltip.vue'
-import { findProviderLogo } from '@/data/providers'
+import ModelPicker from '@/components/shared/ModelPicker.vue'
+import type { ModelSelection } from '@/lib/modelSelection'
 import type { AvailableLlmModel } from '@/api/llm'
 import { SUPPORTED_EXTENSIONS } from '@/api/knowledge'
 import { materialFingerprint, type SelectedMaterial, type SelectedMaterialStatus } from '@/lib/materials'
@@ -51,54 +49,22 @@ const modelId = defineModel<string>('modelId', { default: '' })
 const webSearch = defineModel<boolean>('webSearch', { default: false })
 const materials = defineModel<SelectedMaterial[]>('materials', { default: () => [] })
 
-const props = defineProps<{ availableModels: AvailableLlmModel[] }>()
+const props = defineProps<{ availableModels: AvailableLlmModel[]; disabled?: boolean }>()
 const emit = defineEmits<{ configure: []; retryMaterial: [key: string] }>()
 
 const rootRef = ref<HTMLElement | null>(null)
-const openMenu = ref<'model' | 'material' | null>(null)
-const modelKeyword = ref('')
+const openMenu = ref<'material' | null>(null)
 const materialDragging = ref(false)
 
-const providers = computed(() => {
-  const groups = new Map<number, { id: number; name: string; logo: string; models: { id: string }[] }>()
-  for (const row of props.availableModels) {
-    let group = groups.get(row.providerId)
-    if (!group) {
-      group = { id: row.providerId, name: row.providerName, logo: findProviderLogo(row.providerName), models: [] }
-      groups.set(row.providerId, group)
-    }
-    group.models.push({ id: row.modelId })
-  }
-  return [...groups.values()]
-})
-
 const hasProvider = computed(() => props.availableModels.length > 0)
-
-const currentProvider = computed(() => providers.value.find((p) => p.id === providerId.value))
-const currentModel = computed(() => currentProvider.value?.models.find((m) => m.id === modelId.value))
-
-const filteredProviders = computed(() => {
-  const kw = modelKeyword.value.trim().toLowerCase()
-  if (!kw) return providers.value
-  return providers.value.filter(
-    (p) => p.name.toLowerCase().includes(kw) || String(p.id).includes(kw),
-  )
-})
-
-const activeModels = computed(() => currentProvider.value?.models ?? [])
 
 function toggle(menu: typeof openMenu.value) {
   openMenu.value = openMenu.value === menu ? null : menu
 }
 
-function pickProvider(id: number) {
-  providerId.value = id
-  const p = providers.value.find((x) => x.id === id)
-  if (p) modelId.value = p.models[0]?.id ?? ''
-}
-
-function pickModel(id: string) {
-  modelId.value = id
+function pickModel(selection: ModelSelection) {
+  providerId.value = selection.providerId
+  modelId.value = selection.modelId
   openMenu.value = null
 }
 
@@ -231,80 +197,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         {{ t('home.configureModel') }}
       </button>
 
-      <button
-        v-else
-        type="button"
-        class="inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full border border-teal-200/70 bg-teal-50 px-2 text-xs font-medium text-teal-700 transition-colors hover:bg-teal-100 dark:border-teal-700/50 dark:bg-teal-900/30 dark:text-teal-300"
-        @click="toggle('model')"
-      >
-        <img
-          v-if="currentProvider?.logo"
-          :src="currentProvider.logo"
-          alt=""
-          class="size-3.5 shrink-0 object-contain"
-        />
-        <Bot v-else class="size-3.5 shrink-0" />
-        <span class="min-w-0 truncate">{{ currentModel?.id ?? '选择模型' }}</span>
-        <ChevronDown class="size-3 shrink-0 opacity-60" />
-      </button>
-
-      <!-- 模型 Popover：左服务商 / 右模型 -->
-      <div
-        v-if="openMenu === 'model'"
-        class="absolute bottom-full left-0 z-50 mb-2 w-[640px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border bg-popover p-1.5 shadow-lg"
-      >
-        <div class="grid h-[430px] grid-cols-[128px_minmax(0,1fr)] sm:grid-cols-[160px_minmax(0,1fr)]">
-          <div class="flex min-h-0 flex-col border-r border-border/60 pr-1.5">
-            <div class="relative mb-1 shrink-0">
-              <Search
-                class="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground/50"
-              />
-              <input
-                v-model="modelKeyword"
-                type="text"
-                placeholder="搜索服务商"
-                class="h-8 w-full rounded-md border border-input pl-8 text-xs outline-none focus:ring-1 focus:ring-teal-400/40"
-              />
-            </div>
-            <div class="min-h-0 flex-1 overflow-y-auto">
-              <button
-                v-for="p in filteredProviders"
-                :key="p.id"
-                type="button"
-                :class="
-                  cn(
-                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/60',
-                    providerId === p.id && 'bg-teal-50 text-teal-700 dark:bg-teal-900/30',
-                  )
-                "
-                @click="pickProvider(p.id)"
-              >
-                <img v-if="p.logo" :src="p.logo" alt="" class="size-3.5 shrink-0 object-contain" />
-                <Bot v-else class="size-3.5 shrink-0" />
-                <span class="min-w-0 truncate">{{ p.name }}</span>
-              </button>
-            </div>
-          </div>
-
-          <div class="min-h-0 overflow-y-auto pl-1.5">
-            <button
-              v-for="m in activeModels"
-              :key="m.id"
-              type="button"
-              :class="
-                cn(
-                  'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-xs transition-colors hover:bg-muted/60',
-                  modelId === m.id && 'bg-teal-50 text-teal-700 ring-1 ring-teal-200',
-                )
-              "
-              @click="pickModel(m.id)"
-            >
-              <span class="min-w-0 flex-1 truncate">{{ m.id }}</span>
-              <Check v-if="modelId === m.id" class="size-3.5 shrink-0" />
-            </button>
-          </div>
-        </div>
-      </div>
+      <ModelPicker v-else :models="availableModels" :selection="{ providerId, modelId }" :disabled="disabled" side="top" class="max-w-[280px]" @select="pickModel" />
     </div>
 
     <div class="mx-1 h-4 w-px bg-border/60" />

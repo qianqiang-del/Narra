@@ -24,7 +24,7 @@ registerHooks({
     return nextResolve(specifier, context)
   },
   load(url, context, nextLoad) {
-    if (!url.endsWith('.vue') && !url.endsWith('.ts')) return nextLoad(url, context)
+    if (!url.startsWith(sourceRoot.href) || (!url.endsWith('.vue') && !url.endsWith('.ts'))) return nextLoad(url, context)
     const source = readFileSync(fileURLToPath(url), 'utf8')
     const script = url.endsWith('.vue')
       ? compileScript(parse(source, { filename: url }).descriptor, { id: 'llm-settings-test', inlineTemplate: true }).content
@@ -77,7 +77,7 @@ function find(target, predicate) {
   return predicate(target) ? target : target.children.map((child) => find(child, predicate)).find(Boolean)
 }
 
-test('editing an existing model searches and displays a sourced price suggestion', async () => {
+test('price search keeps a candidate pending until the user adopts it', async () => {
   const previousFetch = globalThis.fetch
   let searchRequests = 0
   let completeRefresh
@@ -88,7 +88,7 @@ test('editing an existing model searches and displays a sourced price suggestion
     if (searchRequests === 2) return new Promise((resolve) => { completeRefresh = resolve })
     return { json: async () => ({ code: 0, data: {
       model_id: 'deepseek-flash', found: true,
-      pricing: { input_per_million: 0.4, output_per_million: 1.6, currency: 'USD', source: 'search', source_url: 'https://example.com/pricing' },
+      candidates: [{ model_id: 'deepseek-flash', pricing_mode: 'token_price', input_per_million: 0.4, output_per_million: 1.6, currency: 'USD', source: 'search', source_url: 'https://example.com/pricing', billing_note: '标准 API 价格' }],
     } }) }
   }
 
@@ -109,17 +109,23 @@ test('editing an existing model searches and displays a sourced price suggestion
     const form = find(root, (item) => item.type === 'form')
     assert.ok(form)
     assert.equal(find(form, (item) => item.type === 'h3')?.children[0]?.text, '编辑配置')
-    assert.equal(find(form, (item) => item.type === 'input' && item.props.placeholder === '未填写')?.props.value, 0.4)
-    assert.equal(find(form, (item) => item.type === 'a' && item.props.href === 'https://example.com/pricing')?.props.href, 'https://example.com/pricing')
+    assert.equal(find(form, (item) => item.type === 'input' && item.props.placeholder === '未填写')?.props.value, '')
+    assert.ok(find(form, (item) => item.type === 'button' && item.children.some((child) => child.text?.includes('采用此候选'))))
     assert.equal(searchRequests, 1)
 
-    find(form, (item) => item.type === 'button' && item.children.some((child) => child.text?.includes('联网查价')))?.props.onClick()
+    find(form, (item) => item.type === 'button' && item.children.some((child) => child.text?.includes('采用此候选'))).props.onClick()
+    await nextTick()
+    assert.equal(find(form, (item) => item.type === 'input' && item.props.placeholder === '未填写')?.props.value, 0.4)
+    const prices = find(form, (item) => item.type === 'div' && item.props.class?.includes('grid-cols-3'))
+    assert.equal(prices.children[1].children.find((item) => item.type === 'input')?.props.value, 1.6)
+
+    find(form, (item) => item.type === 'button' && item.children.some((child) => child.props.role === 'status'))?.props.onClick()
     const inputPrice = find(form, (item) => item.type === 'input' && item.props.placeholder === '未填写')
     inputPrice.props.onInput({ target: { value: '9' } })
     await nextTick()
     completeRefresh({ json: async () => ({ code: 0, data: {
       model_id: 'deepseek-flash', found: true,
-      pricing: { input_per_million: 0.5, output_per_million: 2, currency: 'USD', source: 'search', source_url: 'https://example.com/pricing' },
+      candidates: [{ model_id: 'deepseek-flash', pricing_mode: 'token_price', input_per_million: 0.5, output_per_million: 2, currency: 'USD', source: 'search', source_url: 'https://example.com/pricing' }],
     } }) })
     await new Promise(setImmediate)
     await nextTick()
@@ -127,11 +133,33 @@ test('editing an existing model searches and displays a sourced price suggestion
     find(form, (item) => item.type === 'input' && item.props.placeholder === 'USD').props.onInput({ target: { value: 'cny' } })
     await nextTick()
     assert.equal(find(form, (item) => item.type === 'input' && item.props.placeholder === 'USD')?.props.value, 'CNY')
-    assert.equal(find(form, (item) => item.type === 'a' && item.props.href === 'https://example.com/pricing'), undefined)
+    assert.ok(find(form, (item) => item.type === 'a' && item.props.href === 'https://example.com/pricing'), '原始候选来源应保留供核对')
   } finally {
     app.unmount()
     globalThis.fetch = previousFetch
   }
+})
+
+test('multiplier candidate is visible but cannot be adopted as a token price', async () => {
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0, data: {
+    model_id: 'gpt-6-astra', found: true,
+    candidates: [{ model_id: 'gpt-6-astra', pricing_mode: 'multiplier', group: 'Codex Mix', group_ratio: 0.25, billing_note: '缺少基础币价，无法直接换算实际费用', source_url: 'https://nowcoding.ai/api/pricing' }],
+  } }) })
+  const root = node('#root')
+  const pinia = createPinia()
+  const app = renderer.createApp(LlmSettingsSection)
+  app.use(pinia)
+  useLlmStore(pinia).providers = [{ id: 1, name: 'Proxy', baseUrl: 'https://proxy.example/v1', models: ['gpt-6-astra'], pricing: {}, timeout: '60s', apiKeyConfigured: true, testStatus: 'success', enabled: true }]
+  try {
+    app.mount(root)
+    find(root, (item) => item.props['data-testid'] === 'edit-llm-provider').props.onClick()
+    await nextTick(); await new Promise(setImmediate); await nextTick()
+    const form = find(root, (item) => item.type === 'form')
+    assert.ok(find(form, (item) => item.type === 'p' && item.children.some((child) => child.text?.includes('缺少基础币价'))))
+    assert.equal(find(form, (item) => item.type === 'button' && item.children.some((child) => child.text?.includes('采用此候选'))), undefined)
+    assert.equal(find(form, (item) => item.type === 'input' && item.props.placeholder === '未填写')?.props.value, '')
+  } finally { app.unmount(); globalThis.fetch = previousFetch }
 })
 
 test('missing search MCP leaves prices editable and permits a later retry', async () => {
@@ -141,11 +169,11 @@ test('missing search MCP leaves prices editable and permits a later retry', asyn
     assert.match(String(url), /\/settings\/llm\/providers\/1\/pricing\/suggestions$/)
     searchRequests++
     if (searchRequests === 1) {
-      return { json: async () => ({ code: 503, message: '请先配置并启用提供 web_search 的联网搜索 MCP 服务' }) }
+      return { json: async () => ({ code: 503, message: '请先配置并启用提供网页搜索工具的联网搜索 MCP 服务' }) }
     }
     return { json: async () => ({ code: 0, data: {
       model_id: 'deepseek-flash', found: true,
-      pricing: { input_per_million: 0.4, output_per_million: 1.6, currency: 'USD', source: 'search', source_url: 'https://example.com/pricing' },
+      candidates: [{ model_id: 'deepseek-flash', pricing_mode: 'token_price', input_per_million: 0.4, output_per_million: 1.6, currency: 'USD', source: 'search', source_url: 'https://example.com/pricing' }],
     } }) }
   }
 
@@ -175,7 +203,7 @@ test('missing search MCP leaves prices editable and permits a later retry', asyn
     assert.equal(find(form, (item) => item.type === 'input' && item.props.placeholder === '未填写')?.props.value, 9)
     assert.equal(find(form, (item) => item.type === 'button' && item.props.type === 'submit')?.props.disabled, false)
 
-    find(form, (item) => item.type === 'button' && item.children.some((child) => child.text?.includes('联网查价')))?.props.onClick()
+    find(form, (item) => item.type === 'button' && item.children.some((child) => child.props.role === 'status'))?.props.onClick()
     await new Promise(setImmediate)
     await nextTick()
     assert.equal(searchRequests, 2, '手动点击应重新检查已恢复的搜索服务')
