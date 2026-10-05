@@ -19,6 +19,7 @@ import type {
   KnowledgeBadgeStatus,
   KnowledgeDocument,
   KnowledgeDocumentStage,
+  KnowledgeSourceType,
   KnowledgeUploadRecord,
 } from '@/api/knowledge'
 import { failureStageKey } from '@/api/knowledge'
@@ -50,6 +51,22 @@ const badgeStyles: Record<KnowledgeBadgeStatus, string> = {
   processing:
     'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300',
 }
+
+/**
+ * 来源标签的配色：手动录入与文件导入是两条不同的入口，只靠文字区分太弱。
+ *
+ * 色相刻意避开状态徽章用的绿 / 黄 / 红（见 badgeStyles），否则会被误读成收录状态。
+ * 课程材料标签（待使用 / 已关联）说的是生命周期而不是来源，保持中性色、不参与着色。
+ */
+const sourceTagStyles: Record<KnowledgeSourceType, string> = {
+  manual:
+    'border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300',
+  import:
+    'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300',
+}
+
+/** 中性标签样式：浅边框、无底色，与停用徽章同一口径。 */
+const neutralTagStyle = 'border-border text-zinc-600 dark:text-zinc-400'
 
 /**
  * 记录的展示状态：把后端四个原始状态收成四个徽章。
@@ -88,7 +105,7 @@ interface RowModel {
   icon: Component
   iconClass: string
   badge: { label: string; class: string } | null
-  tag: string | null
+  tag: { label: string; class: string } | null
   meta: string[]
 }
 
@@ -127,6 +144,8 @@ const model = computed<RowModel>(() => {
 
   const document = props.document as KnowledgeDocument
   const isMaterial = document.kind === 'material'
+  // 未知来源按文件导入处理：宁可配色保守一点，也不要让标签整块消失。
+  const source: KnowledgeSourceType = document.sourceType === 'manual' ? 'manual' : 'import'
   return {
     title: document.title,
     subtitle: document.sourceUri,
@@ -138,10 +157,16 @@ const model = computed<RowModel>(() => {
     badge: document.enabled
       ? null
       : { label: t('knowledge.status.disabled'), class: badgeStyles.removed },
-    // 课程材料显示"待使用 / 已关联"（由 expiresAt 是否为空区分），知识库文档显示来源类型
+    // 课程材料显示"待使用 / 已关联"（由 expiresAt 是否为空区分），知识库文档显示来源类型；
+    // 来源同时带配色，手动录入与文件导入在列表里一眼可分，不必读文字。
     tag: isMaterial
-      ? t(document.expiresAt ? 'knowledge.material.pending' : 'knowledge.material.associated')
-      : t(`knowledge.source.${document.sourceType === 'manual' ? 'manual' : 'import'}`),
+      ? {
+          label: t(
+            document.expiresAt ? 'knowledge.material.pending' : 'knowledge.material.associated',
+          ),
+          class: neutralTagStyle,
+        }
+      : { label: t(`knowledge.source.${source}`), class: sourceTagStyles[source] },
     meta: [
       document.parser,
       `${t('knowledge.col.chunks')} ${formatNumber(document.chunks)}`,
@@ -176,9 +201,12 @@ const model = computed<RowModel>(() => {
         </span>
         <span
           v-else-if="model.tag"
-          class="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs leading-none text-zinc-600 dark:text-zinc-400"
+          :class="cn(
+            'shrink-0 rounded-full border px-2 py-0.5 text-xs leading-none',
+            model.tag.class,
+          )"
         >
-          {{ model.tag }}
+          {{ model.tag.label }}
         </span>
       </div>
 
