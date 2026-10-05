@@ -105,6 +105,19 @@ func (c *Controller) ListScenes(ctx *gin.Context) {
 	response.Success(ctx, items)
 }
 
+func (c *Controller) RetryScene(ctx *gin.Context) {
+	id, ok := parseID(ctx)
+	if !ok {
+		return
+	}
+	item, err := c.svc.RetryScene(ctx.Request.Context(), id)
+	if err != nil {
+		response.BizError(ctx, err)
+		return
+	}
+	response.Success(ctx, item)
+}
+
 // scenePhaseEvent 把「这一页刚进入的阶段」翻成对外事件名。
 //
 // 名字按"此刻发生了什么"起，而不是照抄 phase：进入 generating_narration 说明正文已经写完、

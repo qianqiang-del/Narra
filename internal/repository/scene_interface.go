@@ -29,6 +29,8 @@ type SceneRepository interface {
 	CompleteGeneration(ctx context.Context, id uint64, owner string) error
 	UpdatePhase(ctx context.Context, id uint64, owner string, phase string) error
 	UpdateStatus(ctx context.Context, id uint64, owner string, status string, errorMessage *string) error
+	ResetForRetry(ctx context.Context, id uint64) (bool, error)
+	RestoreRetryFailure(ctx context.Context, id uint64, message string) error
 	AcquireLease(ctx context.Context, id uint64, owner, runID string, ttl time.Duration) (bool, error)
 	RenewLease(ctx context.Context, id uint64, owner string, ttl time.Duration) (bool, error)
 	ReleaseLease(ctx context.Context, id uint64, owner string) error

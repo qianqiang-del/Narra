@@ -129,6 +129,17 @@ func BuildWorker(deps classroom.Deps, cfg *config.Config) (service.JobQueue, *Wo
 		}
 		return nil
 	})
+	server.Register(worker.TypeSceneGenerate, func(ctx context.Context, payload []byte) error {
+		classroomID, sceneID, err := worker.DecodeSceneGenerate(payload)
+		if err != nil {
+			return worker.Permanent(err)
+		}
+		if err := classroom.GenerateScene(ctx, deps, classroomID, sceneID); err != nil {
+			logger.Error("课堂页面重试失败", zap.Uint64("classroom_id", classroomID), zap.Uint64("scene_id", sceneID), zap.Error(err))
+			return err
+		}
+		return nil
+	})
 
 	queue := worker.NewQueue(client, cfg.Worker.MaxRetry, cfg.Worker.Timeout)
 	revocable := cancellableQueue{queue: queue, server: server}
@@ -155,6 +166,10 @@ type cancellableQueue struct {
 // Enqueue 投递生成任务。
 func (q cancellableQueue) Enqueue(classroomID uint64) error {
 	return q.queue.Enqueue(classroomID)
+}
+
+func (q cancellableQueue) EnqueueScene(classroomID, sceneID uint64) error {
+	return q.queue.EnqueueScene(classroomID, sceneID)
 }
 
 // Remove 撤掉这堂课的生成任务：先停正在跑的，再删排队中的。

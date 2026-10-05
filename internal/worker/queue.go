@@ -32,3 +32,15 @@ func (q *Queue) Enqueue(classroomID uint64) error {
 	}
 	return nil
 }
+
+func (q *Queue) EnqueueScene(classroomID, sceneID uint64) error {
+	task, err := NewSceneGenerateTask(classroomID, sceneID, q.maxRetry, q.timeout)
+	if err != nil {
+		return err
+	}
+	_, err = q.client.Enqueue(task)
+	if err != nil {
+		return fmt.Errorf("投递页面重试任务失败: %w", err)
+	}
+	return nil
+}

@@ -21,6 +21,7 @@ import {
   fetchClassroomAgents,
   fetchClassroomScenes,
   fetchScene,
+  retryClassroomScene,
   streamClassroomEvents,
   type ClassroomProgressEvent,
   type ClassroomSceneSummaryDTO,
@@ -48,6 +49,14 @@ let eventController: AbortController | undefined
 function load() {
   phase.value = 'loading'
   void loadReal()
+}
+
+async function retryScene(id: string) {
+  const scene = await retryClassroomScene(Number(id))
+  const index = summaries.value.findIndex((item) => item.id === scene.id)
+  if (index >= 0) summaries.value[index] = scene
+  rebuildScenes()
+  startEvents()
 }
 
 async function loadReal() {
@@ -140,16 +149,25 @@ async function applyEvent(event: ClassroomProgressEvent) {
   }
 }
 
-onMounted(async () => {
-  await load()
-  eventController = new AbortController()
+async function consumeEvents(signal: AbortSignal) {
   try {
-    for await (const event of streamClassroomEvents(Number(props.id), eventController.signal)) {
+    for await (const event of streamClassroomEvents(Number(props.id), signal)) {
       await applyEvent(event)
     }
   } catch {
-    if (!eventController.signal.aborted) return
+    if (!signal.aborted) return
   }
+}
+
+function startEvents() {
+  eventController?.abort()
+  eventController = new AbortController()
+  void consumeEvents(eventController.signal)
+}
+
+onMounted(async () => {
+  await load()
+  startEvents()
 })
 onUnmounted(() => eventController?.abort())
 </script>
@@ -196,6 +214,12 @@ onUnmounted(() => eventController?.abort())
     </div>
 
     <!-- ok -->
-    <PlaybackChrome v-else-if="classroom" :classroom="classroom" :agents="agents" :scene-details="sceneDetails" />
+    <PlaybackChrome
+      v-else-if="classroom"
+      :classroom="classroom"
+      :agents="agents"
+      :scene-details="sceneDetails"
+      :on-retry-scene="retryScene"
+    />
   </div>
 </template>
