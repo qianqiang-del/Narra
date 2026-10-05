@@ -480,7 +480,8 @@ func (a *App) initDependencies() error {
 		Orchestrator:  discussionOrchestrator,
 		// 读课程快照里的服务商与模型 → 解密 API Key → 建 llm 客户端 →
 		// 包成讨论要的三件能力。密钥与课堂生成那条链路同源，都是 JWT Secret 派生的。
-		ModelFactory: discussion.NewRuntimeFactory(discussion.NewEntityProviderFinder(llmProviderRepo), encryptionKey),
+		ModelFactory: discussion.NewRuntimeFactory(discussion.NewEntityProviderFinder(llmProviderRepo), encryptionKey, a.mcpManager),
+		ModelCatalog: llmProviderSvc,
 		Logger:       logger.GetLogger(),
 	})
 

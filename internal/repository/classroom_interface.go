@@ -16,5 +16,6 @@ type ClassroomRepository interface {
 	UpdateStatus(ctx context.Context, id uint64, status string, generationError *string) error
 	SavePlan(ctx context.Context, id uint64, plan json.RawMessage, version int32, runID string) error
 	UpdateRunID(ctx context.Context, id uint64, runID string) error
+	UpdateDiscussionConfig(ctx context.Context, id uint64, config json.RawMessage) error
 	ListGeneratingIDs(ctx context.Context) ([]uint64, error)
 }

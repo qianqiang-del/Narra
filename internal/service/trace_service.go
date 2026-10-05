@@ -94,7 +94,10 @@ func (s *traceService) summary(ctx context.Context, run entity.OrchestrationRun)
 			if item.Currency == "" {
 				item.Currency = "USD"
 			}
-			if snapshot.Pricing.InputPerMillion != nil && snapshot.Pricing.OutputPerMillion != nil {
+			confirmed := snapshot.Pricing.Source == "user"
+			tokenPrice := snapshot.Pricing.PricingMode == "" || snapshot.Pricing.PricingMode == "token_price"
+			if tokenPrice && confirmed && snapshot.Pricing.InputPerMillion != nil && snapshot.Pricing.OutputPerMillion != nil &&
+				validPrice(*snapshot.Pricing.InputPerMillion) && validPrice(*snapshot.Pricing.OutputPerMillion) {
 				cost := float64(input)/1_000_000*(*snapshot.Pricing.InputPerMillion) + float64(output)/1_000_000*(*snapshot.Pricing.OutputPerMillion)
 				item.EstimatedCost = &cost
 			}

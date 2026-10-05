@@ -47,6 +47,10 @@ type DiscussionModelFactory interface {
 	Build(ctx context.Context, providerID uint64, modelID string) (discussion.Models, error)
 }
 
+type DiscussionModelCatalog interface {
+	AvailableModels(ctx context.Context) ([]responsedto.AvailableLLMModel, error)
+}
+
 // DiscussionDeps 是讨论入口所需的外部依赖。
 //
 // 用结构体而不是一长串参数：这里有八个依赖，参数列表既难读又容易传错顺序
@@ -71,6 +75,7 @@ type DiscussionDeps struct {
 
 	// ModelFactory 按课堂快照里的服务商与模型现建一套模型能力。
 	ModelFactory DiscussionModelFactory
+	ModelCatalog DiscussionModelCatalog
 
 	Logger *zap.Logger
 
@@ -90,6 +95,7 @@ type discussionService struct {
 	tx            repository.TransactionManager
 	orchestrator  *discussion.Orchestrator
 	modelFactory  DiscussionModelFactory
+	modelCatalog  DiscussionModelCatalog
 	logger        *zap.Logger
 	timeout       time.Duration
 
@@ -155,6 +161,7 @@ func NewDiscussionService(deps DiscussionDeps) DiscussionService {
 		tx:            deps.Tx,
 		orchestrator:  deps.Orchestrator,
 		modelFactory:  deps.ModelFactory,
+		modelCatalog:  deps.ModelCatalog,
 		logger:        log,
 		timeout:       timeout,
 		running:       make(map[uint64]struct{}),
@@ -269,7 +276,11 @@ func (s *discussionService) StartAtScene(ctx context.Context, conversationID uin
 	// 交出去：讨论在后台跑，这个请求立刻返回。
 	// 用独立的 context（不接请求的 ctx）——请求一返回，它的 ctx 就被取消了，
 	// 而讨论才刚开始。
-	go s.run(orchestrator, conversationID, message.ID, participants, classroom.Title, classroom.Requirement, lessonMaterial, models.ModelID, models.Pricing)
+	var features struct {
+		WebSearch bool `json:"web_search"`
+	}
+	_ = json.Unmarshal(classroom.GenerationConfig, &features)
+	go s.run(orchestrator, conversationID, message.ID, participants, classroom.Title, classroom.Requirement, lessonMaterial, models.ModelID, models.Pricing, features.WebSearch)
 
 	handedOver = true
 	s.logger.Info("讨论已受理",
@@ -294,7 +305,7 @@ func (s *discussionService) StartAtScene(ctx context.Context, conversationID uin
 // 这是唯一一处"结果没人接收"的调用：它返回时 HTTP 请求早已结束，所以成败只能靠
 // 日志和事件表说话 —— 讨论失败时编排器会自己往事件表写一条 run.failed，
 // 前端据此把等待结束掉，不会一直转圈。
-func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversationID uint64, triggerMessageID uint64, participants []discussion.Participant, classroomTitle string, classroomRequirement string, lessonMaterial string, modelID string, pricing *discussion.ModelPricing) {
+func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversationID uint64, triggerMessageID uint64, participants []discussion.Participant, classroomTitle string, classroomRequirement string, lessonMaterial string, modelID string, pricing *discussion.ModelPricing, webSearch bool) {
 	// 无论怎么结束都要放锁，否则这条对话只能讨论一次。
 	defer s.release(conversationID)
 
@@ -321,6 +332,7 @@ func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversat
 		LessonMaterial:       lessonMaterial,
 		ModelID:              modelID,
 		ModelPricing:         pricing,
+		WebSearch:            webSearch,
 		// MaxTurns 留 0：轮数由后端定（默认值在编排器里），前端不参与。
 	})
 	if err != nil {
@@ -411,27 +423,24 @@ type modelConfig struct {
 	ModelID    string `json:"llm_model_id"`
 }
 
-// modelSnapshot 读这门课生成时记下的模型配置。
-//
-// 模型不由讨论自己选：用户在前端配好服务商、生成课堂时把选择记进课程快照，
-// 这里只是把它读回来。读而不校验的话，一门没配模型的课会一路跑到第一次调模型
-// 才失败 —— 那时运行记录已经建了，用户看到的是一场莫名其妙的失败，
-// 而不是一句"这堂课没有配置大模型"。
-//
-// 读出来的两个 ID 交给 ModelFactory 去建真正的模型能力：这里只负责把配置读正确，
-// "怎么建"不归它管。
+// modelSnapshot 每趟受理时冻结课堂选择；正在运行的模型不会被后续切换影响。
 func (s *discussionService) modelSnapshot(ctx context.Context, classroomID uint64) (modelConfig, error) {
-	classroom, err := s.classrooms.FindByID(ctx, classroomID)
+	config, _, err := s.readModelSelection(ctx, classroomID)
 	if err != nil {
-		return modelConfig{}, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课程失败", err)
+		return modelConfig{}, err
 	}
-
-	var config modelConfig
-	if err := json.Unmarshal(classroom.GenerationConfig, &config); err != nil {
-		return modelConfig{}, apperrors.NewWithErr(apperrors.CodeInternalError, "解析课程模型配置失败", err)
+	if config.ProviderID == 0 || strings.TrimSpace(config.ModelID) == "" {
+		return modelConfig{}, apperrors.New(apperrors.CodeBadRequest, "请为这堂课选择讨论模型")
 	}
-	if config.ProviderID == 0 {
-		return modelConfig{}, apperrors.New(apperrors.CodeBadRequest, "这堂课没有配置大模型，无法发起讨论")
+	// Catalog is injected in production; factory-only callers can validate in Build.
+	if s.modelCatalog != nil {
+		settings, err := s.describeSelection(ctx, config, "")
+		if err != nil {
+			return modelConfig{}, err
+		}
+		if !settings.Available {
+			return modelConfig{}, apperrors.New(apperrors.CodeBadRequest, "所选讨论模型不可用，请重新选择")
+		}
 	}
 	return config, nil
 }

@@ -51,6 +51,9 @@ type Classroom struct {
 	// GenerationConfig 本次生成的模型、搜索、解析器等快照。
 	GenerationConfig json.RawMessage `gorm:"column:generation_config;type:jsonb;not null;default:'{}';comment:本次生成用的模型、搜索、解析器等配置快照（JSON）" json:"generation_config"`
 
+	// DiscussionConfig 只覆盖后续讨论的模型，不修改生成快照或已运行的讨论。
+	DiscussionConfig json.RawMessage `gorm:"column:discussion_config;type:jsonb;not null;default:'{}';comment:课堂讨论模型选择（JSON）；空对象沿用生成配置" json:"discussion_config"`
+
 	// AgentConfig 角色选择模式、自动生成策略与 TTS 配置。
 	// 只保存本次采用的选择方式和生成策略；角色明细统一存 classroom_agents，不在此重复。
 	AgentConfig json.RawMessage `gorm:"column:agent_config;type:jsonb;not null;default:'{}';comment:本次的角色选择模式、自动生成策略与 TTS 配置（JSON）；角色明细在 classroom_agents，不在此重复" json:"agent_config"`

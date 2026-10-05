@@ -70,7 +70,7 @@ func (c *Client) ListTools(ctx context.Context) ([]ToolDescriptor, error) {
 		if err != nil {
 			return nil, fmt.Errorf("编码 MCP tool %q schema: %w", remote.Name, err)
 		}
-		tools = append(tools, ToolDescriptor{ServerID: c.config.ID, RemoteName: remote.Name, Description: remote.Description, InputSchema: schema})
+		tools = append(tools, ToolDescriptor{ServerID: c.config.ID, RemoteName: remote.Name, Description: remote.Description, InputSchema: schema, ReadOnly: remote.Annotations != nil && remote.Annotations.ReadOnlyHint})
 	}
 	return tools, nil
 }

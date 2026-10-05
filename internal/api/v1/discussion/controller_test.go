@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
 	apperrors "narra/pkg/errors"
 )
@@ -29,8 +30,69 @@ type fakeDiscussionService struct {
 	gotSceneID        uint64
 	called            bool
 
-	result *responsedto.DiscussionStart
-	err    error
+	result      *responsedto.DiscussionStart
+	settings    *responsedto.DiscussionSettings
+	gotSettings requestdto.DiscussionSettings
+	err         error
+}
+
+func (f *fakeDiscussionService) GetSettings(_ context.Context, classroomID uint64) (*responsedto.DiscussionSettings, error) {
+	f.called = true
+	f.gotConversationID = classroomID
+	return f.settings, f.err
+}
+
+func (f *fakeDiscussionService) UpdateSettings(ctx context.Context, classroomID uint64, input requestdto.DiscussionSettings) (*responsedto.DiscussionSettings, error) {
+	f.gotSettings = input
+	return f.GetSettings(ctx, classroomID)
+}
+
+func TestDiscussionSettingsRoutes(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPatch} {
+		t.Run(method, func(t *testing.T) {
+			f := &fakeDiscussionService{settings: &responsedto.DiscussionSettings{ProviderID: 2, ModelID: "chat", Available: true, Source: "classroom"}}
+			engine := newTestEngine(f)
+			req := httptest.NewRequest(method, "/api/v1/classrooms/7/discussion-settings", bytes.NewBufferString(`{"llm_provider_id":2,"llm_model_id":"chat"}`))
+			req.Header.Set("Content-Type", "application/json")
+			out := httptest.NewRecorder()
+			engine.ServeHTTP(out, req)
+			var result struct {
+				Code int                            `json:"code"`
+				Data responsedto.DiscussionSettings `json:"data"`
+			}
+			if err := json.Unmarshal(out.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if out.Code != 200 || result.Code != 0 || result.Data.ProviderID != 2 || !f.called || f.gotConversationID != 7 {
+				t.Fatalf("unexpected result %s", out.Body.String())
+			}
+			if method == http.MethodPatch && (f.gotSettings.ProviderID != 2 || f.gotSettings.ModelID != "chat") {
+				t.Fatalf("input: %+v", f.gotSettings)
+			}
+		})
+	}
+}
+
+func TestDiscussionSettingsInvalidRequests(t *testing.T) {
+	for _, tc := range []struct{ method, id, body string }{
+		{http.MethodGet, "0", ""}, {http.MethodPatch, "abc", `{}`}, {http.MethodPatch, "7", `{broken`},
+	} {
+		f := &fakeDiscussionService{}
+		engine := newTestEngine(f)
+		req := httptest.NewRequest(tc.method, "/api/v1/classrooms/"+tc.id+"/discussion-settings", bytes.NewBufferString(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		out := httptest.NewRecorder()
+		engine.ServeHTTP(out, req)
+		var result struct {
+			Code int `json:"code"`
+		}
+		if err := json.Unmarshal(out.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Code != apperrors.CodeBadRequest || f.called {
+			t.Fatalf("unexpected response %s", out.Body.String())
+		}
+	}
 }
 
 func (f *fakeDiscussionService) Start(ctx context.Context, conversationID uint64, content string) (*responsedto.DiscussionStart, error) {

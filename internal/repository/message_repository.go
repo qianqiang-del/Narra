@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 
 	"gorm.io/gorm"
 
@@ -78,14 +79,15 @@ func (r *messageRepository) AppendContent(ctx context.Context, id uint64, delta 
 // 两列一起写：只改状态会把"这条消息花了多少 token"留在默认值 0 上，而上下文预算靠它统计。
 // content 不在这里写 —— 它由 AppendContent 累积，收尾时如果拿内存里那份副本覆盖，
 // 会把最后一批还没落库的增量丢掉。
-func (r *messageRepository) Finish(ctx context.Context, id uint64, status string, tokenCount int32) error {
+func (r *messageRepository) Finish(ctx context.Context, id uint64, status string, tokenCount int32, metadata ...json.RawMessage) error {
+	updates := map[string]any{"status": status, "token_count": tokenCount}
+	if len(metadata) > 0 && len(metadata[0]) > 0 {
+		updates["metadata"] = gorm.Expr("COALESCE(metadata, '{}'::jsonb) || ?::jsonb", string(metadata[0]))
+	}
 	return conn(ctx, r.db).
 		Model(&entity.ConversationMessage{}).
 		Where("id = ?", id).
-		Updates(map[string]any{
-			"status":      status,
-			"token_count": tokenCount,
-		}).Error
+		Updates(updates).Error
 }
 
 func (r *messageRepository) FailStreamingByRun(ctx context.Context, runID uint64) error {

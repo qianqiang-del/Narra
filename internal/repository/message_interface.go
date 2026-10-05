@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 
 	"narra/internal/model/entity"
 )
@@ -26,7 +27,7 @@ type MessageRepository interface {
 	AppendContent(ctx context.Context, id uint64, delta string) error
 
 	// Finish 写入消息的最终状态与 token 数。
-	Finish(ctx context.Context, id uint64, status string, tokenCount int32) error
+	Finish(ctx context.Context, id uint64, status string, tokenCount int32, metadata ...json.RawMessage) error
 
 	// FindByID 按主键查消息。
 	FindByID(ctx context.Context, id uint64) (*entity.ConversationMessage, error)

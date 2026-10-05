@@ -18,6 +18,9 @@ type ModelPricing struct {
 	OutputPerMillion *float64   `json:"output_per_million"`
 	Currency         string     `json:"currency"`
 	Source           string     `json:"source"`
+	PricingMode      string     `json:"pricing_mode,omitempty"`
+	BillingNote      string     `json:"billing_note,omitempty"`
+	ConfirmedAt      *time.Time `json:"confirmed_at,omitempty"`
 	SourceURL        string     `json:"source_url,omitempty"`
 	CheckedAt        *time.Time `json:"checked_at,omitempty"`
 }

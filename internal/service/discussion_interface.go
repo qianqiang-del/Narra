@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
 )
 
@@ -25,4 +26,6 @@ type DiscussionService interface {
 	// 过程与结果都落在事件表里，由 SSE 那条流带给前端。
 	Start(ctx context.Context, conversationID uint64, content string) (*responsedto.DiscussionStart, error)
 	StartAtScene(ctx context.Context, conversationID uint64, content string, sceneID uint64) (*responsedto.DiscussionStart, error)
+	GetSettings(ctx context.Context, classroomID uint64) (*responsedto.DiscussionSettings, error)
+	UpdateSettings(ctx context.Context, classroomID uint64, input requestdto.DiscussionSettings) (*responsedto.DiscussionSettings, error)
 }

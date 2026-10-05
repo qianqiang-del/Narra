@@ -65,6 +65,27 @@ type einoTool struct {
 	info    *schema.ToolInfo
 }
 
+// DiscussionTools narrows permissions without changing the classroom worker API.
+// MCP annotations are trusted only for user-configured servers; unannotated or
+// writable tools are not exposed to discussion agents.
+func (m *Manager) DiscussionTools(ctx context.Context, webSearch bool) ([]tool.BaseTool, error) {
+	result := m.localToolList()
+	if !webSearch {
+		return result, nil
+	}
+	for _, descriptor := range m.ListTools() {
+		if !descriptor.ReadOnly {
+			continue
+		}
+		params := new(jsonschema.Schema)
+		if err := json.Unmarshal(descriptor.InputSchema, params); err != nil {
+			return nil, err
+		}
+		result = append(result, &einoTool{manager: m, info: &schema.ToolInfo{Name: descriptor.ID, Desc: descriptor.Description, ParamsOneOf: schema.NewParamsOneOfByJSONSchema(params)}})
+	}
+	return result, nil
+}
+
 // Info 返回工具的元信息供 Eino agent 使用。
 func (t *einoTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return t.info, nil

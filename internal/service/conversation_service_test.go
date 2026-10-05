@@ -37,6 +37,9 @@ func (r conversationTestClassrooms) SavePlan(context.Context, uint64, json.RawMe
 	return nil
 }
 func (r conversationTestClassrooms) UpdateRunID(context.Context, uint64, string) error { return nil }
+func (r conversationTestClassrooms) UpdateDiscussionConfig(context.Context, uint64, json.RawMessage) error {
+	return nil
+}
 func (r conversationTestClassrooms) ListGeneratingIDs(context.Context) ([]uint64, error) {
 	return nil, nil
 }
@@ -76,7 +79,9 @@ func (r *conversationTestMessages) AppendNext(context.Context, *entity.Conversat
 	return nil
 }
 func (r *conversationTestMessages) AppendContent(context.Context, uint64, string) error { return nil }
-func (r *conversationTestMessages) Finish(context.Context, uint64, string, int32) error { return nil }
+func (r *conversationTestMessages) Finish(context.Context, uint64, string, int32, ...json.RawMessage) error {
+	return nil
+}
 func (r *conversationTestMessages) FindByID(context.Context, uint64) (*entity.ConversationMessage, error) {
 	return nil, gorm.ErrRecordNotFound
 }
