@@ -183,11 +183,6 @@ func (f *fakeIngester) SubmitFile(ctx context.Context, input rag.FileInput) (rag
 	return f.result, f.err
 }
 
-func (f *fakeIngester) IngestFile(ctx context.Context, input rag.FileInput) (rag.IngestResult, error) {
-	f.fileInput = input
-	return f.result, f.err
-}
-
 func (f *fakeIngester) IngestText(ctx context.Context, input rag.TextInput) (rag.IngestResult, error) {
 	f.textInput = input
 	return f.result, f.err
@@ -458,8 +453,8 @@ func TestRetrieveReportsUnavailableSearcher(t *testing.T) {
 	}
 }
 
-// TestIngestFileMapsRequestAndResult 校验 DTO 到收录输入、entity 到响应的两次映射。
-func TestIngestFileMapsRequestAndResult(t *testing.T) {
+// TestSubmitFileMapsRequestAndResult 校验 DTO 到收录输入、entity 到响应的两次映射。
+func TestSubmitFileMapsRequestAndResult(t *testing.T) {
 	querier := &fakeDocumentQuerier{}
 	ingestion := &fakeIngester{result: rag.IngestResult{
 		Document: &entity.KnowledgeDocument{
@@ -474,14 +469,14 @@ func TestIngestFileMapsRequestAndResult(t *testing.T) {
 	}}
 	svc := newTestService(querier, ingestion)
 
-	document, err := svc.IngestFile(context.Background(), requestdto.KnowledgeIngestFile{
+	document, err := svc.SubmitFile(context.Background(), requestdto.KnowledgeIngestFile{
 		Path:       "/tmp/upload.md",
 		Title:      "设计文档",
 		SourceType: testDocumentSource,
 		SourceURI:  "设计.md",
 	})
 	if err != nil {
-		t.Fatalf("收录失败: %v", err)
+		t.Fatalf("提交失败: %v", err)
 	}
 
 	// 请求的四个字段一个都不能丢，否则收录端拿不到路径或标题。
@@ -498,48 +493,6 @@ func TestIngestFileMapsRequestAndResult(t *testing.T) {
 	}
 	if document.Characters != 4 {
 		t.Errorf("字符数 = %d，期望 4（按字符而不是字节）", document.Characters)
-	}
-}
-
-// TestIngestFileReturnsErrorWithEmptyDocument 收录在"连文档行都没建起来"时失败，
-// 响应体应当是零值而不是 panic。
-func TestIngestFileReturnsErrorWithEmptyDocument(t *testing.T) {
-	ingestion := &fakeIngester{err: errors.New("待收录的文件路径不能为空")}
-	svc := newTestService(&fakeDocumentQuerier{}, ingestion)
-
-	document, err := svc.IngestFile(context.Background(), requestdto.KnowledgeIngestFile{})
-	if err == nil {
-		t.Fatal("收录失败时必须把错误交回调用方")
-	}
-	if document.ID != 0 || document.Title != "" {
-		t.Errorf("没有任何文档可返回时应当是零值，实际 %+v", document)
-	}
-}
-
-// TestIngestFileKeepsFailedDocument 收录失败但文档行已落库时，响应里要带上它 ——
-// 异步化之后这个 ID 就是查进度的入口。
-func TestIngestFileKeepsFailedDocument(t *testing.T) {
-	ingestion := &fakeIngester{
-		result: rag.IngestResult{Document: &entity.KnowledgeDocument{
-			BaseModel: entity.BaseModel{ID: testDocumentID},
-			Title:     "坏文档",
-			Status:    entity.KnowledgeDocumentStatusFailed,
-			Metadata:  json.RawMessage(`{"stage":"embed","error":"上游返回 429"}`),
-		}},
-		err: errors.New("第 1~16 个切片向量化失败: 上游返回 429"),
-	}
-	svc := newTestService(&fakeDocumentQuerier{}, ingestion)
-
-	document, err := svc.IngestFile(context.Background(), requestdto.KnowledgeIngestFile{Path: "/tmp/x.md"})
-	if err == nil {
-		t.Fatal("收录失败时必须报错")
-	}
-	if document.ID != testDocumentID {
-		t.Errorf("失败时也应当带上文档 ID，实际 %+v", document)
-	}
-	// 失败原因从 metadata 的 error 键取出来，前端只需要这一句话。
-	if document.Error != "上游返回 429" {
-		t.Errorf("失败原因 = %q，期望从 metadata 取到", document.Error)
 	}
 }
 
