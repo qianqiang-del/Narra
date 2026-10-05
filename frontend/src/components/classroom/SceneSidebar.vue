@@ -95,8 +95,8 @@ function generating(scene: Scene): boolean {
         v-for="(scene, i) in scenes"
         :key="scene.id"
         type="button"
-        :disabled="!viewable(scene)"
-        :title="viewable(scene) ? undefined : t('scene.statusGeneratingNow')"
+        :disabled="!viewable(scene) && scene.status !== 'failed'"
+        :title="viewable(scene) || scene.status === 'failed' ? undefined : t('scene.statusGeneratingNow')"
         :class="
           cn(
             'group relative flex w-full flex-col gap-1 rounded-lg p-1.5 text-left transition-all duration-200',
@@ -195,6 +195,17 @@ function generating(scene: Scene): boolean {
           >
             <RefreshCw class="size-4 text-red-400" />
             <span class="text-[9px] font-medium text-red-500">{{ t('scene.statusFailed') }}</span>
+            <span
+              role="button"
+              tabindex="0"
+              class="mt-0.5 inline-flex cursor-pointer items-center gap-0.5 rounded border border-red-300 bg-white/90 px-1.5 py-0.5 text-[9px] font-semibold text-red-600 shadow-sm transition-colors hover:bg-red-50 focus:outline-none focus:ring-1 focus:ring-red-400 dark:border-red-800 dark:bg-red-950/80 dark:text-red-300 dark:hover:bg-red-900"
+              @click.stop="emit('retry', scene.id)"
+              @keydown.enter.stop="emit('retry', scene.id)"
+              @keydown.space.prevent.stop="emit('retry', scene.id)"
+            >
+              <RefreshCw class="size-2.5" />
+              {{ t('scene.retry') }}
+            </span>
           </div>
 
           <!-- 完成 -->

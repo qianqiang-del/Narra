@@ -44,6 +44,10 @@ type JobQueue interface {
 	Remove(classroomID uint64) error
 }
 
+type SceneRetryQueue interface {
+	EnqueueScene(classroomID, sceneID uint64) error
+}
+
 // 角色选择模式，取值与请求体的 agent_mode 一致。
 const (
 	agentModePreset = "preset"
@@ -165,6 +169,42 @@ func (s *classroomService) ListScenes(ctx context.Context, id uint64) ([]respons
 		})
 	}
 	return items, nil
+}
+
+func (s *classroomService) RetryScene(ctx context.Context, sceneID uint64) (*responsedto.ClassroomSceneSummary, error) {
+	scene, err := s.scenes.FindByID(ctx, sceneID)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "场景不存在", err)
+	}
+	if scene.Status != entity.SceneStatusFailed {
+		return nil, apperrors.New(apperrors.CodeConflict, "这一页当前不是失败状态，不能重试")
+	}
+	queue, ok := s.queue.(SceneRetryQueue)
+	if !ok {
+		return nil, apperrors.New(apperrors.CodeInternalError, "页面重试队列未配置")
+	}
+	classroom, err := s.classrooms.FindByID(ctx, scene.ClassroomID)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
+	}
+	reset, err := s.scenes.ResetForRetry(ctx, sceneID)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "准备页面重试失败", err)
+	}
+	if !reset {
+		return nil, apperrors.New(apperrors.CodeConflict, "这一页已经被重试或正在生成")
+	}
+	if err := s.classrooms.UpdateStatus(ctx, classroom.ID, entity.ClassroomStatusPlayable, nil); err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "更新课堂状态失败", err)
+	}
+	if err := queue.EnqueueScene(classroom.ID, sceneID); err != nil {
+		_ = s.scenes.RestoreRetryFailure(ctx, sceneID, "页面重试任务投递失败，请稍后重试")
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "页面重试任务投递失败", err)
+	}
+	return &responsedto.ClassroomSceneSummary{
+		ID: scene.ID, SortOrder: scene.SortOrder, Type: scene.Type, Title: scene.Title,
+		Status: entity.SceneStatusPending, Phase: "", ErrorMessage: nil,
+	}, nil
 }
 
 // Create 校验入参、落一行 generating、投递队列，立刻返回。

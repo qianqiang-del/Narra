@@ -143,6 +143,30 @@ func (r *sceneRepository) UpdateStatus(ctx context.Context, id uint64, owner str
 	return r.guardedUpdate(ctx, id, owner, map[string]any{"status": status, "error_message": errorMessage})
 }
 
+func (r *sceneRepository) ResetForRetry(ctx context.Context, id uint64) (bool, error) {
+	result := conn(ctx, r.db).Model(&entity.Scene{}).
+		Where("id = ? AND status = ?", id, entity.SceneStatusFailed).
+		Updates(map[string]any{
+			"status": entity.SceneStatusPending, "phase": "", "error_message": nil,
+			// 保留 generation_checkpoint：手动重试应从最近一个成功节点继续，
+			// 只有断点校验失败时 execute 才会自然退回页面开头。
+			"lease_owner": nil, "lease_expires_at": nil,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
+func (r *sceneRepository) RestoreRetryFailure(ctx context.Context, id uint64, message string) error {
+	return conn(ctx, r.db).Model(&entity.Scene{}).
+		Where("id = ? AND status = ?", id, entity.SceneStatusPending).
+		Updates(map[string]any{
+			"status": entity.SceneStatusFailed, "phase": entity.ScenePhaseFailed,
+			"error_message": message,
+		}).Error
+}
+
 // guardedUpdate 带租约校验地更新一行；租约不在本执行者手里时影响 0 行，返回 ErrLeaseLost。
 func (r *sceneRepository) guardedUpdate(ctx context.Context, id uint64, owner string, values map[string]any) error {
 	result := conn(ctx, r.db).

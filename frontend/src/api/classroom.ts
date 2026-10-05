@@ -143,6 +143,10 @@ export function fetchClassroomScenes(id: number): Promise<ClassroomSceneSummaryD
   return request<ClassroomSceneSummaryDTO[]>(`/classrooms/${id}/scenes`)
 }
 
+export function retryClassroomScene(sceneId: number): Promise<ClassroomSceneSummaryDTO> {
+  return request<ClassroomSceneSummaryDTO>(`/scenes/${sceneId}/retry`, { method: 'POST' })
+}
+
 /**
  * 生成进度流的一条事件。
  *
