@@ -19,14 +19,6 @@ import (
 // 重启时未完成的任务 = Worker 启动时 ResetStale 把超时的 processing 打回 pending。
 // 正文收录（IngestText）仍同步：没有解析这一步，切分与向量化是秒级的。
 type KnowledgeService interface {
-	// IngestFile 从磁盘读一份文件并**同步**收录完（解析 → 切分 → 向量化 → 入库）。
-	// 解析器按文件后缀选择：md / txt 与源码、数据文件（.go/.py/.json 等）直接读，其余格式交给文档解析器（需要 document_parser 已启用）。
-	//
-	// 任何一步失败都会把文档置为 failed 并把原因写进 metadata，同时把错误返回给调用方。
-	// HTTP 面没有路由指向它（上传走的是 SubmitFile），保留它是给需要"传完就等结果"的
-	// 进程内调用与测试用。
-	IngestFile(ctx context.Context, input requestdto.KnowledgeIngestFile) (responsedto.KnowledgeDocument, error)
-
 	// SubmitFile 提交一份文件给后台收录，建好 pending 行就返回。
 	//
 	// 返回的文档 status 是 pending，chunks 是 0 —— 解析与向量化由 rag.Worker 推进。

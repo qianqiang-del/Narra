@@ -194,11 +194,6 @@ type IngestOptions struct {
 // 解析、切分、向量化各自落库，任务行的 ingest_stage 记着失败后从哪一步恢复
 // （见 processExistingFile）。正文收录（IngestText）仍同步：没有解析这一步，
 // 切分与向量化是秒级的，走 ReplaceChunks 的单事务。
-//
-// IngestFile 是文件收录的同步版本。HTTP 面已经不再走它（controller 调的是 SubmitFile），
-// 服务层接口上虽然还留着这个方法，但没有路由指向它，目前只剩测试在用。
-// 它与 processExistingFile 在持久化上已经是两条路：前者一次成型（没有队列与恢复），
-// 后者按阶段落库；解析那一段逻辑相同，将来可以再抽一层。
 type Ingester struct {
 	store     DocumentStore
 	records   UploadRecordStore
@@ -570,89 +565,6 @@ func (i *Ingester) backfillImages(documentID uint64, markdown string, paths []st
 	return markdown, nil
 }
 
-// IngestFile 读一份文件并收录。
-//
-// 顺序是"先建文档行、再解析"：文档行是整条链路的主线，状态机挂在它上面。
-// 反过来先解析再建行的话，解析失败就没有任何记录可查 —— 用户只看到一句报错，
-// 不知道失败的是哪次上传。
-func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResult, error) {
-	path := strings.TrimSpace(input.Path)
-	if path == "" {
-		return IngestResult{}, fmt.Errorf("待收录的文件路径不能为空")
-	}
-
-	sourceType, err := normalizeSourceType(input.SourceType, entity.KnowledgeDocumentSourceImport)
-	if err != nil {
-		return IngestResult{}, err
-	}
-
-	// SourceURI 存用户看到的原始文件名，不存服务器上的临时路径：
-	// 后者对用户没有意义，还会把部署目录结构带进数据库。
-	sourceURI := strings.TrimSpace(input.SourceURI)
-	if sourceURI == "" {
-		sourceURI = filepath.Base(path)
-	}
-
-	explicitTitle := strings.TrimSpace(input.Title) != ""
-	title := strings.TrimSpace(input.Title)
-	if title == "" {
-		// 回落到 SourceURI，而不是回落到入参里的路径：对 HTTP 上传来说，那个路径是
-		// 服务端自己起的临时文件名（controller 会规范成 upload.md），写进库里
-		// 用户根本认不出是自己传的哪一份；SourceURI 才是他看到的那个名字。
-		title = sourceURI
-	}
-
-	document, err := i.createDocument(ctx, title, sourceType, sourceURI, input.Purpose)
-	if err != nil {
-		return IngestResult{}, err
-	}
-
-	// 同步链路没有 Worker 认领这一步，状态要自己在这里推进：失败现场只认
-	// processing 的行，停在 pending 会让解析失败的原因根本写不进去。
-	if err := i.store.MarkProcessing(ctx, document.ID); err != nil {
-		return IngestResult{Document: document}, fmt.Errorf("更新文档状态失败: %w", err)
-	}
-
-	parser, err := documentparser.ParserFor(path, i.parser)
-	if err != nil {
-		return i.failIngest(ctx, document, 0, "select_parser", err)
-	}
-
-	started := time.Now().UTC()
-	result, err := parser.Parse(ctx, documentparser.Request{Path: path})
-	if err != nil {
-		return i.failIngest(ctx, document, 0, "parse", err)
-	}
-	// 解析产物目录（导出的图片）归调用方清理；图片在 backfillImages 里发布、
-	// 正文回填完成后，这个 defer 才删目录 —— 顺序就是"先发布、再回填、后清理"。
-	defer func() { _ = result.Cleanup() }()
-
-	// 有页 OCR 失败时正文不完整，宁可整篇失败也不静默入库（Cleanup 已经挂上，临时目录照删）。
-	if err := ocrCoverageError(result); err != nil {
-		return i.failIngest(ctx, document, 0, "parse", err)
-	}
-
-	// 图片先发布、URL 回填进正文，之后才能删临时目录；失败仍算 parse 阶段失败，
-	// 重试会重新解析，图片目录里已经发布的部分按内容哈希覆盖，不会重复堆积。
-	markdown, err := i.backfillImages(document.ID, result.Markdown, result.PicturePaths)
-	if err != nil {
-		return i.failIngest(ctx, document, 0, "parse", err)
-	}
-
-	// 调用方没指定标题时，用正文的首个一级标题代替文件名：
-	// 文件名常带版本号和日期（"架构说明_2026-09-17_v3.md"），
-	// 而一级标题是作者给这篇文档起的正式名字，在列表页里可读得多。
-	if !explicitTitle {
-		title = preferHeadingTitle(title, markdown)
-	}
-
-	metadata := map[string]any{
-		"parser":   parserName(result),
-		"parse_ms": time.Since(started).Milliseconds(),
-	}
-	return i.ingestMarkdown(ctx, document, title, markdown, DocumentHint{Path: path, SourceURI: sourceURI}, metadata)
-}
-
 // processExistingFile 处理一条已经建好行的文件收录任务，由 Worker 调用。
 //
 // stage 是 Worker 按现实材料算好的恢复点（ResolveRecoveryStage），不是行上的 ingest_stage：
@@ -660,9 +572,9 @@ func (i *Ingester) IngestFile(ctx context.Context, input FileInput) (IngestResul
 // 每步成功都把中间结果与阶段一起落库，所以进程崩溃、向量服务抖动都不会让昂贵的解析
 // 白跑一遍 —— 这正是分阶段收录的意义。
 //
-// 与 IngestFile 的差别有三处：文档行是现成的（不再新建，状态也已经由 worker 抢任务时
-// 置为 processing）；标题回落的判据来自任务元数据 —— 调用方当初没指定标题时，
-// worker 会传空标题进来，这里才走到"用正文一级标题替换"；以及 attempt 这个租约编号。
+// 标题回落的判据来自任务元数据：调用方当初没指定标题时，worker 会传空标题进来，
+// 这里才走到"用正文一级标题替换"。attempt 是这次处理的租约编号，所有阶段写入
+// 都要求与它相符（见 stagedUpdate）。
 //
 // 失败时和别处一样把文档置为 failed（停在失败的那一步），而不是让它停在 processing：
 // 停在 processing 的行此后没有任何执行者会再碰它，只能等下一次进程启动时
@@ -705,7 +617,7 @@ func (i *Ingester) processExistingFile(
 		}
 		defer func() { _ = result.Cleanup() }()
 
-		// 与 IngestFile 同一条守卫：缺页的文档不能标 ready。
+		// 缺页的文档不能标 ready：正文不完整时宁可整篇失败，让用户重试。
 		if err := ocrCoverageError(result); err != nil {
 			return i.failIngest(ctx, document, attempt, "parse", err)
 		}
@@ -842,13 +754,12 @@ func (i *Ingester) IngestText(ctx context.Context, input TextInput) (IngestResul
 	return i.ingestMarkdown(ctx, document, title, content, DocumentHint{SourceURI: strings.TrimSpace(input.SourceURI)}, map[string]any{"parser": "direct"})
 }
 
-// ingestMarkdown 是同步链路的公共后半段：切分 → 向量化 → 一次事务落三张表。
-// 文件收录（IngestFile）与正文收录（IngestText）在这里合流，之后的处理完全一样。
+// ingestMarkdown 是同步链路（正文收录）的公共后半段：切分 → 向量化 → 一次事务落三张表。
 //
 // hint 是切分入口做文档类型判定的旁证（来源路径/文件名），可为空。
 //
-// 它不参与分阶段恢复：正文收录没有原文件可重试，同步文件收录也没有任务队列；
-// 两者都要"要么全成、要么全不成"，所以走 ReplaceChunks 的单事务。
+// 它不参与分阶段恢复：正文收录没有原文件可重试，也没有任务队列，
+// 要"要么全成、要么全不成"，所以走 ReplaceChunks 的单事务。
 // 异步文件链路由 processExistingFile 按 ingest_stage 分阶段推进。
 func (i *Ingester) ingestMarkdown(
 	ctx context.Context,

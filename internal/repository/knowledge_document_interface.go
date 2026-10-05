@@ -27,7 +27,7 @@ import (
 //     CountDocumentsMissingModelVectors / ListDocumentIDsMissingModelVectors
 //
 // MarkFailed 被前两组共用，所以它在两处都出现。分阶段写入的四个方法只服务异步文件链路
-// （Worker 按 ingest_stage 恢复）；同步链路（IngestText / IngestFile）仍走 ReplaceChunks，
+// （Worker 按 ingest_stage 恢复）；同步的正文收录（IngestText）仍走 ReplaceChunks，
 // 用一次事务把正文、切片、向量与 ready 一起写完。
 //
 // 三张表之间是 ON DELETE CASCADE（切片随原文、向量随切片），删除只用删最外层一行。
