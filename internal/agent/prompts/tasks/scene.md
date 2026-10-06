@@ -88,6 +88,7 @@
 - quiz block 的 `content` 只写题干，不写选项列表和答案解释。
 - 选项必须放在 `interaction.options` 中，至少两个选项且不能重复。
 - 正确答案必须放在 `interaction.answer` 中，且必须与 options 中某一项完全一致。
+- 正确答案不要总放在第一个选项；生成多道题时要分散正确答案在 options 中的位置，单道题也应按自然阅读顺序或轻微打乱来避免固定偏向。
 - 需要解析时放入 `interaction.config.explanation`，不要拼进题干。
 - 每个题目必须有独立 key。
 
