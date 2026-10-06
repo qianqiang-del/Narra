@@ -391,13 +391,53 @@ function stopAudio() {
   narrationIndex.value = 0
 }
 
-function playNarrationSegment() {
+function normalizedAudioPath(index = narrationIndex.value): string {
+  return activeNarration.value[index]?.audio_path?.trim().replaceAll('\\', '/') ?? ''
+}
+
+function nextNarrationIndex(from: number): number {
+  for (let i = from; i < activeNarration.value.length; i += 1) {
+    if (normalizedAudioPath(i)) return i
+  }
+  return -1
+}
+
+function sceneHasAudio(scene: Scene): boolean {
+  return (props.sceneDetails?.[scene.id]?.narration ?? []).some((item) => item.audio_path?.trim())
+}
+
+function stepToNextPlayableScene(): boolean {
+  for (let i = activeIndex.value + 1; i < scenes.value.length; i += 1) {
+    const scene = scenes.value[i]
+    if (isViewable(scene) && sceneHasAudio(scene)) {
+      activeIndex.value = i
+      narrationIndex.value = 0
+      return true
+    }
+  }
+  return false
+}
+
+function handleNarrationEnded() {
+  const nextIndex = nextNarrationIndex(narrationIndex.value + 1)
+  if (nextIndex >= 0) {
+    narrationIndex.value = nextIndex
+    void playNarrationSegment()
+  } else if (autoPlay.value && stepToNextPlayableScene()) {
+    window.setTimeout(() => playNarrationSegment(), 0)
+  } else {
+    playing.value = false
+    narrationIndex.value = 0
+    autoPlay.value = false
+  }
+}
+
+function playNarrationSegment(): boolean {
   const segment = activeNarration.value[narrationIndex.value]
-  const path = segment?.audio_path?.trim().replaceAll('\\', '/')
+  const path = normalizedAudioPath()
   if (!path) {
     playing.value = false
-    toast('当前讲解暂无音频')
-    return
+    return false
   }
 
   if (!audio.value) audio.value = new Audio()
@@ -414,17 +454,7 @@ function playNarrationSegment() {
   audio.value.load()
   audio.value.volume = volume.value
   audio.value.playbackRate = speed.value
-  audio.value.onended = () => {
-    if (narrationIndex.value < activeNarration.value.length - 1) {
-      narrationIndex.value += 1
-      void playNarrationSegment()
-    } else if (autoPlay.value && step(1)) {
-      narrationIndex.value = 0
-    } else {
-      playing.value = false
-      narrationIndex.value = 0
-    }
-  }
+  audio.value.onended = handleNarrationEnded
   audio.value.onerror = () => {
     playing.value = false
     toast('讲解音频加载失败')
@@ -435,6 +465,7 @@ function playNarrationSegment() {
     playing.value = false
     toast('讲解音频播放失败')
   })
+  return true
 }
 
 function togglePlay() {
@@ -443,6 +474,7 @@ function togglePlay() {
     if (playing.value) {
       currentAudio.pause()
       playing.value = false
+      autoPlay.value = false
     } else {
       void currentAudio.play().then(() => { playing.value = true }).catch(() => { playing.value = false })
     }
@@ -451,21 +483,51 @@ function togglePlay() {
   if (playing.value && audio.value) {
     audio.value.pause()
     playing.value = false
+    // 用户主动暂停视为打断连续播放，避免开关仍显示开启但后续不再推进。
+    autoPlay.value = false
     return
   }
   if (audio.value?.src && audio.value.currentTime > 0) {
     void audio.value.play().then(() => { playing.value = true }).catch(() => { playing.value = false })
     return
   }
-  playNarrationSegment()
-  playing.value = Boolean(audio.value?.src)
+  const firstPlayable = nextNarrationIndex(narrationIndex.value)
+  if (firstPlayable >= 0) {
+    narrationIndex.value = firstPlayable
+    playNarrationSegment()
+    playing.value = Boolean(audio.value?.src)
+    return
+  }
+  toast('当前讲解暂无音频')
 }
 
 function toggleAutoPlay() {
   autoPlay.value = !autoPlay.value
-  if (autoPlay.value && !playing.value) {
-    playNarrationSegment()
+  if (autoPlay.value && playing.value && audio.value) {
+    // 当前段已经在播放：只需重新挂上连续播放回调，当前段结束后接管后续段落。
+    audio.value.onended = handleNarrationEnded
+    return
   }
+  if (autoPlay.value && !playing.value) {
+    const firstPlayable = nextNarrationIndex(narrationIndex.value)
+    if (firstPlayable >= 0) {
+      narrationIndex.value = firstPlayable
+      playNarrationSegment()
+    } else if (stepToNextPlayableScene()) {
+      window.setTimeout(() => playNarrationSegment(), 0)
+    } else {
+      autoPlay.value = false
+      toast('当前没有可自动播放的讲解音频')
+    }
+  }
+}
+
+function handleChatAudioEnded() {
+  if (autoPlay.value) {
+    handleNarrationEnded()
+    return
+  }
+  playing.value = false
 }
 
 watch(activeIndex, () => {
@@ -485,6 +547,15 @@ watch(
   { immediate: true },
 )
 watch(() => props.sceneDetails, updateNotes, { deep: true })
+watch(() => props.sceneDetails, () => {
+  if (autoPlay.value && !playing.value) {
+    const firstPlayable = nextNarrationIndex(narrationIndex.value)
+    if (firstPlayable >= 0) {
+      narrationIndex.value = firstPlayable
+      window.setTimeout(() => playNarrationSegment(), 0)
+    }
+  }
+}, { deep: true })
 watch(volume, (value) => {
   setActiveVolume(value)
 })
@@ -953,6 +1024,7 @@ onBeforeUnmount(() => {
       @open-session="openSession"
       @new-session="newSession"
       @audio-state="playing = $event"
+      @audio-ended="handleChatAudioEnded"
       @audio-caption="updateAudioCaption"
       @send="sendMessage"
       @update:draft="chatDraft = $event"
