@@ -52,6 +52,7 @@ const emit = defineEmits<{
   (e: 'open-session', id: string): void
   (e: 'new-session'): void
   (e: 'audio-state', playing: boolean): void
+  (e: 'audio-ended'): void
   (e: 'audio-caption', payload: { id: string; text: string }): void
   (e: 'send', text: string): void
   (e: 'update:draft', text: string): void
@@ -113,7 +114,10 @@ function playAudio(path?: string | null, text?: string, id?: string) {
     const player = new Audio(`/audio/${normalized}`)
     registerAudio(player)
     if (text && id) emit('audio-caption', { id, text })
-    player.onended = () => emit('audio-state', false)
+    player.onended = () => {
+      emit('audio-state', false)
+      emit('audio-ended')
+    }
     player.onerror = () => emit('audio-state', false)
     void player.play().then(() => {
       if (props.running || props.sending) { player.pause(); return }

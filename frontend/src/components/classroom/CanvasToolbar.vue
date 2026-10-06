@@ -239,10 +239,28 @@ function cycleSpeed() {
     <!-- 右 -->
     <button
       type="button"
-      :class="cn(ctrlBtn, autoPlay && 'text-brand-700')"
+      :class="
+        cn(
+          'flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-[11px] font-semibold transition-all duration-150 active:scale-95',
+          autoPlay
+            ? 'bg-brand-600 text-white shadow-sm shadow-brand-300/30 hover:bg-brand-700 dark:bg-brand-500 dark:hover:bg-brand-400'
+            : 'bg-gray-500/[0.08] text-gray-600 hover:bg-gray-500/[0.14] dark:text-gray-300',
+        )
+      "
+      :aria-pressed="autoPlay"
+      :title="autoPlay ? '自动播放已开启' : '开启自动播放'"
       @click="emit('toggle-auto-play')"
     >
-      <Repeat class="size-4" :class="!autoPlay && 'text-gray-400'" />
+      <Repeat class="size-3.5" />
+      <span>{{ t('roundtable.autoPlay') }}</span>
+      <span
+        :class="
+          cn(
+            'size-1.5 rounded-full',
+            autoPlay ? 'bg-white' : 'bg-gray-400/70 dark:bg-gray-500',
+          )
+        "
+      />
     </button>
     <button
       type="button"
