@@ -45,9 +45,16 @@ const filteredCourses = computed(() =>
     class="flex h-full w-full flex-col border-r border-border bg-muted/40"
     data-testid="workspace-rail"
   >
-    <!-- Logo 头 -->
+    <!-- Logo 头（点击回首页） -->
     <div class="flex h-14 shrink-0 items-center gap-2 px-4">
-      <img src="/logo-horizontal.svg" alt="Narra" class="h-5 w-[86px]" />
+      <RouterLink
+        to="/"
+        class="min-w-0 transition-opacity hover:opacity-80"
+        :title="t('common.backToHome')"
+        aria-label="Narra"
+      >
+        <img src="/logo-horizontal.svg" alt="Narra" class="h-5 w-[86px] max-w-full object-contain" />
+      </RouterLink>
       <span
         class="rounded bg-gradient-to-r from-brand-700 to-gold-500 px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-white"
       >

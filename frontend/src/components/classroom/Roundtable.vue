@@ -43,6 +43,8 @@ const props = defineProps<{
   userAvatar?: string
   /** 语音识别是否可用；关闭时麦克风按钮置灰 */
   asrEnabled?: boolean
+  /** 收起：高度归零，把纵向空间让给舞台（由底部工具栏的开关控制） */
+  collapsed?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -163,7 +165,8 @@ onBeforeUnmount(stopRecognition)
 
 <template>
   <div
-    class="relative z-10 flex h-[192px] w-full shrink-0 flex-col border-t border-[#e2e5ee] bg-[#f4f5f9]/90 backdrop-blur-md dark:border-[#2a3549] dark:bg-[#151d2e]/90"
+    class="relative z-10 flex w-full shrink-0 flex-col overflow-hidden border-t border-[#e2e5ee] bg-[#f4f5f9]/90 backdrop-blur-md transition-[height] duration-300 ease-out dark:border-[#2a3549] dark:bg-[#151d2e]/90"
+    :style="{ height: collapsed ? '0px' : '192px' }"
   >
     <div class="flex min-h-0 flex-1 items-stretch">
       <!-- 左：教师 -->

@@ -12,6 +12,8 @@ import {
   Maximize2,
   MessageSquare,
   Minimize2,
+  PanelBottomClose,
+  PanelBottomOpen,
   Pause,
   PencilLine,
   Play,
@@ -31,8 +33,11 @@ const props = defineProps<{
   speed: number
   autoPlay: boolean
   whiteboardOpen: boolean
-  fullscreen: boolean
+  /** 全屏放映中：隐藏侧栏/聊天这类会改变布局的按钮 */
+  presenting: boolean
   chatCollapsed: boolean
+  /** 底部圆桌区是否已收起 */
+  roundtableCollapsed: boolean
   discussionActive: boolean
 }>()
 
@@ -47,6 +52,7 @@ const emit = defineEmits<{
   (e: 'toggle-whiteboard'): void
   (e: 'toggle-fullscreen'): void
   (e: 'toggle-chat'): void
+  (e: 'toggle-roundtable'): void
   (e: 'stop-discussion'): void
 }>()
 
@@ -109,8 +115,19 @@ function cycleSpeed() {
 <template>
   <div class="flex h-9 shrink-0 items-center gap-1 px-2">
     <!-- 左 -->
-    <button type="button" :class="ctrlBtn" @click="emit('toggle-sidebar')">
+    <button v-if="!presenting" type="button" :class="ctrlBtn" @click="emit('toggle-sidebar')">
       <LayoutList class="size-4 text-gray-400" />
+    </button>
+    <!-- 圆桌区收起/展开 -->
+    <button
+      v-if="!presenting"
+      type="button"
+      :class="cn(ctrlBtn, roundtableCollapsed && 'opacity-60')"
+      :title="roundtableCollapsed ? t('roundtable.expand') : t('roundtable.collapse')"
+      @click="emit('toggle-roundtable')"
+    >
+      <PanelBottomOpen v-if="roundtableCollapsed" class="size-4 text-gray-400" />
+      <PanelBottomClose v-else class="size-4 text-gray-400" />
     </button>
     <span class="ml-1 text-[11px] text-gray-400 tabular-nums">
       {{ index + 1 }}/{{ total }}
@@ -235,11 +252,21 @@ function cycleSpeed() {
       <PencilLine class="size-4" :class="!whiteboardOpen && 'text-gray-400'" />
     </button>
     <div :class="divider" />
-    <button type="button" :class="ctrlBtn" @click="emit('toggle-fullscreen')">
-      <Minimize2 v-if="fullscreen" class="size-4 text-gray-500" />
-      <Maximize2 v-else class="size-4 text-gray-400" />
+    <!-- 放映中：带文案的退出入口（替代浏览器原生全屏那条 localhost 提示） -->
+    <button
+      v-if="presenting"
+      type="button"
+      class="flex h-6 cursor-pointer items-center gap-1 rounded-md bg-gray-500/10 px-2 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-500/20 dark:text-gray-300"
+      @click="emit('toggle-fullscreen')"
+    >
+      <Minimize2 class="size-3.5" />
+      {{ t('stage.exitFullscreen') }} (Esc)
+    </button>
+    <button v-else type="button" :class="ctrlBtn" @click="emit('toggle-fullscreen')">
+      <Maximize2 class="size-4 text-gray-400" />
     </button>
     <button
+      v-if="!presenting"
       type="button"
       :class="cn(ctrlBtn, chatCollapsed && 'opacity-50')"
       @click="emit('toggle-chat')"

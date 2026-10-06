@@ -325,6 +325,22 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 58%, var(--border));
 }
 
+/* 首页 Composer 聚焦环 —— 画在卡片自己的圆角上，而不是 textarea 的直角框上。
+   textarea 没有圆角，上面的全局 box-shadow 会贴着它的矩形盒画出一圈直角；
+   外层卡片是 20px 圆角，两者形状对不上（聚焦时像套了一个直角外框）。
+   所以：收起 textarea 自己的焦点框，把焦点指示交给 .narra-composer 卡片，
+   轮廓随圆角走，border-color / box-shadow 由模板里的 transition 平滑过渡。 */
+.narra-shell .narra-home .narra-composer:focus-within {
+  border-color: var(--brand-300);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--brand-400) 32%, transparent),
+    0 1px 3px rgba(29, 47, 41, 0.05),
+    0 8px 22px rgba(29, 47, 41, 0.06);
+}
+.narra-shell .narra-home .narra-composer > textarea:focus-visible {
+  box-shadow: none;
+}
+
 .narra-shell .narra-decorative-orb,
 .narra-shell .blob {
   display: none !important;

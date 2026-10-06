@@ -62,7 +62,6 @@ export default {
     today: '今天',
     yesterday: '昨天',
     daysAgo: '{count} 天前',
-    footer: 'OpenMAIC Open Source Project',
   },
   agentBar: {
     readyToLearn: '准备好一起学习了吗？',
@@ -194,6 +193,8 @@ export default {
     qaEnded: '问答已结束',
     autoPlay: '自动播放',
     speed: '倍速',
+    collapse: '收起讨论',
+    expand: '展开讨论',
   },
   chat: {
     you: '你',

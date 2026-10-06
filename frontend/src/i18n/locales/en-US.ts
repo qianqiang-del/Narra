@@ -64,7 +64,6 @@ export default {
     today: 'Today',
     yesterday: 'Yesterday',
     daysAgo: '{count} days ago',
-    footer: 'OpenMAIC Open Source Project',
   },
   agentBar: {
     readyToLearn: 'Ready to learn together?',
@@ -197,6 +196,8 @@ export default {
     qaEnded: 'Q&A ended',
     autoPlay: 'Auto-play',
     speed: 'Speed',
+    collapse: 'Collapse discussion',
+    expand: 'Expand discussion',
   },
   chat: {
     you: 'You',
