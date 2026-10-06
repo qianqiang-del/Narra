@@ -53,7 +53,7 @@ func (s *materialSummarizer) SummarizeSections(ctx context.Context, documentName
 		schema.UserMessage(input.String()),
 	}
 	message, err := invokeWithRetryIf(ctx, maxTransientRetry, retryableModelError, func() (*schema.Message, error) {
-		return s.rt.generateText(ctx, messages)
+		return s.rt.generateText(ctx, "summarize-course-material", messages)
 	})
 	if err != nil {
 		return nil, err
@@ -85,7 +85,7 @@ func (s *materialSummarizer) SummarizeDocument(ctx context.Context, documentName
 		schema.UserMessage(strings.TrimSpace(input.String())),
 	}
 	message, err := invokeWithRetryIf(ctx, maxTransientRetry, retryableModelError, func() (*schema.Message, error) {
-		return s.rt.generateText(ctx, messages)
+		return s.rt.generateText(ctx, "merge-course-material-summary", messages)
 	})
 	if err != nil {
 		return "", err

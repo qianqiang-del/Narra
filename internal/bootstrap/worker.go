@@ -2,7 +2,9 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/cloudwego/eino-ext/callbacks/langfuse"
@@ -129,6 +131,53 @@ func BuildWorker(deps classroom.Deps, cfg *config.Config) (service.JobQueue, *Wo
 		}
 		return nil
 	})
+	server.Register(worker.TypeSceneGenerate, func(ctx context.Context, payload []byte) error {
+		classroomID, sceneID, err := worker.DecodeSceneGenerate(payload)
+		if err != nil {
+			return worker.Permanent(err)
+		}
+		if cfg.Langfuse.Enabled {
+			record, findErr := deps.Classrooms.FindByID(ctx, classroomID)
+			if findErr != nil {
+				return worker.Permanent(fmt.Errorf("读取课程失败: %w", findErr))
+			}
+			runID, runErr := classroom.EnsureRunID(ctx, deps, record)
+			if runErr != nil {
+				return worker.Permanent(runErr)
+			}
+			scene, sceneErr := deps.Scenes.FindByID(ctx, sceneID)
+			if sceneErr != nil {
+				return worker.Permanent(fmt.Errorf("读取页面失败: %w", sceneErr))
+			}
+			metadata := map[string]string{
+				"classroom_id": classroomIDString(classroomID),
+				"scene_id":     classroomIDString(sceneID),
+				"sort_order":   strconv.FormatInt(int64(scene.SortOrder), 10),
+				"scene_type":   scene.Type,
+				"trigger":      "manual_retry",
+				"queue_retry":  strconv.Itoa(worker.Retried(ctx)),
+				"phase":        scene.Phase,
+			}
+			if nextNode := checkpointNextNode(scene.GenerationCheckpoint); nextNode != "" {
+				metadata["checkpoint_available"] = "true"
+				metadata["resume_node_candidate"] = nextNode
+			} else {
+				metadata["checkpoint_available"] = "false"
+			}
+			ctx = langfuse.SetTrace(ctx,
+				langfuse.WithID(fmt.Sprintf("%s-scene-%d-attempt-%d-%d", runID, sceneID, worker.Retried(ctx), time.Now().UnixNano())),
+				langfuse.WithName("classroom-scene-retry"),
+				langfuse.WithTags("classroom", "scene", "manual-retry"),
+				langfuse.WithSessionID(classroomIDString(classroomID)),
+				langfuse.WithMetadata(metadata),
+			)
+		}
+		if err := classroom.GenerateScene(ctx, deps, classroomID, sceneID); err != nil {
+			logger.Error("课堂页面重试失败", zap.Uint64("classroom_id", classroomID), zap.Uint64("scene_id", sceneID), zap.Error(err))
+			return err
+		}
+		return nil
+	})
 
 	queue := worker.NewQueue(client, cfg.Worker.MaxRetry, cfg.Worker.Timeout)
 	revocable := cancellableQueue{queue: queue, server: server}
@@ -140,6 +189,20 @@ func BuildWorker(deps classroom.Deps, cfg *config.Config) (service.JobQueue, *Wo
 		interval: cfg.Worker.ReconcileInterval,
 	}
 	return revocable, runtime, nil
+}
+
+func classroomIDString(id uint64) string {
+	return strconv.FormatUint(id, 10)
+}
+
+func checkpointNextNode(raw json.RawMessage) string {
+	var checkpoint struct {
+		NextNode string `json:"next_node"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &checkpoint) != nil {
+		return ""
+	}
+	return checkpoint.NextNode
 }
 
 // cancellableQueue 给生成任务的队列补上「撤掉这一堂课」。
@@ -155,6 +218,10 @@ type cancellableQueue struct {
 // Enqueue 投递生成任务。
 func (q cancellableQueue) Enqueue(classroomID uint64) error {
 	return q.queue.Enqueue(classroomID)
+}
+
+func (q cancellableQueue) EnqueueScene(classroomID, sceneID uint64) error {
+	return q.queue.EnqueueScene(classroomID, sceneID)
 }
 
 // Remove 撤掉这堂课的生成任务：先停正在跑的，再删排队中的。

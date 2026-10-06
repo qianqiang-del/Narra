@@ -10,5 +10,6 @@ func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	g.GET("/classrooms/:id/outline", c.GetOutline)
 	g.GET("/classrooms/:id/agents", c.GetAgents)
 	g.GET("/classrooms/:id/scenes", c.ListScenes)
+	g.POST("/scenes/:id/retry", c.RetryScene)
 	g.GET("/classrooms/:id", c.Get)
 }

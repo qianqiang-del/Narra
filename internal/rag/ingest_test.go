@@ -56,7 +56,6 @@ type fakeDocumentStore struct {
 	failMeta   json.RawMessage
 	failReason string
 	processing bool
-	replaceErr error
 	chunkCount int64
 
 	// 分阶段链路的替身状态。字段与真库一一对应：stage 是 ingest_stage，
@@ -65,6 +64,7 @@ type fakeDocumentStore struct {
 	stage      string
 	attempt    int32
 	content    string
+	parsed     entity.ParsedContent
 	chunks     []entity.KnowledgeChunk
 	embeddings []entity.KnowledgeEmbedding
 	ready      bool
@@ -325,9 +325,6 @@ func (s *fakeDocumentStore) CountChunksByDocument(ctx context.Context, ids []uin
 }
 
 func (s *fakeDocumentStore) ReplaceChunks(ctx context.Context, id uint64, input entity.ChunkReplacement) error {
-	if s.replaceErr != nil {
-		return s.replaceErr
-	}
 	s.replaced = &input
 	s.chunkCount = int64(len(input.Chunks))
 	s.ready = true
@@ -381,6 +378,7 @@ func (s *fakeDocumentStore) SaveParsedContent(ctx context.Context, id uint64, at
 	if s.parseSaveErr != nil {
 		return s.parseSaveErr
 	}
+	s.parsed = input
 	s.content = input.Content
 	s.stage = entity.KnowledgeDocumentStageChunk
 	s.mergeMetadata(input.Metadata)
@@ -611,8 +609,53 @@ func writeTempFile(t *testing.T, name, content string) string {
 	return path
 }
 
-// TestIngestFileStoresChunksAndVectors 走一遍完整的正常路径。
-func TestIngestFileStoresChunksAndVectors(t *testing.T) {
+// runFileTask 把一次文件收录安排成"Worker 刚抢到任务"的现场，然后调
+// processExistingFile —— 文件收录现在唯一还活着的入口。
+//
+// 文档行按 SubmitFile 建行时的口径准备：metadata 带 upload_path 与 explicit_title，
+// 状态 processing、租约编号 1（模拟已被认领）。调用方返回后直接断言阶段产物
+// （store.content / store.chunks / store.embeddings / store.ready）与失败现场。
+func runFileTask(t *testing.T, ingester *Ingester, store *fakeDocumentStore, input FileInput) (IngestResult, error) {
+	t.Helper()
+
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		title = strings.TrimSpace(input.SourceURI)
+	}
+	if title == "" {
+		title = filepath.Base(input.Path)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"upload_path":    input.Path,
+		"explicit_title": strings.TrimSpace(input.Title) != "",
+	})
+	if err != nil {
+		t.Fatalf("构造任务 metadata 失败: %v", err)
+	}
+
+	stage := entity.KnowledgeDocumentStageParse
+	document := &entity.KnowledgeDocument{
+		BaseModel:     entity.BaseModel{ID: testDocumentID},
+		Title:         title,
+		SourceType:    testDocumentSource,
+		Enabled:       true,
+		Status:        entity.KnowledgeDocumentStatusProcessing,
+		IngestStage:   &stage,
+		IngestAttempt: 1,
+		Metadata:      payload,
+	}
+
+	store.created = document
+	store.processing = true
+	store.attempt = 1
+	store.metadata = payload
+	store.stage = stage
+
+	return ingester.processExistingFile(context.Background(), document, input, 1, stage)
+}
+
+// TestFileIngestStoresChunksAndVectors 走一遍完整的正常路径。
+func TestFileIngestStoresChunksAndVectors(t *testing.T) {
 	store := &fakeDocumentStore{}
 	embedder := &stubEmbedder{dimension: testVectorDims}
 	ingester := newTestIngester(store, embedder)
@@ -620,7 +663,7 @@ func TestIngestFileStoresChunksAndVectors(t *testing.T) {
 	markdown := "# 数据库设计\n\n" + strings.Repeat("这是一段用于测试收录链路的正文。", 40) + "\n\n## 索引\n\n另一个小节的内容。"
 	path := writeTempFile(t, "设计.md", markdown)
 
-	result, err := ingester.IngestFile(context.Background(), FileInput{
+	result, err := runFileTask(t, ingester, store, FileInput{
 		Path:       path,
 		SourceType: testDocumentSource,
 		SourceURI:  "设计.md",
@@ -642,11 +685,19 @@ func TestIngestFileStoresChunksAndVectors(t *testing.T) {
 	if !store.processing {
 		t.Error("收录过程中应当把文档推进到 processing")
 	}
-	if store.replaced == nil {
+	if !store.ready || len(store.chunks) == 0 {
 		t.Fatal("没有写入切片与向量")
 	}
 
-	replacement := store.replaced
+	// 分阶段链路的产物：正文与切片的写入时机与同步链路不同（parse 落正文、
+	// chunk 落切片、embed 落向量），这里拼成一份与旧断言同形的视图。
+	replacement := &entity.ChunkReplacement{
+		Chunks:     store.chunks,
+		Embeddings: store.embeddings,
+		Content:    store.content,
+		Checksum:   store.parsed.Checksum,
+		Metadata:   store.metadata,
+	}
 	if len(replacement.Chunks) != len(replacement.Embeddings) {
 		t.Fatalf("切片数 %d 与向量数 %d 不一致", len(replacement.Chunks), len(replacement.Embeddings))
 	}
@@ -900,8 +951,8 @@ func TestReembedRequeuesReadyDocument(t *testing.T) {
 	}
 }
 
-// TestIngestFileBatchesEmbeddingCalls 校验分批：一次收录不能变成几百次请求。
-func TestIngestFileBatchesEmbeddingCalls(t *testing.T) {
+// TestFileIngestBatchesEmbeddingCalls 校验分批：一次收录不能变成几百次请求。
+func TestFileIngestBatchesEmbeddingCalls(t *testing.T) {
 	store := &fakeDocumentStore{}
 	embedder := &stubEmbedder{dimension: testVectorDims}
 	ingester := newTestIngester(store, embedder)
@@ -913,7 +964,7 @@ func TestIngestFileBatchesEmbeddingCalls(t *testing.T) {
 	}
 	path := writeTempFile(t, "长文.md", strings.Join(paragraphs, "\n\n"))
 
-	result, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	result, err := runFileTask(t, ingester, store, FileInput{Path: path})
 	if err != nil {
 		t.Fatalf("收录失败: %v", err)
 	}
@@ -936,15 +987,15 @@ func TestIngestFileBatchesEmbeddingCalls(t *testing.T) {
 	}
 }
 
-// TestIngestFileFailsWhenEmbeddingFails 向量化失败必须留下 failed 与失败阶段。
-func TestIngestFileFailsWhenEmbeddingFails(t *testing.T) {
+// TestFileIngestFailsWhenEmbeddingFails 向量化失败必须留下 failed 与失败阶段。
+func TestFileIngestFailsWhenEmbeddingFails(t *testing.T) {
 	store := &fakeDocumentStore{}
 	embedder := &stubEmbedder{dimension: testVectorDims, err: fmt.Errorf("上游返回 429")}
 	ingester := newTestIngester(store, embedder)
 
 	path := writeTempFile(t, "正常.md", "# 标题\n\n"+strings.Repeat("正文。", 100))
 
-	result, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	result, err := runFileTask(t, ingester, store, FileInput{Path: path})
 	if err == nil {
 		t.Fatal("向量化失败时收录必须报错")
 	}
@@ -953,8 +1004,10 @@ func TestIngestFileFailsWhenEmbeddingFails(t *testing.T) {
 	if result.Document == nil || result.Document.ID != testDocumentID {
 		t.Errorf("失败时应当返回那份已置为 failed 的文档，实际 %+v", result.Document)
 	}
-	if store.replaced != nil {
-		t.Error("向量化失败时不该写入任何切片")
+	// 分阶段链路在向量化之前已经把切片落库了（这正是"失败从 embed 恢复"的前提），
+	// 但绝不能写入向量、更不能标 ready。
+	if store.ready || len(store.embeddings) > 0 {
+		t.Error("向量化失败时不该写入向量或标记 ready")
 	}
 	if store.status() != entity.KnowledgeDocumentStatusFailed {
 		t.Errorf("状态 = %q，期望 failed", store.status())
@@ -1007,13 +1060,13 @@ func newIngesterWithParser(store DocumentStore, parser documentparser.Parser) *I
 	return ingester
 }
 
-// TestIngestFileWritesReadableFailureReason 失败原因落库的是"给用户看的一句中文"，
+// TestFileIngestWritesReadableFailureReason 失败原因落库的是"给用户看的一句中文"，
 // 完整诊断另存一处。
 //
 // 这两个键曾经是同一个字符串（Go 的 err.Error()），界面上因此显示成
 // "PARSER_FAILED: 文档解析失败 (stderr: parser failed: No module named 'scipy')"。
 // 用例把两边都钉住：error 里不许出现错误码与 stderr，error_detail 里一字不少。
-func TestIngestFileWritesReadableFailureReason(t *testing.T) {
+func TestFileIngestWritesReadableFailureReason(t *testing.T) {
 	store := &fakeDocumentStore{}
 	parserErr := &documentparser.Error{
 		Code:    documentparser.CodeFailed,
@@ -1025,7 +1078,7 @@ func TestIngestFileWritesReadableFailureReason(t *testing.T) {
 	// 后缀必须落到 python 解析器上：md / txt 归纯文本解析器，压根不会调到这里。
 	path := writeTempFile(t, "报告.docx", "内容由桩决定，不看字节")
 
-	if _, err := ingester.IngestFile(context.Background(), FileInput{Path: path}); err == nil {
+	if _, err := runFileTask(t, ingester, store, FileInput{Path: path}); err == nil {
 		t.Fatal("解析失败时收录必须报错")
 	}
 
@@ -1063,17 +1116,17 @@ func TestIngestFileWritesReadableFailureReason(t *testing.T) {
 	}
 }
 
-// TestIngestFileKeepsNonParserFailureReason 非解析器的错误原样保留。
+// TestFileIngestKeepsNonParserFailureReason 非解析器的错误原样保留。
 //
 // 向量化、切分、落库这几条路本来就是 Go 侧直接写的中文，没有错误码与 stderr 可摘 ——
 // 若把它们也"本地化"一遍，只会把有用的细节洗掉。
-func TestIngestFileKeepsNonParserFailureReason(t *testing.T) {
+func TestFileIngestKeepsNonParserFailureReason(t *testing.T) {
 	store := &fakeDocumentStore{}
 	embedder := &stubEmbedder{dimension: testVectorDims, err: fmt.Errorf("第 1~16 个切片向量化失败: 上游返回 429")}
 	ingester := newTestIngester(store, embedder)
 
 	path := writeTempFile(t, "正常.md", "# 标题\n\n"+strings.Repeat("正文。", 100))
-	if _, err := ingester.IngestFile(context.Background(), FileInput{Path: path}); err == nil {
+	if _, err := runFileTask(t, ingester, store, FileInput{Path: path}); err == nil {
 		t.Fatal("向量化失败时收录必须报错")
 	}
 
@@ -1093,8 +1146,8 @@ func TestIngestFileKeepsNonParserFailureReason(t *testing.T) {
 	}
 }
 
-// TestIngestFileFailsWhenVectorCountMismatch 上游少返向量时必须失败，不能错位落库。
-func TestIngestFileFailsWhenVectorCountMismatch(t *testing.T) {
+// TestFileIngestFailsWhenVectorCountMismatch 上游少返向量时必须失败，不能错位落库。
+func TestFileIngestFailsWhenVectorCountMismatch(t *testing.T) {
 	store := &fakeDocumentStore{}
 	embedder := &stubEmbedder{dimension: testVectorDims, shortBy: 1}
 	ingester := newTestIngester(store, embedder)
@@ -1102,7 +1155,7 @@ func TestIngestFileFailsWhenVectorCountMismatch(t *testing.T) {
 	// 必须切出不止一片：只有一片时"少返一条"的桩根本没有生效的余地，
 	// 用例会以"收录成功"结局，看起来像功能坏了。
 	path := writeTempFile(t, "正常.md", strings.Repeat("这是一段用来验证向量条数校验的正文。", 200))
-	_, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	_, err := runFileTask(t, ingester, store, FileInput{Path: path})
 	if err == nil {
 		t.Fatal("向量条数与切片数不一致时必须失败")
 	}
@@ -1114,17 +1167,17 @@ func TestIngestFileFailsWhenVectorCountMismatch(t *testing.T) {
 	}
 }
 
-// TestIngestFileFailsOnEmptyFile 空文件不能在库里留下一个永远检索不到的空文档。
-func TestIngestFileFailsOnEmptyFile(t *testing.T) {
+// TestFileIngestFailsOnEmptyFile 空文件不能在库里留下一个永远检索不到的空文档。
+func TestFileIngestFailsOnEmptyFile(t *testing.T) {
 	store := &fakeDocumentStore{}
 	ingester := newTestIngester(store, &stubEmbedder{dimension: testVectorDims})
 
 	path := writeTempFile(t, "空.md", "   \n\n  \n")
-	_, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	_, err := runFileTask(t, ingester, store, FileInput{Path: path})
 	if err == nil {
 		t.Fatal("空文件必须报错")
 	}
-	if store.replaced != nil {
+	if store.ready {
 		t.Error("空文件不该写入切片")
 	}
 	if store.status() != entity.KnowledgeDocumentStatusFailed {
@@ -1142,14 +1195,14 @@ func TestIngestFileFailsOnEmptyFile(t *testing.T) {
 	}
 }
 
-// TestIngestFileWithoutParserFailsWithActionableMessage 没启用解析器时要有明确指引。
-func TestIngestFileWithoutParserFailsWithActionableMessage(t *testing.T) {
+// TestFileIngestWithoutParserFailsWithActionableMessage 没启用解析器时要有明确指引。
+func TestFileIngestWithoutParserFailsWithActionableMessage(t *testing.T) {
 	store := &fakeDocumentStore{}
 	// parser 传 nil —— 相当于 document_parser.enabled = false。
 	ingester := newIngesterWith(store, newFakeModels(), &stubEmbedder{dimension: testVectorDims}, testEmbeddingConfig())
 
 	path := writeTempFile(t, "报告.pdf", "%PDF-1.4 假装是 PDF")
-	_, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	_, err := runFileTask(t, ingester, store, FileInput{Path: path})
 	if err == nil {
 		t.Fatal("没有解析器时应当报错")
 	}
@@ -1161,13 +1214,13 @@ func TestIngestFileWithoutParserFailsWithActionableMessage(t *testing.T) {
 	}
 }
 
-// TestIngestFileFallsBackToFilenameWithoutHeading 正文没有一级标题时用文件名。
-func TestIngestFileFallsBackToFilenameWithoutHeading(t *testing.T) {
+// TestFileIngestFallsBackToFilenameWithoutHeading 正文没有一级标题时用文件名。
+func TestFileIngestFallsBackToFilenameWithoutHeading(t *testing.T) {
 	store := &fakeDocumentStore{}
 	ingester := newTestIngester(store, &stubEmbedder{dimension: testVectorDims})
 
 	path := writeTempFile(t, "会议纪要.md", "开场白没有标题。\n\n还有第二段。")
-	result, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	result, err := runFileTask(t, ingester, store, FileInput{Path: path})
 	if err != nil {
 		t.Fatalf("收录失败: %v", err)
 	}
@@ -1176,13 +1229,13 @@ func TestIngestFileFallsBackToFilenameWithoutHeading(t *testing.T) {
 	}
 }
 
-// TestIngestFileHonoursExplicitTitle 调用方给了标题就不能被正文标题顶掉。
-func TestIngestFileHonoursExplicitTitle(t *testing.T) {
+// TestFileIngestHonoursExplicitTitle 调用方给了标题就不能被正文标题顶掉。
+func TestFileIngestHonoursExplicitTitle(t *testing.T) {
 	store := &fakeDocumentStore{}
 	ingester := newTestIngester(store, &stubEmbedder{dimension: testVectorDims})
 
 	path := writeTempFile(t, "x.md", "# 正文里的标题\n\n正文。")
-	result, err := ingester.IngestFile(context.Background(), FileInput{
+	result, err := runFileTask(t, ingester, store, FileInput{
 		Path:  path,
 		Title: "我指定的标题",
 	})
@@ -1316,7 +1369,7 @@ func TestIngestFailsWhenEmbeddingDisabled(t *testing.T) {
 		config.EmbeddingConfig{})
 
 	path := writeTempFile(t, "x.md", "正文。")
-	_, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	_, err := runFileTask(t, ingester, store, FileInput{Path: path})
 	if err == nil {
 		t.Fatal("向量服务未启用时必须报错")
 	}
@@ -1338,7 +1391,7 @@ func TestIngestFailsWhenNoEmbeddingModel(t *testing.T) {
 		testEmbeddingConfig())
 
 	path := writeTempFile(t, "x.md", "正文。")
-	_, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	_, err := runFileTask(t, ingester, store, FileInput{Path: path})
 	if err == nil {
 		t.Fatal("没有可用向量模型时必须报错")
 	}
@@ -1350,13 +1403,13 @@ func TestIngestFailsWhenNoEmbeddingModel(t *testing.T) {
 	}
 }
 
-// TestIngestFailsWhenReplaceFails 落库失败时要留下 store 这个失败阶段。
-func TestIngestFailsWhenReplaceFails(t *testing.T) {
-	store := &fakeDocumentStore{replaceErr: fmt.Errorf("写库失败")}
+// TestIngestFailsWhenChunksSaveFails 切片落库失败时要留下 store 这个失败阶段。
+func TestIngestFailsWhenChunksSaveFails(t *testing.T) {
+	store := &fakeDocumentStore{chunksSaveErr: fmt.Errorf("写库失败")}
 	ingester := newTestIngester(store, &stubEmbedder{dimension: testVectorDims})
 
 	path := writeTempFile(t, "x.md", strings.Repeat("正文。", 100))
-	_, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	_, err := runFileTask(t, ingester, store, FileInput{Path: path})
 	if err == nil {
 		t.Fatal("写库失败时收录必须报错")
 	}
@@ -1386,15 +1439,15 @@ func TestIngestRejectsTooManyChunks(t *testing.T) {
 	}
 	path := writeTempFile(t, "超大.md", strings.Join(paragraphs, "\n\n"))
 
-	_, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	_, err := runFileTask(t, ingester, store, FileInput{Path: path})
 	if err == nil {
 		t.Fatal("超过单篇切片上限时必须报错")
 	}
 	if !errors.Is(err, ErrTooManyChunks) {
 		t.Errorf("错误应当能被 errors.Is 判成 ErrTooManyChunks，实际: %v", err)
 	}
-	if store.replaced != nil {
-		t.Error("超限时不该写入任何切片")
+	if store.ready {
+		t.Error("超限时不该写入切片")
 	}
 }
 
@@ -1423,7 +1476,7 @@ func TestVectorLiteralFormatsAndRejectsBadValues(t *testing.T) {
 // 脚本对单页失败只打标记、不中断整篇（见 documentparser.Page）—— 那是对的，
 // 但 Go 侧不接这道检查的话，用户会拿到一篇状态正常、内容却少了几页的文档：
 // 那几页检索不到，界面上也看不出任何异常。
-func TestIngestFileFailsOnFailedOCRPages(t *testing.T) {
+func TestFileIngestFailsOnFailedOCRPages(t *testing.T) {
 	store := &fakeDocumentStore{}
 	parser := &stubParser{result: &documentparser.Result{
 		Markdown: "# 扫描件\n\n第一页有字。",
@@ -1438,7 +1491,7 @@ func TestIngestFileFailsOnFailedOCRPages(t *testing.T) {
 	// 后缀必须落到 Python 解析器上：md / txt 走纯文本解析器，压根不会调到这里。
 	path := writeTempFile(t, "扫描件.docx", "内容由桩决定")
 
-	_, err := ingester.IngestFile(context.Background(), FileInput{Path: path})
+	_, err := runFileTask(t, ingester, store, FileInput{Path: path})
 	if err == nil {
 		t.Fatal("有 OCR 失败页时必须失败，不能静默入库")
 	}
@@ -1454,8 +1507,8 @@ func TestIngestFileFailsOnFailedOCRPages(t *testing.T) {
 	if store.status() != entity.KnowledgeDocumentStatusFailed {
 		t.Errorf("状态 = %q，期望 failed", store.status())
 	}
-	if store.replaced != nil {
-		t.Error("失败时不该写入任何切片")
+	if store.ready {
+		t.Error("失败时不该写入切片")
 	}
 	if !strings.Contains(store.failReason, "第 2、3 页") {
 		t.Errorf("给用户看的原因应当带上失败页码，实际 %q", store.failReason)
@@ -1520,54 +1573,9 @@ func (p *fakeImagePublisher) Publish(documentID uint64, paths []string) (map[str
 	return out, nil
 }
 
-// 同步链路：解析产出的图片必须先发布、把 URL 回填进正文，再落库 ——
-// 落库的正文里不能再出现临时目录的路径（那个目录在收录结束时会被 Cleanup 删掉）。
-func TestIngestFilePublishesImagesAndBackfillsMarkdown(t *testing.T) {
-	store := &fakeDocumentStore{}
-	first := "/tmp/narra-parse/images/img_1.png"
-	second := "/tmp/narra-parse/images/img_2.png"
-	parser := &stubParser{result: &documentparser.Result{
-		Markdown:     "# 图文档\n\n![截图](" + first + ")\n\n![另一张](" + second + ")",
-		PicturePaths: []string{first, second},
-	}}
-	ingester := newIngesterWithParser(store, parser)
-	publisher := &fakeImagePublisher{urls: map[string]string{
-		first:  "/knowledge/images/7/aaa.png",
-		second: "/knowledge/images/7/bbb.png",
-	}}
-	ingester.images = publisher
-
-	path := writeTempFile(t, "图文档.docx", "内容由桩决定")
-	if _, err := ingester.IngestFile(context.Background(), FileInput{Path: path}); err != nil {
-		t.Fatalf("收录失败: %v", err)
-	}
-
-	if publisher.calls != 1 {
-		t.Fatalf("发布调用次数 = %d，期望 1", publisher.calls)
-	}
-	if publisher.lastID != testDocumentID {
-		t.Errorf("发布时的文档 ID = %d，期望 %d", publisher.lastID, testDocumentID)
-	}
-	if !slices.Equal(publisher.lastPaths, []string{first, second}) {
-		t.Errorf("发布路径 = %v，期望 %v", publisher.lastPaths, []string{first, second})
-	}
-
-	if store.replaced == nil {
-		t.Fatal("没有写入切片与向量")
-	}
-	content := store.replaced.Content
-	if strings.Contains(content, first) || strings.Contains(content, second) {
-		t.Errorf("落库正文里不该再有本地图片路径: %q", content)
-	}
-	for _, url := range []string{"/knowledge/images/7/aaa.png", "/knowledge/images/7/bbb.png"} {
-		if !strings.Contains(content, url) {
-			t.Errorf("落库正文里应当出现回填后的 URL %q，实际 %q", url, content)
-		}
-	}
-}
-
-// 异步链路：回填必须发生在 SaveParsedContent 之前 —— chunk / embed 阶段是从库里
-// 读正文恢复的，正文里留着本地路径的话，崩溃恢复出来的切片就全是死链。
+// 异步链路：解析产出的图片必须先发布、把 URL 回填进正文，再落库 ——
+// 回填必须发生在 SaveParsedContent 之前：chunk / embed 阶段是从库里读正文恢复的，
+// 正文里留着本地路径的话，崩溃恢复出来的切片就全是死链。
 func TestProcessExistingFileBackfillsImagesBeforeSavingContent(t *testing.T) {
 	staged := stageParserFile(t, t.TempDir(), "1", "内容由桩决定")
 	local := "/tmp/narra-parse/images/img_1.png"
@@ -1578,12 +1586,22 @@ func TestProcessExistingFileBackfillsImagesBeforeSavingContent(t *testing.T) {
 		PicturePaths: []string{local},
 	}}
 	ingester := newIngesterWithParser(store, parser)
-	ingester.images = &fakeImagePublisher{urls: map[string]string{
+	publisher := &fakeImagePublisher{urls: map[string]string{
 		local: "/knowledge/images/7/aaa.png",
 	}}
+	ingester.images = publisher
 
 	if _, err := ingester.processExistingFile(context.Background(), store.created, FileInput{Path: staged}, 1, entity.KnowledgeDocumentStageParse); err != nil {
 		t.Fatalf("处理失败: %v", err)
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("发布调用次数 = %d，期望 1", publisher.calls)
+	}
+	if publisher.lastID != testDocumentID {
+		t.Errorf("发布时的文档 ID = %d，期望 %d", publisher.lastID, testDocumentID)
+	}
+	if !slices.Equal(publisher.lastPaths, []string{local}) {
+		t.Errorf("发布路径 = %v，期望 %v", publisher.lastPaths, []string{local})
 	}
 	if strings.Contains(store.content, local) {
 		t.Errorf("落库正文里不该再有本地图片路径: %q", store.content)
@@ -1595,7 +1613,7 @@ func TestProcessExistingFileBackfillsImagesBeforeSavingContent(t *testing.T) {
 
 // 发布失败必须整篇失败（阶段算 parse，重试会重新解析原文件）：把本地路径静默写进库，
 // 等临时目录一删就是永远查不出来的死链。
-func TestIngestFileFailsWhenImagePublishFails(t *testing.T) {
+func TestFileIngestFailsWhenImagePublishFails(t *testing.T) {
 	store := &fakeDocumentStore{}
 	local := "/tmp/narra-parse/images/img_1.png"
 	parser := &stubParser{result: &documentparser.Result{
@@ -1606,14 +1624,14 @@ func TestIngestFileFailsWhenImagePublishFails(t *testing.T) {
 	ingester.images = &fakeImagePublisher{err: errors.New("磁盘已满")}
 
 	path := writeTempFile(t, "图文档.docx", "内容由桩决定")
-	if _, err := ingester.IngestFile(context.Background(), FileInput{Path: path}); err == nil {
+	if _, err := runFileTask(t, ingester, store, FileInput{Path: path}); err == nil {
 		t.Fatal("图片发布失败时收录必须报错")
 	}
 	if store.status() != entity.KnowledgeDocumentStatusFailed {
 		t.Errorf("状态 = %q，期望 failed", store.status())
 	}
-	if store.replaced != nil {
-		t.Error("失败时不该写入任何切片")
+	if store.ready {
+		t.Error("失败时不该写入切片")
 	}
 
 	var payload struct {
@@ -1629,7 +1647,7 @@ func TestIngestFileFailsWhenImagePublishFails(t *testing.T) {
 
 // 解析出了图片却没接发布器时同样整篇失败：这通常意味着装配漏了，
 // 不能把本地路径写进库、让它随临时目录一起失效。
-func TestIngestFileFailsWhenImagesHaveNoPublisher(t *testing.T) {
+func TestFileIngestFailsWhenImagesHaveNoPublisher(t *testing.T) {
 	store := &fakeDocumentStore{}
 	parser := &stubParser{result: &documentparser.Result{
 		Markdown:     "![截图](/tmp/narra-parse/images/img_1.png)",
@@ -1638,11 +1656,11 @@ func TestIngestFileFailsWhenImagesHaveNoPublisher(t *testing.T) {
 	ingester := newIngesterWithParser(store, parser)
 
 	path := writeTempFile(t, "图文档.docx", "内容由桩决定")
-	if _, err := ingester.IngestFile(context.Background(), FileInput{Path: path}); err == nil {
+	if _, err := runFileTask(t, ingester, store, FileInput{Path: path}); err == nil {
 		t.Fatal("没接图片发布器时收录必须报错")
 	}
-	if store.replaced != nil {
-		t.Error("失败时不该写入任何切片")
+	if store.ready {
+		t.Error("失败时不该写入切片")
 	}
 }
 

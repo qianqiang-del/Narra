@@ -32,13 +32,13 @@ func buildNarrationChain(ctx context.Context, rt *runtime) (compose.Runnable[*na
 			return nil, fmt.Errorf("教师讲稿提示词未注册")
 		}
 		return narrationMessages(system, in), nil
-	})).AppendChatModel(rt.chatModel).AppendLambda(compose.InvokableLambda(func(_ context.Context, msg *schema.Message) ([]narrationSegment, error) {
+	}), compose.WithNodeName("build-narration-prompt")).AppendChatModel(rt.chatModel, compose.WithNodeName("generate-scene-narration")).AppendLambda(compose.InvokableLambda(func(_ context.Context, msg *schema.Message) ([]narrationSegment, error) {
 		var items []narrationSegment
 		if err := unmarshalArrayLoose(msg.Content, &items); err != nil {
 			return nil, malformedOutput(err)
 		}
 		return items, nil
-	}))
+	}), compose.WithNodeName("parse-narration"))
 	return chain.Compile(ctx)
 }
 

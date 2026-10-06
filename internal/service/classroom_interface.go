@@ -16,4 +16,5 @@ type ClassroomService interface {
 	GetOutline(ctx context.Context, id uint64) (*responsedto.ClassroomOutline, error)
 	GetAgents(ctx context.Context, id uint64) ([]responsedto.RoleItem, error)
 	ListScenes(ctx context.Context, id uint64) ([]responsedto.ClassroomSceneSummary, error)
+	RetryScene(ctx context.Context, sceneID uint64) (*responsedto.ClassroomSceneSummary, error)
 }

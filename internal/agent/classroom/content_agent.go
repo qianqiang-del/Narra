@@ -47,13 +47,13 @@ func buildContentChain(ctx context.Context, rt *runtime) (compose.Runnable[*cont
 			return nil, fmt.Errorf("场景内容提示词未注册")
 		}
 		return contentMessages(system, in), nil
-	})).AppendChatModel(rt.chatModel).AppendLambda(compose.InvokableLambda(func(_ context.Context, msg *schema.Message) ([]contentBlock, error) {
+	}), compose.WithNodeName("build-content-prompt")).AppendChatModel(rt.chatModel, compose.WithNodeName("generate-scene-content")).AppendLambda(compose.InvokableLambda(func(_ context.Context, msg *schema.Message) ([]contentBlock, error) {
 		var out blocksOutput
 		if err := unmarshalLoose(msg.Content, &out); err != nil {
 			return nil, malformedOutput(err)
 		}
 		return out.Blocks, nil
-	}))
+	}), compose.WithNodeName("parse-content-blocks"))
 	return chain.Compile(ctx)
 }
 
@@ -109,9 +109,9 @@ func buildInteractiveChain(ctx context.Context, rt *runtime) (compose.Runnable[*
 			return nil, fmt.Errorf("交互页面提示词未注册")
 		}
 		return contentMessages(system, in), nil
-	})).AppendLambda(compose.InvokableLambda(func(ctx context.Context, messages []*schema.Message) (string, error) {
-		return rt.streamCompletion(ctx, messages)
-	}))
+	}), compose.WithNodeName("build-interactive-prompt")).AppendLambda(compose.InvokableLambda(func(ctx context.Context, messages []*schema.Message) (string, error) {
+		return rt.streamCompletion(ctx, "generate-interactive-content", messages)
+	}), compose.WithNodeName("generate-interactive-content"))
 	return chain.Compile(ctx)
 }
 

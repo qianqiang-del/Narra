@@ -40,7 +40,12 @@ import { nextVisibleText } from '@/lib/typewriter'
 import { cn } from '@/lib/utils'
 import { getActiveAudio, pauseActiveAudio, registerAudio, setActiveRate, setActiveVolume, stopActiveAudio, unregisterAudio } from '@/lib/audioPlayback'
 
-const props = defineProps<{ classroom: Classroom; agents?: RoleCardDTO[]; sceneDetails?: Record<string, SceneDetailDTO> }>()
+const props = defineProps<{
+  classroom: Classroom
+  agents?: RoleCardDTO[]
+  sceneDetails?: Record<string, SceneDetailDTO>
+  onRetryScene?: (id: string) => Promise<void>
+}>()
 
 const { t } = useI18n()
 const router = useRouter()
@@ -551,13 +556,14 @@ function cancelSwitch() {
   confirmSwitchOpen.value = false
 }
 
-function retryScene(id: string) {
-  const s = scenes.value.find((x) => x.id === id)
-  if (!s) return
-  s.status = 'generating'
-  window.setTimeout(() => {
-    s.status = 'ready'
-  }, 1500)
+async function retryScene(id: string) {
+  if (!props.onRetryScene) return
+  try {
+    await props.onRetryScene(id)
+    toast('已重新开始生成这一页')
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '页面重试失败')
+  }
 }
 
 /** 朝 direction 找最近的、看得进去的一页，跳过还没生成的页；找不到就原地不动。 */

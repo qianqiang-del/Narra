@@ -79,9 +79,6 @@ type uploadRecordStore interface {
 // 收录链路本身归 internal/rag。定义接口而不直接依赖 *rag.Ingester，
 // 是为了让服务层的测试不必真的走一遍切分与向量化。
 type ingester interface {
-	// IngestFile 同步收录一份文件：解析 → 切分 → 向量化 → 入库，返回时已是终态。
-	IngestFile(ctx context.Context, input rag.FileInput) (rag.IngestResult, error)
-
 	// IngestText 同步收录一段正文（没有解析这一步）。
 	IngestText(ctx context.Context, input rag.TextInput) (rag.IngestResult, error)
 }
@@ -468,25 +465,6 @@ func NewKnowledgeService(documents documentQuerier, records uploadRecordStore, i
 		uploadDir:    uploadDir,
 		knowledgeDir: knowledgeDir,
 	}
-}
-
-// IngestFile 收录一份文件，并把结果翻成对外的文档结构。
-//
-// 失败时返回的响应体里也带着那份文档：它已经写进库了（status = failed，
-// 失败阶段与原因在 metadata）。接口层现在只用错误信息，但这个值必须能拿到 ——
-// 收录异步化之后，它就是查询一次上传进度的入口。
-func (s *knowledgeService) IngestFile(
-	ctx context.Context,
-	input requestdto.KnowledgeIngestFile,
-) (responsedto.KnowledgeDocument, error) {
-	result, err := s.ingester.IngestFile(ctx, rag.FileInput{
-		Path:       input.Path,
-		Title:      input.Title,
-		SourceType: input.SourceType,
-		SourceURI:  input.SourceURI,
-		Purpose:    input.Purpose,
-	})
-	return toDocumentResponse(result.Document, result.Chunks), err
 }
 
 // IngestText 直接收录一段正文，跳过解析这一步。

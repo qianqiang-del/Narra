@@ -114,7 +114,7 @@ func buildPageGraph(ctx context.Context, nodes pageNodes) (compose.Runnable[*pag
 				return nil, err
 			}
 			return state, nil
-		})); err != nil {
+		}), compose.WithNodeName(entry.key)); err != nil {
 			return nil, err
 		}
 	}

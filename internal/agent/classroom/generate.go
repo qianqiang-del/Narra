@@ -65,6 +65,65 @@ func Generate(ctx context.Context, deps Deps, classroomID uint64) (err error) {
 	return generateScenes(runCtx, deps, classroom, config)
 }
 
+// GenerateScene 只生成指定页面，供用户手动重试失败页。
+func GenerateScene(ctx context.Context, deps Deps, classroomID, sceneID uint64) error {
+	classroom, err := deps.Classrooms.FindByID(ctx, classroomID)
+	if err != nil {
+		return fmt.Errorf("读取课程失败: %w", err)
+	}
+	scenes, err := deps.Scenes.ListByClassroom(ctx, classroomID)
+	if err != nil {
+		return fmt.Errorf("读取课堂页面失败: %w", err)
+	}
+	var target *entity.Scene
+	for i := range scenes {
+		if scenes[i].ID == sceneID {
+			target = &scenes[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("页面不存在")
+	}
+	var config GenerationConfig
+	if err := json.Unmarshal(classroom.GenerationConfig, &config); err != nil {
+		return fmt.Errorf("解析生成配置失败: %w", err)
+	}
+	plan := classroomPlanOf(classroom, scenes)
+	runID, err := EnsureRunID(ctx, deps, classroom)
+	if err != nil {
+		return err
+	}
+	owner, err := newLeaseOwner(runID)
+	if err != nil {
+		return err
+	}
+	teacher, voice, err := classroomTeacher(ctx, deps, classroomID)
+	if err != nil {
+		return err
+	}
+	rt, err := newRuntime(ctx, deps, config.ProviderID, config.ModelID, config.WebSearch)
+	if err != nil {
+		return err
+	}
+	executor := &pageExecutor{
+		deps: deps, classroom: classroom, teacher: teacher, voice: voice, rt: rt,
+		context: buildClassroomContext(classroom, plan), outline: outlineIndex(plan.Pages),
+		ttsPool: newTTSLimiter(effectiveTTSPoolSize(deps)), materialIDs: materialDocumentIDs(config),
+		runID: runID, owner: owner,
+	}
+	return executor.run(ctx, pageTask{Page: planPageForScene(plan, *target), Scene: *target})
+}
+
+func planPageForScene(plan *ClassroomPlan, scene entity.Scene) PlanPage {
+	for _, page := range plan.Pages {
+		if page.SceneID == scene.ID || page.Order == int(scene.SortOrder) {
+			return page
+		}
+	}
+	return PlanPage{SceneID: scene.ID, Order: int(scene.SortOrder), Type: scene.Type, Title: scene.Title, Brief: scene.Brief}
+}
+
 // EnsureRunID 取本轮生成的运行标识：已落库就沿用，没有就生成一个写回去。
 //
 // 受理时就会写入，这里只兜住改造之前建下的旧课堂；链路追踪也用它当 trace 标识。
