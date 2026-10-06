@@ -416,7 +416,14 @@ function openClassroom(id: string) {
     <div class="relative z-20 mt-[10vh] flex w-full max-w-[800px] flex-col items-center">
       <!-- Logo + Pro 徽章 -->
       <div class="relative">
-        <img src="/logo-horizontal.svg" alt="Narra" class="mb-2 h-12 w-[208px] md:h-16 md:w-[277px]" />
+        <RouterLink
+          to="/"
+          class="mb-2 inline-flex transition-opacity hover:opacity-80"
+          :title="t('common.backToHome')"
+          aria-label="Narra"
+        >
+          <img src="/logo-horizontal.svg" alt="Narra" class="h-12 w-[208px] md:h-16 md:w-[277px]" />
+        </RouterLink>
         <div class="absolute top-0 left-full mt-[10px] ml-1.5 md:mt-[14px] md:ml-2">
           <UiTooltip content="专业模式">
             <ProBadge
@@ -434,9 +441,9 @@ function openClassroom(id: string) {
         <p class="text-sm tracking-wide text-muted-foreground">{{ t('home.slogan') }}</p>
       </div>
 
-      <!-- §5.3 Composer 统一输入卡片 -->
+      <!-- §5.3 Composer 统一输入卡片（聚焦环见 globals.css 的 .narra-composer，跟随卡片圆角） -->
       <div
-        class="w-full rounded-2xl border border-border bg-card/80 shadow-soft backdrop-blur-xl transition-[border-color,box-shadow] duration-200 focus-within:border-brand-200 focus-within:shadow-soft"
+        class="narra-composer w-full rounded-2xl border border-border bg-card/80 shadow-soft backdrop-blur-xl transition-[border-color,box-shadow] duration-200"
       >
         <!-- 顶部行：GreetingBar（左） / AgentBar（右） -->
         <div class="relative z-20 flex items-start justify-between">
@@ -534,15 +541,6 @@ function openClassroom(id: string) {
 
     <!-- §5.7–§5.9 最近学习折叠区 -->
     <RecentSection @open-classroom="openClassroom" @toast="toast" />
-
-    <!-- 页脚：深蓝收口。一块深色压底，视线不会直接掉出画面。 -->
-    <footer class="mt-auto shrink-0 border-t border-gold-500/20 bg-[#151d2e] px-6 py-5">
-      <div class="mx-auto flex max-w-5xl flex-wrap items-center justify-center gap-x-6 gap-y-2 text-center text-xs text-[#aab3c6]">
-        <span class="font-display text-sm tracking-wide text-[#e8eefb]">Narra</span>
-        <span class="hidden sm:inline text-[#3d4759]">·</span>
-        <span>{{ t('home.footer') }}</span>
-      </div>
-    </footer>
 
     <!-- §5.10 设置弹窗 -->
     <SettingsDialog v-model:open="settingsOpen" v-model:section="settingsSection" />

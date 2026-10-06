@@ -235,7 +235,7 @@ function onCopied() {
         </div>
 
         <!-- 网格 -->
-        <div class="grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-3 lg:grid-cols-4 [&>*:nth-child(even)]:md:mt-3">
+        <div class="grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-3 lg:grid-cols-4">
           <template v-if="!searching">
             <FolderCard
               v-for="f in visibleFolders"

@@ -77,9 +77,16 @@ function generating(scene: Scene): boolean {
       overflow: 'hidden',
     }"
   >
-    <!-- Logo 头 -->
+    <!-- Logo 头（点击回首页） -->
     <div class="mt-3 mb-1 flex h-10 shrink-0 items-center justify-between px-3">
-      <img src="/logo-horizontal.svg" alt="Narra" class="h-6 w-[104px]" />
+      <RouterLink
+        to="/"
+        class="min-w-0 transition-opacity hover:opacity-80"
+        :title="t('common.backToHome')"
+        aria-label="Narra"
+      >
+        <img src="/logo-horizontal.svg" alt="Narra" class="h-10 w-[148px] max-w-full object-contain" />
+      </RouterLink>
       <button
         type="button"
         class="rounded-md p-1 text-gray-400 transition-colors hover:bg-muted hover:text-gray-700 dark:hover:bg-gray-800"

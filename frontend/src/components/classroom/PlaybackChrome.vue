@@ -12,7 +12,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { AlertTriangle } from 'lucide-vue-next'
+import { AlertTriangle, PanelBottomOpen } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 
 import CanvasArea from '@/components/classroom/CanvasArea.vue'
@@ -65,6 +65,12 @@ const {
   toggle: toggleChat,
 } = useResizable({ initial: 340, min: 240, max: 560, side: 'right' })
 
+/** 底部圆桌区收起：和左右两栏一样可以收掉，把纵向空间让给舞台 */
+const roundtableCollapsed = ref(false)
+function toggleRoundtable() {
+  roundtableCollapsed.value = !roundtableCollapsed.value
+}
+
 /* ---------- 播放状态 ---------- */
 const FALLBACK_SCENE: Scene = { id: '__empty', title: '', type: 'slide', status: 'pending' }
 
@@ -79,8 +85,9 @@ const volume = ref(1)
 const speed = ref(1)
 const autoPlay = ref(false)
 const whiteboardOpen = ref(false)
-const fullscreen = ref(false)
+/** 全屏放映：收起课堂三栏外壳，只让舞台铺满屏幕 */
 const isPresenting = ref(false)
+/** 放映时鼠标空闲后自动淡出悬浮控件 */
 const controlsVisible = ref(true)
 
 const settingsOpen = ref(false)
@@ -692,12 +699,47 @@ async function stopDiscussion() {
   }
 }
 
-function toggleFullscreen() {
-  if (!document.fullscreenElement) {
-    void document.documentElement.requestFullscreen?.()
-  } else {
-    void document.exitFullscreen?.()
+/* ---------- 全屏放映 ---------- */
+/*
+ * 刻意不走浏览器原生 Fullscreen API：Chrome 会弹「localhost:5173 已进入全屏模式」
+ * 这条带域名、样式不可控的系统提示，页面无法隐藏/改写。这里只做页面内铺满，
+ * 退出入口由悬浮工具栏上的「退出全屏 (Esc)」按钮提供。
+ */
+/** 鼠标空闲多久后淡出控件 */
+const CONTROLS_IDLE_MS = 3000
+let controlsTimer: number | null = null
+
+function clearControlsTimer() {
+  if (controlsTimer !== null) {
+    window.clearTimeout(controlsTimer)
+    controlsTimer = null
   }
+}
+
+/** 鼠标/键盘有动静就亮出控件；放映中空闲一段时间再淡出。 */
+function bumpControls() {
+  controlsVisible.value = true
+  if (!isPresenting.value) return
+  clearControlsTimer()
+  controlsTimer = window.setTimeout(() => {
+    controlsVisible.value = false
+  }, CONTROLS_IDLE_MS)
+}
+
+function enterPresenting() {
+  isPresenting.value = true
+  bumpControls()
+}
+
+function exitPresenting() {
+  isPresenting.value = false
+  controlsVisible.value = true
+  clearControlsTimer()
+}
+
+function toggleFullscreen() {
+  if (isPresenting.value) exitPresenting()
+  else enterPresenting()
 }
 
 function onExport(kind: string) {
@@ -717,6 +759,7 @@ function onExport(kind: string) {
 function onKeydown(e: KeyboardEvent) {
   const tag = (e.target as HTMLElement | null)?.tagName
   if (tag === 'INPUT' || tag === 'TEXTAREA') return
+  bumpControls()
   switch (e.key) {
     case 'ArrowLeft':
       prev()
@@ -747,27 +790,21 @@ function onKeydown(e: KeyboardEvent) {
       toggleChat()
       break
     case 'Escape':
-      if (document.fullscreenElement) void document.exitFullscreen?.()
-      fullscreen.value = false
+      if (isPresenting.value) exitPresenting()
       break
   }
 }
 
-function onFullscreenChange() {
-  fullscreen.value = Boolean(document.fullscreenElement)
-}
-
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
-  document.addEventListener('fullscreenchange', onFullscreenChange)
   void loadConversations()
 })
 onBeforeUnmount(() => {
   ++conversationGeneration
   disconnectEvents()
   stopAudio()
+  clearControlsTimer()
   window.removeEventListener('keydown', onKeydown)
-  document.removeEventListener('fullscreenchange', onFullscreenChange)
 })
 </script>
 
@@ -779,9 +816,12 @@ onBeforeUnmount(() => {
         isPresenting && !controlsVisible && 'cursor-none',
       )
     "
+    @mousemove="bumpControls"
+    @touchstart.passive="bumpControls"
   >
-    <!-- 左：场景栏 -->
+    <!-- 左：场景栏（多根组件：面板 + 折叠按钮，v-show 对多根不生效，必须用 v-if） -->
     <SceneSidebar
+      v-if="!isPresenting"
       :scenes="scenes"
       :active-id="activeScene.id"
       :collapsed="sidebarCollapsed"
@@ -813,7 +853,8 @@ onBeforeUnmount(() => {
         class="relative isolate min-h-0 flex-1 overflow-hidden"
       >
         <CanvasArea
-          :class="{ 'presenting-canvas': isPresenting }"
+          :presenting="isPresenting"
+          :controls-visible="controlsVisible"
           :scene="activeScene"
           :index="activeIndex"
           :total="scenes.length"
@@ -822,8 +863,8 @@ onBeforeUnmount(() => {
           :speed="speed"
           :auto-play="autoPlay"
           :whiteboard-open="whiteboardOpen"
-          :fullscreen="fullscreen"
           :chat-collapsed="chatCollapsed"
+          :roundtable-collapsed="roundtableCollapsed"
           :show-play-hint="showPlayHint"
           :course-complete="courseComplete"
           :stats="stats"
@@ -843,12 +884,15 @@ onBeforeUnmount(() => {
           @close-whiteboard="whiteboardOpen = false"
           @toggle-fullscreen="toggleFullscreen"
           @toggle-chat="toggleChat"
+          @toggle-roundtable="toggleRoundtable"
           @stop-discussion="stopDiscussion"
         />
       </div>
 
-      <!-- 圆桌区（192px） -->
+      <!-- 圆桌区（192px，可收起） -->
       <Roundtable
+        v-show="!isPresenting"
+        :collapsed="roundtableCollapsed"
         :bubbles="bubbles"
         :speaking="speaking"
         :thinking="thinking"
@@ -861,10 +905,22 @@ onBeforeUnmount(() => {
         @send="sendMessage"
         @toggle-recording="toggleRecording"
       />
+
+      <!-- 圆桌收起后的展开入口：浮在工具栏上方，点一下展开 -->
+      <button
+        v-if="roundtableCollapsed && !isPresenting"
+        type="button"
+        class="absolute bottom-12 left-1/2 z-30 flex -translate-x-1/2 cursor-pointer items-center gap-1 rounded-full bg-[#fdfdff]/90 px-3 py-1.5 text-[11px] font-medium text-[#98a1b3] shadow-sm ring-1 ring-[#cdd3e0] backdrop-blur transition-colors hover:text-[#8a6f3c] dark:bg-[#1b2436]/90 dark:text-[#93a0b8] dark:ring-[#2a3549] dark:hover:text-gold-300"
+        @click="toggleRoundtable"
+      >
+        <PanelBottomOpen class="size-3.5" />
+        {{ t('roundtable.expand') }}
+      </button>
     </div>
 
-    <!-- 右：聊天面板 -->
+    <!-- 右：聊天面板（同左：多根组件必须用 v-if） -->
     <ChatArea
+      v-if="!isPresenting"
       :classroom-id="Number(classroom.id)"
       :collapsed="chatCollapsed"
       :width="chatWidth"
