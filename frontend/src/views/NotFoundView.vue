@@ -8,7 +8,7 @@ const { t } = useI18n()
 
 <template>
   <div
-    class="flex min-h-[100dvh] w-full flex-col items-center justify-center gap-4 bg-background px-6 text-center"
+    class="narra-page narra-not-found flex min-h-[100dvh] w-full flex-col items-center justify-center gap-4 bg-background px-6 text-center"
   >
     <h1 class="text-2xl font-bold tracking-tight">{{ t('notFound.title') }}</h1>
     <p class="text-sm text-muted-foreground">{{ t('notFound.desc') }}</p>

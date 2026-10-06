@@ -141,7 +141,7 @@ watch(
         v-if="title === null"
         class="flex h-full flex-col items-center justify-center gap-2 px-8 text-center"
       >
-        <Sparkles class="size-5 text-teal-400" />
+        <Sparkles class="size-5 text-brand-400" />
         <p class="text-sm font-medium text-foreground/80">{{ t('workspace.chatEmptyTitle') }}</p>
         <p class="text-xs leading-5 text-muted-foreground">
           {{ t('workspace.chatEmptyDesc') }}
@@ -153,7 +153,7 @@ watch(
           <!-- 用户消息 -->
           <div v-if="m.role === 'user'" class="flex justify-end">
             <p
-              class="max-w-[85%] rounded-2xl rounded-br-md bg-teal-600 px-3.5 py-2.5 text-[13px] leading-5.5 whitespace-pre-wrap text-white"
+              class="max-w-[85%] rounded-2xl rounded-br-md bg-brand-700 px-3.5 py-2.5 text-[13px] leading-5.5 whitespace-pre-wrap text-white"
             >
               {{ m.text }}
             </p>
@@ -166,11 +166,11 @@ watch(
             <button
               v-if="m.courseCard"
               type="button"
-              class="group flex w-full items-center gap-3 rounded-xl border border-teal-200 bg-teal-50/60 px-3.5 py-3 text-left transition-colors hover:border-teal-300 hover:bg-teal-50 dark:border-teal-800 dark:bg-teal-950/30 dark:hover:border-teal-700"
+              class="group flex w-full items-center gap-3 rounded-xl border border-brand-200 bg-brand-50/60 px-3.5 py-3 text-left transition-colors hover:border-brand-300 hover:bg-brand-50 dark:border-brand-800 dark:bg-brand-950/30 dark:hover:border-brand-800"
               @click="emit('open-course', m.courseCard!.courseId)"
             >
               <span
-                class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-teal-600/10 text-teal-600"
+                class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand-700/10 text-brand-700"
               >
                 <BookOpen class="size-4.5" />
               </span>
@@ -183,7 +183,7 @@ watch(
                 </span>
               </span>
               <span
-                class="shrink-0 text-[11px] font-medium text-teal-600 opacity-0 transition-opacity group-hover:opacity-100"
+                class="shrink-0 text-[11px] font-medium text-brand-700 opacity-0 transition-opacity group-hover:opacity-100"
               >
                 {{ t('workspace.openCourse') }} →
               </span>
@@ -200,7 +200,7 @@ watch(
         :class="
           cn(
             'relative rounded-xl border border-border bg-background shadow-sm transition-colors',
-            'focus-within:border-teal-400 focus-within:ring-2 focus-within:ring-teal-500/15',
+            'focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-600/15',
           )
         "
       >
@@ -221,7 +221,7 @@ watch(
               cn(
                 'relative rounded-md p-1.5 transition-colors',
                 materials.length || materialOpen
-                  ? 'bg-teal-500/10 text-teal-600 dark:text-teal-300'
+                  ? 'bg-brand-600/10 text-brand-700 dark:text-brand-300'
                   : 'text-muted-foreground hover:bg-accent hover:text-foreground',
               )
             "
@@ -230,7 +230,7 @@ watch(
             <Paperclip class="size-4" />
             <span
               v-if="materials.length"
-              class="absolute -top-1 -right-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-teal-600 px-0.5 text-[9px] font-bold text-white"
+              class="absolute -top-1 -right-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-brand-700 px-0.5 text-[9px] font-bold text-white"
             >
               {{ materials.length }}
             </span>
@@ -247,7 +247,7 @@ watch(
             type="button"
             :disabled="!draft.trim() || sending"
             :title="t('workspace.send')"
-            class="flex size-7 items-center justify-center rounded-full bg-teal-600 text-white transition-all hover:bg-teal-700 disabled:opacity-30"
+            class="flex size-7 items-center justify-center rounded-full bg-brand-700 text-white transition-all hover:bg-brand-800 disabled:opacity-30"
             @click="send"
           >
             <ArrowUp class="size-4" />
@@ -264,8 +264,8 @@ watch(
               cn(
                 'flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed p-4 transition-colors',
                 materialDragging
-                  ? 'border-teal-400 bg-teal-50 dark:bg-teal-900/20'
-                  : 'border-muted-foreground/20 hover:border-teal-300',
+                  ? 'border-brand-400 bg-brand-50 dark:bg-brand-900/20'
+                  : 'border-muted-foreground/20 hover:border-brand-300',
               )
             "
             @dragover.prevent="materialDragging = true"
@@ -289,12 +289,12 @@ watch(
             <div
               v-for="m in materials"
               :key="m.id"
-              class="flex items-center gap-2 rounded-lg border border-border/50 px-2 py-2"
+              class="flex items-center gap-2 rounded-lg border border-border px-2 py-2"
             >
               <div
-                class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-teal-100 dark:bg-teal-900/30"
+                class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-100 dark:bg-brand-900/30"
               >
-                <FileText class="size-3.5 text-teal-600 dark:text-teal-300" />
+                <FileText class="size-3.5 text-brand-700 dark:text-brand-300" />
               </div>
               <span class="min-w-0 flex-1 truncate text-xs">{{ m.name }}</span>
               <button

@@ -284,10 +284,10 @@ function goBack() {
 
 <template>
   <div
-    class="relative flex min-h-[100dvh] w-full flex-col bg-gradient-to-b from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900"
+    class="narra-page narra-knowledge relative flex min-h-[100dvh] w-full flex-col bg-background"
   >
     <header
-      class="sticky top-0 z-30 flex flex-wrap items-center gap-3 border-b border-border/60 bg-white/80 px-4 py-3 backdrop-blur-xl md:px-8 dark:bg-slate-900/80"
+      class="sticky top-0 z-30 flex flex-wrap items-center gap-3 border-b border-border bg-card/80 px-4 py-3 backdrop-blur-xl md:px-8 dark:bg-slate-900/80"
     >
       <button
         type="button"
@@ -299,7 +299,7 @@ function goBack() {
       </button>
 
       <div class="flex shrink-0 items-center gap-2">
-        <Database class="size-4 text-teal-500" />
+        <Database class="size-4 text-brand-600" />
         <h1 class="text-[15px] font-medium">{{ t('knowledge.title') }}</h1>
       </div>
 
@@ -340,7 +340,7 @@ function goBack() {
           v-model="keyword"
           type="search"
           :placeholder="t('knowledge.search.placeholder')"
-          class="w-full rounded-lg border border-input bg-background py-1.5 pr-8 pl-8.5 text-[13px] outline-none transition-colors placeholder:text-zinc-500 focus:border-teal-400"
+          class="w-full rounded-lg border border-input bg-background py-1.5 pr-8 pl-8.5 text-[13px] outline-none transition-colors placeholder:text-zinc-500 focus:border-brand-400"
         />
         <button
           v-if="searching"
@@ -366,7 +366,7 @@ function goBack() {
         {{ t('knowledge.toolbar.records') }}
         <span
           v-if="recordAlerts"
-          class="rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] leading-none font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+          class="rounded-full bg-gold-100 px-1.5 py-0.5 text-[11px] leading-none font-medium text-gold-700 dark:bg-gold-900/50 dark:text-gold-300"
         >
           {{ recordAlerts }}
         </span>
@@ -401,7 +401,7 @@ function goBack() {
       -->
       <div
         v-if="showReembed && listKind === 'knowledge'"
-        class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-[13px] text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200"
+        class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-gold-300 bg-gold-50 px-3.5 py-2.5 text-[13px] text-gold-800 dark:border-gold-900/60 dark:bg-gold-900/40 dark:text-gold-200"
       >
         <TriangleAlert class="size-4 shrink-0" />
         <div class="min-w-0 flex-1">
@@ -412,14 +412,14 @@ function goBack() {
                 : t('knowledge.reembed.title', { count: staleCount })
             }}
           </p>
-          <p class="mt-0.5 text-amber-700/90 dark:text-amber-300/80">
+          <p class="mt-0.5 text-gold-700/90 dark:text-gold-300/80">
             {{ t('knowledge.reembed.desc', { model: embeddingStatus?.model ?? '' }) }}
           </p>
         </div>
         <button
           v-if="!reembedTracking"
           type="button"
-          class="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-amber-400 px-2.5 py-1 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-900/40"
+          class="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-gold-400 px-2.5 py-1 text-xs font-medium text-gold-800 transition-colors hover:bg-gold-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gold-800 dark:text-gold-200 dark:hover:bg-gold-900/40"
           :disabled="reembedding"
           @click="reembed"
         >

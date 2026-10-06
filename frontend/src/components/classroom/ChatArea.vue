@@ -127,7 +127,7 @@ function playAudio(path?: string | null, text?: string, id?: string) {
 <template>
   <div
     data-testid="classroom-chat"
-    class="discussion-panel relative z-20 flex shrink-0 flex-col overflow-hidden border-l border-[#ded6c8] bg-[#f8f5ee]/95 shadow-[-10px_0_34px_rgba(61,48,32,0.08)] backdrop-blur-xl dark:border-[#3b342c] dark:bg-[#201e1a]/95"
+    class="discussion-panel relative z-20 flex shrink-0 flex-col overflow-hidden border-l border-[#e2e5ee] bg-[#f4f5f9]/95 shadow-[-10px_0_34px_rgba(61,48,32,0.08)] backdrop-blur-xl dark:border-[#2a3549] dark:bg-[#151d2e]/95"
     :style="{
       width: collapsed ? '0px' : `${width}px`,
       transition: 'width 0.3s ease',
@@ -142,8 +142,8 @@ function playAudio(path?: string | null, text?: string, id?: string) {
             cn(
               'relative flex h-full flex-1 items-center justify-center gap-1.5 border-b-2 text-[13px] font-medium transition-colors',
               tab === 'lecture'
-                ? 'border-amber-700 text-[#6f4a2f] dark:border-amber-500 dark:text-amber-300'
-                : 'border-transparent text-[#9a8f82] hover:text-[#6f4a2f] dark:hover:text-amber-200',
+                ? 'border-gold-700 text-[#8a6f3c] dark:border-gold-500 dark:text-gold-300'
+                : 'border-transparent text-[#98a1b3] hover:text-[#8a6f3c] dark:hover:text-gold-200',
             )
           "
           @click="emit('update:tab', 'lecture')"
@@ -156,14 +156,14 @@ function playAudio(path?: string | null, text?: string, id?: string) {
           :class="cn(
             'relative flex h-full flex-1 items-center justify-center gap-1.5 border-b-2 text-[13px] font-medium transition-colors',
             tab === 'trace'
-              ? 'border-amber-700 text-[#6f4a2f] dark:border-amber-500 dark:text-amber-300'
-              : 'border-transparent text-[#9a8f82] hover:text-[#6f4a2f] dark:hover:text-amber-200',
+              ? 'border-gold-700 text-[#8a6f3c] dark:border-gold-500 dark:text-gold-300'
+              : 'border-transparent text-[#98a1b3] hover:text-[#8a6f3c] dark:hover:text-gold-200',
           )"
           @click="emit('update:tab', 'trace')"
         >
           <Activity class="size-3.5" />
           {{ t('chat.trace') }}
-          <span v-if="trace.status === 'running'" class="absolute top-2 right-3 size-1.5 animate-ping rounded-full bg-amber-500" />
+          <span v-if="trace.status === 'running'" class="absolute top-2 right-3 size-1.5 animate-ping rounded-full bg-gold-500" />
         </button>
         <button
           type="button"
@@ -171,8 +171,8 @@ function playAudio(path?: string | null, text?: string, id?: string) {
             cn(
               'relative flex h-full flex-1 items-center justify-center gap-1.5 border-b-2 text-[13px] font-medium transition-colors',
               tab === 'chat'
-                ? 'border-amber-700 text-[#6f4a2f] dark:border-amber-500 dark:text-amber-300'
-                : 'border-transparent text-[#9a8f82] hover:text-[#6f4a2f] dark:hover:text-amber-200',
+                ? 'border-gold-700 text-[#8a6f3c] dark:border-gold-500 dark:text-gold-300'
+                : 'border-transparent text-[#98a1b3] hover:text-[#8a6f3c] dark:hover:text-gold-200',
             )
           "
           @click="emit('update:tab', 'chat')"
@@ -181,7 +181,7 @@ function playAudio(path?: string | null, text?: string, id?: string) {
           {{ t('chat.chat') }}
           <span
             v-if="hasActiveSession"
-            class="absolute top-2 right-3 size-1.5 animate-ping rounded-full bg-amber-400"
+            class="absolute top-2 right-3 size-1.5 animate-ping rounded-full bg-gold-400"
           />
         </button>
       </div>
@@ -191,7 +191,7 @@ function playAudio(path?: string | null, text?: string, id?: string) {
         :title="t('workspace.newSession')"
         :aria-label="t('workspace.newSession')"
         :disabled="busy"
-        class="shrink-0 rounded-md p-1 text-[#9a8f82] transition-colors hover:bg-[#eee5d8] hover:text-[#6f4a2f] disabled:opacity-40 dark:hover:bg-[#332c25]"
+        class="shrink-0 rounded-md p-1 text-[#98a1b3] transition-colors hover:bg-[#faf5ec] hover:text-[#8a6f3c] disabled:opacity-40 dark:hover:bg-[#151d2e]"
         @click="emit('new-session')"
       >
         <Plus class="size-4" />
@@ -201,7 +201,7 @@ function playAudio(path?: string | null, text?: string, id?: string) {
         type="button"
         :title="t('workspace.collapseChat')"
         :aria-label="t('workspace.collapseChat')"
-        class="shrink-0 rounded-md p-1 text-[#9a8f82] transition-colors hover:bg-[#eee5d8] hover:text-[#6f4a2f] dark:hover:bg-[#332c25]"
+        class="shrink-0 rounded-md p-1 text-[#98a1b3] transition-colors hover:bg-[#faf5ec] hover:text-[#8a6f3c] dark:hover:bg-[#151d2e]"
         @click="emit('toggle-collapse')"
       >
         <PanelRightClose class="size-4" />
@@ -217,11 +217,11 @@ function playAudio(path?: string | null, text?: string, id?: string) {
         :key="n.id"
         type="button"
         :disabled="running || sending"
-        :class="n.id === activeNoteId ? 'w-full rounded-xl border border-amber-300 bg-[#fff5df] p-3 text-left ring-2 ring-amber-200/70 dark:border-amber-700 dark:bg-amber-950/30' : 'w-full rounded-xl border border-[#e5ddd0] bg-[#fffdf8] p-3 text-left dark:border-[#3b342c] dark:bg-[#29251f]'"
+        :class="n.id === activeNoteId ? 'w-full rounded-xl border border-gold-300 bg-[#faf5ec] p-3 text-left ring-2 ring-gold-200/70 dark:border-gold-700 dark:bg-gold-900/30' : 'w-full rounded-xl border border-[#e2e5ee] bg-[#fdfdff] p-3 text-left dark:border-[#2a3549] dark:bg-[#1b2436]'"
         @click="playAudio(n.audioPath, n.body, n.id)"
       >
-        <div class="text-[13px] font-semibold text-[#3f352b] dark:text-[#f3e9d8]">{{ n.title }}</div>
-        <p class="mt-1 text-[12px] leading-relaxed text-[#807568] dark:text-[#b9ad9d]">{{ n.body }}</p>
+        <div class="text-[13px] font-semibold text-[#68748a] dark:text-[#e8eefb]">{{ n.title }}</div>
+        <p class="mt-1 text-[12px] leading-relaxed text-[#98a1b3] dark:text-[#93a0b8]">{{ n.body }}</p>
       </button>
     </div>
 
@@ -229,20 +229,20 @@ function playAudio(path?: string | null, text?: string, id?: string) {
     <TraceTimeline v-else-if="tab === 'trace'" :trace="trace" :conversation-id="activeConversationId" />
 
     <!-- 对话 -->
-    <div v-else class="discussion-chat flex min-h-0 flex-1 flex-col bg-[#f5f1e8] dark:bg-[#171614]">
+    <div v-else class="discussion-chat flex min-h-0 flex-1 flex-col bg-[#eef0f6] dark:bg-[#0f1626]">
       <div v-if="error" role="alert" class="mx-3 mt-3 rounded-lg border border-rose-200 bg-rose-50/90 p-2.5 text-xs leading-5 text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
         {{ error }}
         <button type="button" class="ml-2 underline" :disabled="busy" @click="emit('retry')">{{ t('chat.retry') }}</button>
       </div>
       <div v-if="view === 'list'" class="scrollbar-hide min-h-0 flex-1 overflow-y-auto">
-        <div class="flex items-center justify-between border-b border-[#e5ddd0] px-4 py-3 dark:border-[#3b342c]">
-          <span class="text-xs font-semibold tracking-wide text-[#514438] dark:text-[#f3e9d8]">{{ t('chat.conversationMessages') }}</span>
-          <span class="rounded-full bg-[#e8dfd2] px-2 py-0.5 text-[10px] tabular-nums text-[#806e5d] dark:bg-[#332c25] dark:text-[#c8b9a5]">{{ sessions.length }}</span>
+        <div class="flex items-center justify-between border-b border-[#e2e5ee] px-4 py-3 dark:border-[#2a3549]">
+          <span class="text-xs font-semibold tracking-wide text-[#2b3340] dark:text-[#e8eefb]">{{ t('chat.conversationMessages') }}</span>
+          <span class="rounded-full bg-[#e2e5ee] px-2 py-0.5 text-[10px] tabular-nums text-[#68748a] dark:bg-[#151d2e] dark:text-[#c8b9a5]">{{ sessions.length }}</span>
         </div>
         <p v-if="loadingConversations" class="py-4 text-center text-xs text-gray-400">{{ t('chat.loadingMessages') }}</p>
         <div v-else-if="sessions.length === 0" class="flex min-h-60 flex-col items-center justify-center p-6 text-center">
-          <div class="flex size-10 items-center justify-center rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30">
-            <MessageSquare class="size-4 text-amber-700 dark:text-amber-300" />
+          <div class="flex size-10 items-center justify-center rounded-xl border border-gold-200 bg-gold-50 dark:border-gold-900 dark:bg-gold-900/30">
+            <MessageSquare class="size-4 text-gold-700 dark:text-gold-300" />
           </div>
           <p class="mt-3 text-[13px] text-gray-500 dark:text-gray-400">{{ t('chat.noConversations') }}</p>
           <p class="mt-1 text-[12px] text-gray-400">{{ t('chat.startConversation') }}</p>
@@ -254,46 +254,46 @@ function playAudio(path?: string | null, text?: string, id?: string) {
           type="button"
           :disabled="busy && !s.active"
           :class="cn(
-            'flex w-full min-w-0 items-start gap-2.5 border-b border-[#e5ddd0] px-4 py-3.5 text-left transition-colors dark:border-[#3b342c]',
-            s.active ? 'border-l-2 border-l-amber-700 bg-[#fff5df] pl-3.5 dark:border-l-amber-400 dark:bg-amber-950/20' : 'border-l-2 border-l-transparent hover:bg-[#fffdf8] dark:hover:bg-[#29251f]',
+            'flex w-full min-w-0 items-start gap-2.5 border-b border-[#e2e5ee] px-4 py-3.5 text-left transition-colors dark:border-[#2a3549]',
+            s.active ? 'border-l-2 border-l-gold-700 bg-[#faf5ec] pl-3.5 dark:border-l-gold-400 dark:bg-gold-900/20' : 'border-l-2 border-l-transparent hover:bg-[#fdfdff] dark:hover:bg-[#1b2436]',
           )"
           @click="emit('open-session', s.id)"
         >
-          <span class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#fffdf8] text-amber-700 ring-1 ring-[#ded6c8] dark:bg-[#29251f] dark:text-amber-300 dark:ring-[#4a4034]">
+          <span class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#fdfdff] text-gold-700 ring-1 ring-[#cdd3e0] dark:bg-[#1b2436] dark:text-gold-300 dark:ring-[#1b2436]">
             <MessageCircle class="size-3.5" />
           </span>
           <span class="min-w-0 flex-1">
             <span class="flex min-w-0 items-start gap-2">
-              <span class="min-w-0 flex-1 truncate text-[13px] font-semibold text-[#3f352b] dark:text-[#f3e9d8]">{{ s.title }}</span>
+              <span class="min-w-0 flex-1 truncate text-[13px] font-semibold text-[#68748a] dark:text-[#e8eefb]">{{ s.title }}</span>
               <span v-if="s.active" class="mt-1 size-1.5 shrink-0 rounded-full bg-emerald-500" :title="t('chat.currentSession')" />
             </span>
-            <span class="mt-1 block truncate text-[11px] text-[#8a7b6d] dark:text-[#b9ad9d]">{{ s.preview || t(`chat.sessionType.${s.type}`) }}</span>
+            <span class="mt-1 block truncate text-[11px] text-[#98a1b3] dark:text-[#93a0b8]">{{ s.preview || t(`chat.sessionType.${s.type}`) }}</span>
           </span>
         </button>
       </div>
 
       <template v-else>
-        <div class="flex shrink-0 items-center gap-2 border-b border-[#e5ddd0] bg-[#fffdf8] px-3 py-3 dark:border-[#3b342c] dark:bg-[#29251f]">
-          <button type="button" :aria-label="t('chat.backToList')" :title="t('chat.backToList')" class="shrink-0 rounded-lg p-1.5 text-[#807568] hover:bg-[#eee5d8] dark:hover:bg-[#3b342c]" @click="emit('back')"><ArrowLeft class="size-4" /></button>
-          <span class="min-w-0 flex-1 truncate text-[13px] font-semibold text-[#3f352b] dark:text-[#f3e9d8]">{{ activeTitle }}</span>
-          <button v-if="activeConversationId" type="button" :disabled="sending || loadingMessages || closing" class="flex shrink-0 items-center gap-1 rounded-lg border border-[#dfc9bd] px-2 py-1.5 text-[11px] font-medium text-[#8f4d40] transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-40 dark:border-[#60433b] dark:text-[#e6a99e] dark:hover:bg-rose-950/30" @click="emit('end-session')"><Square class="size-2.5" />{{ closing ? t('chat.ending') : t('roundtable.stopDiscussion') }}</button>
+        <div class="flex shrink-0 items-center gap-2 border-b border-[#e2e5ee] bg-[#fdfdff] px-3 py-3 dark:border-[#2a3549] dark:bg-[#1b2436]">
+          <button type="button" :aria-label="t('chat.backToList')" :title="t('chat.backToList')" class="shrink-0 rounded-lg p-1.5 text-[#98a1b3] hover:bg-[#faf5ec] dark:hover:bg-[#1b2436]" @click="emit('back')"><ArrowLeft class="size-4" /></button>
+          <span class="min-w-0 flex-1 truncate text-[13px] font-semibold text-[#68748a] dark:text-[#e8eefb]">{{ activeTitle }}</span>
+          <button v-if="activeConversationId" type="button" :disabled="sending || loadingMessages || closing" class="flex shrink-0 items-center gap-1 rounded-lg border border-[#dfc9bd] px-2 py-1.5 text-[11px] font-medium text-[#8f4d40] transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-40 dark:border-[#2a3549] dark:text-[#e6a99e] dark:hover:bg-rose-950/30" @click="emit('end-session')"><Square class="size-2.5" />{{ closing ? t('chat.ending') : t('roundtable.stopDiscussion') }}</button>
         </div>
-        <div class="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-[#e5ddd0] bg-[#f8f2e8] px-4 py-2 dark:border-[#3b342c] dark:bg-[#201e1a]" aria-live="polite">
-          <span :class="cn('size-1.5 shrink-0 rounded-full', status === 'ready' ? 'bg-zinc-400' : status === 'waiting' ? 'bg-amber-500' : 'bg-emerald-500')" />
-          <span class="min-w-0 flex-1 text-[11px] font-medium text-[#705f50] dark:text-[#d2c2af]">{{ statusText }}</span>
-          <span v-if="participants?.length" class="flex shrink-0 items-center gap-1 text-[10px] tabular-nums text-[#8a7b6d] dark:text-[#b9ad9d]"><Users class="size-3" />{{ t('chat.participantCount', { count: participants.length }) }}</span>
+        <div class="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-[#e2e5ee] bg-[#f4f5f9] px-4 py-2 dark:border-[#2a3549] dark:bg-[#151d2e]" aria-live="polite">
+          <span :class="cn('size-1.5 shrink-0 rounded-full', status === 'ready' ? 'bg-zinc-400' : status === 'waiting' ? 'bg-gold-500' : 'bg-emerald-500')" />
+          <span class="min-w-0 flex-1 text-[11px] font-medium text-[#68748a] dark:text-[#d2c2af]">{{ statusText }}</span>
+          <span v-if="participants?.length" class="flex shrink-0 items-center gap-1 text-[10px] tabular-nums text-[#98a1b3] dark:text-[#93a0b8]"><Users class="size-3" />{{ t('chat.participantCount', { count: participants.length }) }}</span>
         </div>
         <div ref="messageList" class="scrollbar-hide min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-4" @scroll="onScroll">
           <div v-if="loadingMessages" class="py-3 text-center text-xs text-gray-400">{{ t('chat.loadingMessages') }}</div>
           <p v-else-if="!messages.length" class="py-8 text-center text-xs text-gray-400">{{ t('chat.startConversation') }}</p>
           <ChatMessage v-for="message in messages" :key="message.id" :message="message" :participant="participantFor(message)" :streaming="streamingIds?.has(message.id) && running" />
-          <p v-if="running || sending || thinking" role="status" class="flex items-center gap-2 pl-10 text-xs text-amber-800 dark:text-amber-300"><span class="size-1.5 animate-pulse rounded-full bg-amber-500 motion-reduce:animate-none" />{{ speakingName ? t('chat.speaking', { name: speakingName }) : t('chat.thinking') }}</p>
-          <p v-else-if="yourTurn" role="status" class="pl-10 text-xs text-amber-700 dark:text-amber-300">{{ t('roundtable.yourTurnHint') }}</p>
+          <p v-if="running || sending || thinking" role="status" class="flex items-center gap-2 pl-10 text-xs text-gold-800 dark:text-gold-300"><span class="size-1.5 animate-pulse rounded-full bg-gold-500 motion-reduce:animate-none" />{{ speakingName ? t('chat.speaking', { name: speakingName }) : t('chat.thinking') }}</p>
+          <p v-else-if="yourTurn" role="status" class="pl-10 text-xs text-gold-700 dark:text-gold-300">{{ t('roundtable.yourTurnHint') }}</p>
         </div>
-        <button v-if="!followMessages" type="button" class="mx-auto mb-2 flex items-center gap-1 rounded-lg border border-[#ded6c8] bg-[#fffdf8] px-3 py-1.5 text-xs text-amber-800 shadow-sm dark:border-[#4a4034] dark:bg-[#29251f] dark:text-amber-300" @click="scrollToLatest"><ArrowDown class="size-3" />{{ t('chat.latest') }}</button>
-        <form class="mx-3 mt-2 flex shrink-0 items-end gap-2 rounded-xl border border-[#ded6c8] bg-[#fffdf8] p-2 shadow-[0_6px_18px_rgba(61,48,32,0.05)] transition-colors focus-within:border-amber-600 focus-within:ring-2 focus-within:ring-amber-600/10 dark:border-[#4a4034] dark:bg-[#29251f] dark:focus-within:border-amber-400" @submit.prevent="send">
-          <textarea :value="draft" rows="2" class="max-h-28 min-w-0 flex-1 resize-none bg-transparent px-1 py-1 text-[13px] leading-5 text-[#3f352b] outline-none placeholder:text-[#a99b8a] dark:text-[#f3e9d8]" :placeholder="t('chat.inputPlaceholder')" :aria-label="t('chat.inputPlaceholder')" @input="emit('update:draft', ($event.target as HTMLTextAreaElement).value)" @focus="emit('input-activate')" @keydown="onKeydown" />
-          <button type="submit" :disabled="busy || modelBusy || !!error || !draft.trim()" :aria-label="t('workspace.send')" :title="t('workspace.send')" class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[#8f5b38] text-white transition-colors hover:bg-[#71452b] disabled:opacity-40 dark:bg-[#b8794b] dark:hover:bg-[#d39461]"><Send class="size-3.5" /></button>
+        <button v-if="!followMessages" type="button" class="mx-auto mb-2 flex items-center gap-1 rounded-lg border border-[#e2e5ee] bg-[#fdfdff] px-3 py-1.5 text-xs text-gold-800 shadow-sm dark:border-[#2a3549] dark:bg-[#1b2436] dark:text-gold-300" @click="scrollToLatest"><ArrowDown class="size-3" />{{ t('chat.latest') }}</button>
+        <form class="mx-3 mt-2 flex shrink-0 items-end gap-2 rounded-xl border border-[#e2e5ee] bg-[#fdfdff] p-2 shadow-[0_6px_18px_rgba(61,48,32,0.05)] transition-colors focus-within:border-gold-600 focus-within:ring-2 focus-within:ring-gold-600/10 dark:border-[#2a3549] dark:bg-[#1b2436] dark:focus-within:border-gold-400" @submit.prevent="send">
+          <textarea :value="draft" rows="2" class="max-h-28 min-w-0 flex-1 resize-none bg-transparent px-1 py-1 text-[13px] leading-5 text-[#68748a] outline-none placeholder:text-[#a99b8a] dark:text-[#e8eefb]" :placeholder="t('chat.inputPlaceholder')" :aria-label="t('chat.inputPlaceholder')" @input="emit('update:draft', ($event.target as HTMLTextAreaElement).value)" @focus="emit('input-activate')" @keydown="onKeydown" />
+          <button type="submit" :disabled="busy || modelBusy || !!error || !draft.trim()" :aria-label="t('workspace.send')" :title="t('workspace.send')" class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[#8f5b38] text-white transition-colors hover:bg-[#2a3549] disabled:opacity-40 dark:bg-[#b8794b] dark:hover:bg-[#d39461]"><Send class="size-3.5" /></button>
         </form>
         <p class="px-4 py-2 text-[10px] text-[#a99b8a]">{{ t('chat.keyboardHint') }}</p>
       </template>
@@ -305,7 +305,7 @@ function playAudio(path?: string | null, text?: string, id?: string) {
       @mousedown="emit('resize-start', $event)"
     >
       <div
-        class="absolute top-1/2 left-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-[#cfc1b0] transition-colors group-hover:bg-amber-500"
+        class="absolute top-1/2 left-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-[#b9c8e3] transition-colors group-hover:bg-gold-500"
       />
     </div>
   </div>
@@ -314,7 +314,7 @@ function playAudio(path?: string | null, text?: string, id?: string) {
   <button
     v-if="collapsed"
     type="button"
-    class="absolute top-4 right-2 z-30 rounded-lg bg-[#fffdf8]/90 p-1.5 text-[#9a8f82] shadow-sm ring-1 ring-[#ded6c8] backdrop-blur transition-colors hover:text-[#6f4a2f] dark:bg-[#29251f]/90 dark:ring-[#4a4034]"
+    class="absolute top-4 right-2 z-30 rounded-lg bg-[#fdfdff]/90 p-1.5 text-[#98a1b3] shadow-sm ring-1 ring-[#cdd3e0] backdrop-blur transition-colors hover:text-[#8a6f3c] dark:bg-[#1b2436]/90 dark:ring-[#1b2436]"
     @click="emit('toggle-collapse')"
   >
     <PanelRightOpen class="size-4" />

@@ -169,10 +169,10 @@ function materialStatusLabel(status: SelectedMaterialStatus): string {
 /** 通用 pill 类名（文档 §5.6 的三套基类） */
 const pillCls =
   'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all cursor-pointer select-none whitespace-nowrap'
-const pillMuted = cn(pillCls, 'border-border/50 text-muted-foreground/70 hover:bg-muted/60 hover:text-foreground')
+const pillMuted = cn(pillCls, 'border-border text-muted-foreground/70 hover:bg-muted/60 hover:text-foreground')
 const pillActive = cn(
   pillCls,
-  'border-teal-200/60 bg-teal-100 text-teal-700 dark:border-teal-700/50 dark:bg-teal-900/30 dark:text-teal-300',
+  'border-brand-200/60 bg-brand-100 text-brand-800 dark:border-brand-800/50 dark:bg-brand-900/30 dark:text-brand-300',
 )
 
 function onDocMouseDown(e: MouseEvent) {
@@ -190,7 +190,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
       <button
         v-if="!hasProvider"
         type="button"
-        :class="cn(pillCls, 'animate-pulse bg-amber-50 text-amber-600 hover:bg-amber-100')"
+        :class="cn(pillCls, 'animate-pulse bg-gold-50 text-gold-600 hover:bg-gold-100')"
         @click="emit('configure')"
       >
         <Bot class="size-3.5" />
@@ -229,8 +229,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
             cn(
               'flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed p-4 transition-colors',
               materialDragging
-                ? 'border-teal-400 bg-teal-50 dark:bg-teal-900/20'
-                : 'border-muted-foreground/20 hover:border-teal-300',
+                ? 'border-brand-400 bg-brand-50 dark:bg-brand-900/20'
+                : 'border-muted-foreground/20 hover:border-brand-300',
             )
           "
           @dragover.prevent="materialDragging = true"
@@ -254,12 +254,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
           <div
             v-for="m in materials"
             :key="m.key"
-            class="flex items-center gap-2 rounded-lg border border-border/50 px-2 py-2"
+            class="flex items-center gap-2 rounded-lg border border-border px-2 py-2"
           >
-            <div class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-teal-100 dark:bg-teal-900/30">
+            <div class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-100 dark:bg-brand-900/30">
               <Loader2
                 v-if="m.status === 'uploading' || m.status === 'pending'"
-                class="size-3.5 animate-spin text-teal-600 dark:text-teal-300"
+                class="size-3.5 animate-spin text-brand-700 dark:text-brand-300"
               />
               <Check v-else-if="m.status === 'ready'" class="size-3.5 text-emerald-600 dark:text-emerald-400" />
               <AlertCircle
@@ -267,7 +267,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
                 class="size-3.5 text-red-500"
               />
               <Clock v-else-if="m.status === 'queued'" class="size-3.5 text-muted-foreground/60" />
-              <FileText v-else class="size-3.5 text-teal-600 dark:text-teal-300" />
+              <FileText v-else class="size-3.5 text-brand-700 dark:text-brand-300" />
             </div>
             <div class="min-w-0 flex-1">
               <p class="truncate text-xs">{{ m.name }}</p>

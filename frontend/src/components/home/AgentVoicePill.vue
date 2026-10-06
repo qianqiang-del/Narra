@@ -105,7 +105,7 @@ onBeforeUnmount(() => voicesStore.stopPreview(model.value))
         class="z-[60] w-80 overflow-hidden rounded-xl border border-border bg-popover shadow-lg outline-none sm:w-96"
         @mousedown.stop
       >
-        <div class="border-b border-border/60 p-2">
+        <div class="border-b border-border p-2">
           <div class="relative">
             <Search
               class="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground/50"
@@ -114,7 +114,7 @@ onBeforeUnmount(() => voicesStore.stopPreview(model.value))
               v-model="keyword"
               type="text"
               :placeholder="t('agentBar.searchVoice')"
-              class="h-8 w-full rounded-md border border-input pr-3 pl-8 text-sm outline-none focus:ring-1 focus:ring-teal-400/40"
+              class="h-8 w-full rounded-md border border-input pr-3 pl-8 text-sm outline-none focus:ring-1 focus:ring-brand-400/40"
             />
           </div>
         </div>
@@ -153,11 +153,11 @@ onBeforeUnmount(() => voicesStore.stopPreview(model.value))
                 v-if="voicesStore.previewLoadingId === v.id"
                 class="size-3 animate-spin text-muted-foreground/60"
               />
-              <Square v-else-if="voicesStore.playingId === v.id" class="size-3 text-teal-500" />
+              <Square v-else-if="voicesStore.playingId === v.id" class="size-3 text-brand-600" />
               <Play v-else class="size-3 text-muted-foreground/40" />
             </button>
 
-            <Check v-if="model === v.id" class="size-3.5 shrink-0 text-teal-500" />
+            <Check v-if="model === v.id" class="size-3.5 shrink-0 text-brand-600" />
             <span v-else class="size-3.5 shrink-0" />
           </div>
 

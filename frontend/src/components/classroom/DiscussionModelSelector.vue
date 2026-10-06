@@ -54,7 +54,7 @@ onBeforeUnmount(() => { version++ })
 </script>
 
 <template>
-  <div class="shrink-0 border-b border-border/60 px-3 py-2">
+  <div class="shrink-0 border-b border-border px-3 py-2">
     <div class="mb-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
       <span>讨论模型</span>
       <span v-if="loading || saving" role="status" class="flex items-center gap-1"><Loader2 class="size-3 animate-spin" />{{ saving ? '保存中' : '加载中' }}</span>
@@ -68,6 +68,6 @@ onBeforeUnmount(() => { version++ })
       </button>
     </div>
     <p v-if="error" role="alert" class="mt-1 break-words text-xs text-red-600 dark:text-red-400">{{ error }}</p>
-    <p v-else-if="!loading && settings && !settings.available" role="alert" class="mt-1 text-xs text-amber-700 dark:text-amber-300">所选模型不可用，请重新选择。</p>
+    <p v-else-if="!loading && settings && !settings.available" role="alert" class="mt-1 text-xs text-gold-700 dark:text-gold-300">所选模型不可用，请重新选择。</p>
   </div>
 </template>

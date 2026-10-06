@@ -65,12 +65,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
     <!-- 收起态胶囊 -->
     <UiTooltip content="点击编辑个人资料">
       <div
-        class="group flex cursor-pointer items-center gap-2.5 rounded-full border border-border/50 px-2.5 py-1.5 text-muted-foreground/70 transition-all duration-200 hover:bg-muted/60 hover:text-foreground active:scale-[0.97]"
+        class="group flex cursor-pointer items-center gap-2.5 rounded-full border border-border px-2.5 py-1.5 text-muted-foreground/70 transition-all duration-200 hover:bg-muted/60 hover:text-foreground active:scale-[0.97]"
         @click="toggle"
       >
         <div class="relative shrink-0">
           <div
-            class="size-8 overflow-hidden rounded-full ring-[1.5px] ring-border/30 transition-shadow group-hover:ring-teal-400/60"
+            class="size-8 overflow-hidden rounded-full ring-[1.5px] ring-border/30 transition-shadow group-hover:ring-brand-400/60"
           >
             <img :src="profileStore.profile.avatar" alt="" class="size-full object-cover" />
           </div>
@@ -100,7 +100,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         >
           <!-- 头像 + 昵称行 -->
           <div class="flex items-center gap-2">
-            <div class="size-8 shrink-0 overflow-hidden rounded-full ring-[1.5px] ring-teal-300/70">
+            <div class="size-8 shrink-0 overflow-hidden rounded-full ring-[1.5px] ring-brand-300/70">
               <img :src="profileStore.profile.avatar" alt="" class="size-full object-cover" />
             </div>
 
@@ -111,7 +111,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
               type="text"
               maxlength="20"
               :placeholder="t('home.namePlaceholder')"
-              class="h-6 min-w-0 flex-1 border-b border-border/80 bg-transparent text-[13px] font-semibold text-foreground outline-none placeholder:text-muted-foreground/40"
+              class="h-6 min-w-0 flex-1 border-b border-border bg-transparent text-[13px] font-semibold text-foreground outline-none placeholder:text-muted-foreground/40"
               @keydown.enter.prevent="commitName"
               @blur="commitName"
             />
@@ -122,13 +122,13 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
               @click="startEditName"
             >
               <span class="truncate text-[13px] font-semibold text-foreground">{{ profileStore.displayName }}</span>
-              <Pencil class="size-3 shrink-0 text-muted-foreground/40 group-hover/name:text-teal-500" />
+              <Pencil class="size-3 shrink-0 text-muted-foreground/40 group-hover/name:text-brand-600" />
             </button>
 
             <button
               v-if="editingName"
               type="button"
-              class="flex size-5 shrink-0 items-center justify-center rounded text-teal-500 hover:bg-teal-100"
+              class="flex size-5 shrink-0 items-center justify-center rounded text-brand-600 hover:bg-brand-100"
               @click="commitName"
             >
               <Check class="size-3.5" />
@@ -152,7 +152,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
               :class="
                 cn(
                   'size-7 overflow-hidden rounded-full bg-gray-50 transition-transform hover:scale-110 active:scale-95 dark:bg-gray-800',
-                  profileStore.profile.avatar === src && 'ring-2 ring-teal-400',
+                  profileStore.profile.avatar === src && 'ring-2 ring-brand-400',
                 )
               "
               @click="pickAvatar(src)"
@@ -167,7 +167,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
             rows="2"
             maxlength="200"
             :placeholder="t('home.bioPlaceholder')"
-            class="mt-2.5 min-h-[72px] w-full resize-none rounded-lg border border-border/40 bg-transparent px-2.5 py-2 !text-[13px] !leading-relaxed outline-none placeholder:!text-[11px] focus-visible:ring-1 focus-visible:ring-border/60"
+            class="mt-2.5 min-h-[72px] w-full resize-none rounded-lg border border-border bg-transparent px-2.5 py-2 !text-[13px] !leading-relaxed outline-none placeholder:!text-[11px] focus-visible:ring-1 focus-visible:ring-border/60"
           />
         </div>
       </div>

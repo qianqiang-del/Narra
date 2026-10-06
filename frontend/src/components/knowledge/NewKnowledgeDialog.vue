@@ -204,7 +204,7 @@ function taskStatusClass(status: KnowledgeUploadTaskStatus): string {
     case 'ready':
       return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
     default:
-      return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+      return 'border-gold-200 bg-gold-50 text-gold-700 dark:border-gold-800 dark:bg-gold-900/40 dark:text-gold-300'
   }
 }
 
@@ -388,8 +388,8 @@ async function retryFailed() {
             busy
               ? 'pointer-events-none border-border opacity-60'
               : dragging
-                ? 'cursor-pointer border-teal-400 bg-teal-50/60 dark:bg-teal-950/20'
-                : 'cursor-pointer border-border hover:border-teal-300 hover:bg-muted/40'
+                ? 'cursor-pointer border-brand-400 bg-brand-50/60 dark:bg-brand-950/20'
+                : 'cursor-pointer border-border hover:border-brand-300 hover:bg-muted/40'
           "
           @dragover.prevent="dragging = true"
           @dragleave.prevent="dragging = false"
@@ -442,7 +442,7 @@ async function retryFailed() {
         -->
         <div
           v-if="mode === 'file' && parserHint"
-          class="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
+          class="mt-3 flex items-start gap-2 rounded-lg border border-gold-200 bg-gold-50 px-3 py-2 text-xs leading-5 text-gold-800 dark:border-gold-800 dark:bg-gold-900/30 dark:text-gold-200"
         >
           <Info class="mt-0.5 size-3.5 shrink-0" />
           <span>
@@ -460,7 +460,7 @@ async function retryFailed() {
           rows="8"
           :disabled="busy"
           :placeholder="t('knowledge.text.placeholder')"
-          class="mt-4 w-full resize-y rounded-xl border border-input bg-background px-3 py-2 text-[13px] leading-6 outline-none transition-colors placeholder:text-zinc-500 focus:border-teal-400 disabled:opacity-60"
+          class="mt-4 w-full resize-y rounded-xl border border-input bg-background px-3 py-2 text-[13px] leading-6 outline-none transition-colors placeholder:text-zinc-500 focus:border-brand-400 disabled:opacity-60"
         />
 
         <!-- 标题与提交：正文录入必填，文件导入可选（留空回落到正文首个标题） -->
@@ -478,7 +478,7 @@ async function retryFailed() {
                     : 'knowledge.upload.titlePlaceholder',
               )
             "
-            class="min-w-0 flex-1 rounded-lg border border-input bg-background px-3 py-2 text-[13px] outline-none transition-colors placeholder:text-zinc-500 focus:border-teal-400 disabled:opacity-60"
+            class="min-w-0 flex-1 rounded-lg border border-input bg-background px-3 py-2 text-[13px] outline-none transition-colors placeholder:text-zinc-500 focus:border-brand-400 disabled:opacity-60"
           />
           <button
             type="button"
@@ -518,7 +518,7 @@ async function retryFailed() {
             <div v-for="task in tasks" :key="task.key" class="flex items-start gap-2.5 p-3 text-[13px]">
               <Loader2
                 v-if="task.status === 'pending' || task.status === 'processing'"
-                class="mt-0.5 size-4 shrink-0 animate-spin text-amber-500"
+                class="mt-0.5 size-4 shrink-0 animate-spin text-gold-500"
               />
               <CheckCircle2
                 v-else-if="task.status === 'ready'"

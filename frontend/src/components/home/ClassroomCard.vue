@@ -62,7 +62,7 @@ function onDragStart(e: DragEvent) {
   >
     <!-- 缩略图 -->
     <div
-      class="relative aspect-[16/9] w-full overflow-hidden rounded-2xl bg-slate-100 transition-transform duration-200 group-hover:scale-[1.02] dark:bg-slate-800/80"
+      class="relative aspect-[16/9] w-full overflow-hidden rounded-2xl bg-muted transition-[transform,box-shadow] duration-200 group-hover:scale-[1.02] group-hover:shadow-soft"
       @click="!confirmingDelete && emit('open', classroom.id)"
     >
       <ClassroomCover :scene="classroom.cover" :title="classroom.name" />
@@ -76,9 +76,9 @@ function onDragStart(e: DragEvent) {
         v-if="classroom.mode"
         :class="
           cn(
-            'absolute bottom-2 left-2 z-10 inline-flex size-5 items-center justify-center rounded-full bg-white/70 shadow-sm backdrop-blur-sm dark:bg-slate-900/60',
+            'absolute bottom-2 left-2 z-10 inline-flex size-5 items-center justify-center rounded-full bg-card/70 shadow-sm backdrop-blur-sm dark:bg-slate-900/60',
             classroom.mode === 'vocational'
-              ? 'text-amber-600 ring-1 ring-amber-500/35'
+              ? 'text-gold-600 ring-1 ring-gold-500/35'
               : 'text-cyan-600 ring-1 ring-cyan-500/30',
           )
         "
@@ -91,7 +91,7 @@ function onDragStart(e: DragEvent) {
       <div class="absolute inset-x-2 top-2 flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
         <button
           type="button"
-          class="flex size-7 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-colors hover:bg-destructive/80"
+          class="flex size-7 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-[border-color,box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-soft hover:bg-destructive/80"
           @click.stop="confirmingDelete = true"
         >
           <Trash2 class="size-3.5" />
@@ -99,7 +99,7 @@ function onDragStart(e: DragEvent) {
         <UiTooltip content="移动到文件夹">
           <button
             type="button"
-            class="flex size-7 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-colors hover:bg-black/50"
+            class="flex size-7 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-[border-color,box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-soft hover:bg-black/50"
             @click.stop="moveOpen = !moveOpen"
           >
             <FolderInput class="size-3.5" />
@@ -118,14 +118,14 @@ function onDragStart(e: DragEvent) {
         <div class="flex items-center gap-2">
           <button
             type="button"
-            class="rounded-lg bg-white/15 px-3.5 py-1 text-[12px] font-medium text-white/80 transition-colors hover:bg-white/25"
+            class="rounded-lg bg-white/15 px-3.5 py-1 text-[12px] font-medium text-white/80 transition-[border-color,box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-soft hover:bg-muted/25"
             @click="confirmingDelete = false"
           >
             {{ t('common.cancel') }}
           </button>
           <button
             type="button"
-            class="rounded-lg bg-red-500/90 px-3.5 py-1 text-[12px] font-medium text-white transition-colors hover:bg-red-500"
+            class="rounded-lg bg-red-500/90 px-3.5 py-1 text-[12px] font-medium text-white transition-[border-color,box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-soft hover:bg-red-500"
             @click="((confirmingDelete = false), emit('delete', classroom.id))"
           >
             {{ t('common.delete') }}
@@ -162,7 +162,7 @@ function onDragStart(e: DragEvent) {
     <!-- 信息行 -->
     <div class="mt-2.5 flex items-center gap-2 px-1">
       <span
-        class="inline-flex shrink-0 items-center rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-medium text-teal-600 dark:bg-teal-900/30 dark:text-teal-400"
+        class="inline-flex shrink-0 items-center rounded-full bg-brand-100 px-2 py-0.5 text-[11px] font-medium text-brand-700 dark:bg-brand-900/30 dark:text-brand-400"
       >
         {{ t('home.classroomCount', { count: classroom.pages, date: dateLabel }) }}
       </span>
@@ -176,7 +176,7 @@ function onDragStart(e: DragEvent) {
       </UiTooltip>
       <button
         type="button"
-        class="shrink-0 rounded p-0.5 text-muted-foreground/40 transition-colors hover:text-foreground"
+        class="shrink-0 rounded p-0.5 text-muted-foreground/40 transition-[border-color,box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-soft hover:text-foreground"
         :title="t('home.copyName')"
         @click.stop="copyName"
       >

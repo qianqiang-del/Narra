@@ -235,7 +235,7 @@ function onCopied() {
         </div>
 
         <!-- 网格 -->
-        <div class="grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-3 lg:grid-cols-4">
+        <div class="grid grid-cols-2 gap-x-5 gap-y-8 md:grid-cols-3 lg:grid-cols-4 [&>*:nth-child(even)]:md:mt-3">
           <template v-if="!searching">
             <FolderCard
               v-for="f in visibleFolders"
@@ -267,7 +267,7 @@ function onCopied() {
         >
           <button
             type="button"
-            class="inline-flex h-7 items-center gap-1 rounded-full border border-border/50 px-3 transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/70"
+            class="inline-flex h-7 items-center gap-1 rounded-full border border-border px-3 transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/70"
             :disabled="page <= 1"
             @click="goToPage(page - 1)"
           >
@@ -281,7 +281,7 @@ function onCopied() {
 
           <button
             type="button"
-            class="inline-flex h-7 items-center gap-1 rounded-full border border-border/50 px-3 transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/70"
+            class="inline-flex h-7 items-center gap-1 rounded-full border border-border px-3 transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/70"
             :disabled="page >= pageCount"
             @click="goToPage(page + 1)"
           >

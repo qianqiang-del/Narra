@@ -173,14 +173,14 @@ onUnmounted(() => eventController?.abort())
 </script>
 
 <template>
-  <div class="flex h-screen flex-col overflow-hidden">
+  <div class="narra-page narra-classroom flex h-screen flex-col overflow-hidden">
     <!-- loading -->
     <div
       v-if="phase === 'loading'"
       class="flex flex-1 items-center justify-center bg-gray-50 dark:bg-gray-900"
     >
       <div class="flex flex-col items-center gap-3">
-        <Loader2 class="size-6 animate-spin text-teal-500" />
+        <Loader2 class="size-6 animate-spin text-brand-600" />
         <p class="text-sm text-muted-foreground">{{ t('classroom.loadingClassroom') }}</p>
       </div>
     </div>

@@ -240,7 +240,7 @@ function statusText(provider: LlmProvider) {
         <h2 class="text-lg font-semibold tracking-tight">大模型</h2>
         <p class="mt-1 text-[13px] text-muted-foreground">配置 OpenAI 兼容服务，测试成功并启用后可用于生成课堂。</p>
       </div>
-      <button v-if="!formOpen" type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700" @click="resetForm()">
+      <button v-if="!formOpen" type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-800" @click="resetForm()">
         <Plus class="size-3.5" />新增配置
       </button>
     </div>
@@ -252,14 +252,14 @@ function statusText(provider: LlmProvider) {
       </div>
       <div class="grid gap-3 sm:grid-cols-2">
         <label class="text-sm font-medium">配置名称
-          <input v-model="form.name" required maxlength="120" placeholder="DeepSeek" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-teal-400" />
+          <input v-model="form.name" required maxlength="120" placeholder="DeepSeek" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-brand-400" />
         </label>
         <label class="text-sm font-medium">请求超时（秒）
-          <input v-model.number="form.timeoutSeconds" required type="number" min="1" max="600" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-teal-400" />
+          <input v-model.number="form.timeoutSeconds" required type="number" min="1" max="600" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-brand-400" />
         </label>
       </div>
       <label class="block text-sm font-medium">Base URL
-        <input v-model="form.baseUrl" required type="url" placeholder="https://api.openai.com/v1" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-teal-400" />
+        <input v-model="form.baseUrl" required type="url" placeholder="https://api.openai.com/v1" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-brand-400" />
       </label>
       <label class="block text-sm font-medium">API Key
         <div class="relative mt-1">
@@ -268,7 +268,7 @@ function statusText(provider: LlmProvider) {
             :type="showApiKey ? 'text' : 'password'"
             autocomplete="new-password"
             placeholder="可留空；编辑时留空表示保持不变"
-            class="w-full rounded-lg border border-input bg-background px-3 py-2 pr-10 text-sm outline-none focus:border-teal-400"
+            class="w-full rounded-lg border border-input bg-background px-3 py-2 pr-10 text-sm outline-none focus:border-brand-400"
           />
           <button
             type="button"
@@ -288,13 +288,13 @@ function statusText(provider: LlmProvider) {
       <div>
         <div class="mb-1 flex items-center justify-between">
           <span class="text-sm font-medium">模型列表</span>
-          <button type="button" class="text-xs text-teal-600 hover:text-teal-700" @click="addModel">+ 添加模型</button>
+          <button type="button" class="text-xs text-brand-700 hover:text-brand-800" @click="addModel">+ 添加模型</button>
         </div>
         <p v-if="searchUnavailable" class="mb-2 text-xs text-muted-foreground">未连接可用的联网搜索 MCP 服务。价格可手动填写或留空；配置搜索服务后可点击“联网查价”重试。</p>
         <div class="space-y-2">
           <div v-for="(_, index) in form.models" :key="index" class="space-y-1.5">
             <div class="flex gap-2">
-              <input v-model="form.models[index]" required maxlength="160" placeholder="gpt-4o-mini" class="min-w-0 flex-1 rounded-lg border border-input bg-background px-3 py-2 font-mono text-sm outline-none focus:border-teal-400" @blur="detectPrice(index)" />
+              <input v-model="form.models[index]" required maxlength="160" placeholder="gpt-4o-mini" class="min-w-0 flex-1 rounded-lg border border-input bg-background px-3 py-2 font-mono text-sm outline-none focus:border-brand-400" @blur="detectPrice(index)" />
               <PricingSearchButton v-if="editingId" :loading="!!pricingLoading[form.models[index].trim()]" @search="detectPrice(index, true)" />
               <button type="button" class="rounded-lg border border-border px-2 text-muted-foreground hover:text-destructive" @click="removeModel(index)"><Trash2 class="size-4" /></button>
             </div>
@@ -309,9 +309,9 @@ function statusText(provider: LlmProvider) {
                 <input :value="pricingFor(form.models[index].trim()).currency" maxlength="3" pattern="[A-Za-z]{3}" placeholder="USD" class="mt-1 w-full rounded border border-input bg-background px-2 py-1 text-xs uppercase text-foreground" @input="updateCurrency(form.models[index].trim(), ($event.target as HTMLInputElement).value)" />
               </label>
             </div>
-            <div v-if="pricingCandidates[form.models[index].trim()]?.length" class="space-y-2 rounded-md border border-teal-200 bg-teal-50/60 p-2 text-xs">
-              <p class="font-medium text-teal-900">联网查到的价格候选（请确认后采用）</p>
-              <div v-for="(candidate, candidateIndex) in pricingCandidates[form.models[index].trim()]" :key="candidateIndex" class="rounded border border-teal-100 bg-white/80 p-2">
+            <div v-if="pricingCandidates[form.models[index].trim()]?.length" class="space-y-2 rounded-md border border-brand-200 bg-brand-50/60 p-2 text-xs">
+              <p class="font-medium text-brand-900">联网查到的价格候选（请确认后采用）</p>
+              <div v-for="(candidate, candidateIndex) in pricingCandidates[form.models[index].trim()]" :key="candidateIndex" class="rounded border border-brand-100 bg-card/80 p-2">
                 <div class="flex items-start justify-between gap-2">
                   <div class="min-w-0">
                     <p class="font-medium text-foreground">
@@ -323,17 +323,17 @@ function statusText(provider: LlmProvider) {
                       <span v-if="candidate.completionRatio != null">输出倍率 {{ candidate.completionRatio }} </span>
                       <span v-if="candidate.groupRatio != null">分组倍率 {{ candidate.groupRatio }}</span>
                     </p>
-                    <p v-if="candidate.pricingMode === 'multiplier'" class="mt-1 text-amber-700">倍率缺少基础币价，不能直接计算真实费用。</p>
-                    <a v-if="candidate.sourceUrl" :href="candidate.sourceUrl" target="_blank" rel="noopener noreferrer" class="mt-1 block truncate text-teal-700 underline">来源：{{ candidate.sourceUrl }}</a>
+                    <p v-if="candidate.pricingMode === 'multiplier'" class="mt-1 text-gold-700">倍率缺少基础币价，不能直接计算真实费用。</p>
+                    <a v-if="candidate.sourceUrl" :href="candidate.sourceUrl" target="_blank" rel="noopener noreferrer" class="mt-1 block truncate text-brand-800 underline">来源：{{ candidate.sourceUrl }}</a>
                   </div>
-                  <button v-if="candidateCanBeAdopted(candidate)" type="button" class="shrink-0 rounded border border-teal-300 px-2 py-1 text-[11px] text-teal-800 hover:bg-teal-100" @click="adoptCandidate(form.models[index].trim(), candidate)">采用此候选</button>
+                  <button v-if="candidateCanBeAdopted(candidate)" type="button" class="shrink-0 rounded border border-brand-300 px-2 py-1 text-[11px] text-brand-800 hover:bg-brand-100" @click="adoptCandidate(form.models[index].trim(), candidate)">采用此候选</button>
                 </div>
               </div>
             </div>
             <p v-if="pricingNotices[form.models[index].trim()]" class="text-[11px] text-muted-foreground">{{ pricingNotices[form.models[index].trim()] }}</p>
             <p class="text-[11px] text-muted-foreground">{{ pricingFor(form.models[index].trim()).source === 'user' ? (pricingFor(form.models[index].trim()).sourceUrl ? '已确认联网候选' : '手动填写') : pricingFor(form.models[index].trim()).source === 'search' ? '旧搜索建议，需重新确认后用于费用计算' : '价格未填写' }}</p>
             <p v-if="pricingErrors[form.models[index].trim()]" class="text-xs text-destructive">{{ pricingErrors[form.models[index].trim()] }}</p>
-            <a v-if="sourceURLFor(form.models[index].trim())" :href="sourceURLFor(form.models[index].trim())" target="_blank" rel="noopener noreferrer" class="block truncate text-xs text-teal-700 underline hover:text-teal-800">价格来源：{{ sourceURLFor(form.models[index].trim()) }}</a>
+            <a v-if="sourceURLFor(form.models[index].trim())" :href="sourceURLFor(form.models[index].trim())" target="_blank" rel="noopener noreferrer" class="block truncate text-xs text-brand-800 underline hover:text-brand-800">价格来源：{{ sourceURLFor(form.models[index].trim()) }}</a>
             <p v-if="checkedAtFor(form.models[index].trim())" class="text-[11px] text-muted-foreground">查询时间：{{ checkedAtFor(form.models[index].trim()) }}</p>
           </div>
         </div>
@@ -341,7 +341,7 @@ function statusText(provider: LlmProvider) {
       <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
       <div class="flex justify-end gap-2 border-t border-border pt-3">
         <button type="button" class="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted" @click="closeForm">取消</button>
-        <button type="submit" :disabled="submitting" class="rounded-lg bg-teal-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{{ submitting ? '保存中…' : '保存' }}</button>
+        <button type="submit" :disabled="submitting" class="rounded-lg bg-brand-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{{ submitting ? '保存中…' : '保存' }}</button>
       </div>
     </form>
 
@@ -369,7 +369,7 @@ function statusText(provider: LlmProvider) {
           <button type="button" :disabled="testingId === provider.id" class="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50" @click.stop="testProvider(provider)">
             <Wifi class="size-3" />{{ testingId === provider.id ? '测试中…' : '测试' }}
           </button>
-          <button type="button" :class="cn('relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors', provider.enabled ? 'bg-teal-600' : 'bg-muted', provider.testStatus !== 'success' && 'opacity-50')" @click.stop="toggle(provider)">
+          <button type="button" :class="cn('relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors', provider.enabled ? 'bg-brand-700' : 'bg-muted', provider.testStatus !== 'success' && 'opacity-50')" @click.stop="toggle(provider)">
             <span :class="cn('mt-0.5 inline-block h-4 w-4 rounded-full bg-white shadow transition-transform', provider.enabled ? 'translate-x-4' : 'translate-x-0.5')" />
           </button>
           <button type="button" :class="cn('rounded p-1 text-muted-foreground hover:text-destructive', deleteConfirmId === provider.id && 'bg-destructive text-white')" @click.stop="remove(provider)"><Trash2 class="size-4" /></button>

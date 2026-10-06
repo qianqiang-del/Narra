@@ -70,7 +70,7 @@ function generating(scene: Scene): boolean {
 
 <template>
   <aside
-    class="relative z-20 flex shrink-0 flex-col border-r border-gray-100 bg-white/80 shadow-[2px_0_24px_rgba(0,0,0,0.02)] backdrop-blur-xl dark:border-gray-800 dark:bg-slate-900/80"
+    class="relative z-20 flex shrink-0 flex-col border-r border-gray-100 bg-card/80 shadow-[2px_0_24px_rgba(0,0,0,0.02)] backdrop-blur-xl dark:border-gray-800 dark:bg-slate-900/80"
     :style="{
       width: collapsed ? '0px' : `${width}px`,
       transition: 'width 0.3s ease',
@@ -79,10 +79,10 @@ function generating(scene: Scene): boolean {
   >
     <!-- Logo 头 -->
     <div class="mt-3 mb-1 flex h-10 shrink-0 items-center justify-between px-3">
-      <img src="/logo-horizontal.png" alt="Narra" class="h-6" />
+      <img src="/logo-horizontal.svg" alt="Narra" class="h-6 w-[104px]" />
       <button
         type="button"
-        class="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800"
+        class="rounded-md p-1 text-gray-400 transition-colors hover:bg-muted hover:text-gray-700 dark:hover:bg-gray-800"
         @click="emit('toggle-collapse')"
       >
         <PanelLeftClose class="size-4" />
@@ -104,11 +104,11 @@ function generating(scene: Scene): boolean {
             scene.status === 'failed'
               ? 'bg-red-50/30 ring-1 ring-red-100 dark:bg-red-950/20'
               : scene.status === 'complete'
-                ? 'bg-amber-50 ring-1 ring-amber-200 dark:bg-amber-950/20'
+                ? 'bg-gold-50 ring-1 ring-gold-200 dark:bg-gold-900/20'
                 : scene.id === activeId
-                  ? 'bg-teal-50 ring-1 ring-teal-200 dark:bg-teal-900/20'
+                  ? 'bg-brand-50 ring-1 ring-brand-200 dark:bg-brand-900/20'
                   : viewable(scene)
-                    ? 'hover:bg-gray-50/80 dark:hover:bg-gray-800/50'
+                    ? 'hover:bg-muted/80 dark:hover:bg-gray-800/50'
                     : 'opacity-80',
           )
         "
@@ -121,9 +121,9 @@ function generating(scene: Scene): boolean {
               cn(
                 'flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-black',
                 scene.status === 'complete'
-                  ? 'bg-amber-500 text-white'
+                  ? 'bg-gold-500 text-white'
                   : scene.id === activeId
-                    ? 'bg-teal-600 text-white shadow-sm shadow-teal-500/30'
+                    ? 'bg-brand-700 text-white shadow-sm shadow-brand-300/30'
                     : 'bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
               )
             "
@@ -137,7 +137,7 @@ function generating(scene: Scene): boolean {
                 scene.status === 'failed'
                   ? 'text-red-600'
                   : scene.id === activeId
-                    ? 'text-teal-700 dark:text-teal-300'
+                    ? 'text-brand-800 dark:text-brand-300'
                     : 'text-gray-600 dark:text-gray-300',
               )
             "
@@ -213,8 +213,8 @@ function generating(scene: Scene): boolean {
             v-else-if="scene.status === 'complete' || scene.type === 'complete'"
             class="absolute inset-0 z-20 flex items-center justify-center"
           >
-            <span class="absolute size-8 animate-pulse rounded-full bg-amber-300/40" />
-            <Trophy class="relative size-8 text-amber-500" />
+            <span class="absolute size-8 animate-pulse rounded-full bg-gold-300/40" />
+            <Trophy class="relative size-8 text-gold-500" />
           </div>
         </div>
 
@@ -222,7 +222,7 @@ function generating(scene: Scene): boolean {
         <div class="flex items-center gap-1 text-[9px] text-gray-400">
           <component :is="TYPE_ICON[scene.type]" class="size-2.5" />
           {{ t(TYPE_LABEL_KEY[scene.type]) }}
-          <Check v-if="scene.status === 'complete'" class="ml-auto size-2.5 text-amber-500" />
+          <Check v-if="scene.status === 'complete'" class="ml-auto size-2.5 text-gold-500" />
         </div>
       </button>
     </div>
@@ -233,7 +233,7 @@ function generating(scene: Scene): boolean {
       @mousedown="emit('resize-start', $event)"
     >
       <div
-        class="absolute top-1/2 right-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-gray-300 transition-colors group-hover:bg-teal-400"
+        class="absolute top-1/2 right-0.5 h-8 w-0.5 -translate-y-1/2 rounded-full bg-gray-300 transition-colors group-hover:bg-brand-400"
       />
     </div>
   </aside>
@@ -242,7 +242,7 @@ function generating(scene: Scene): boolean {
   <button
     v-if="collapsed"
     type="button"
-    class="absolute top-4 left-2 z-30 rounded-md bg-white/80 p-1.5 text-gray-400 shadow-sm ring-1 ring-gray-100 backdrop-blur transition-colors hover:text-gray-700 dark:bg-slate-800/80 dark:ring-gray-700"
+    class="absolute top-4 left-2 z-30 rounded-md bg-card/80 p-1.5 text-gray-400 shadow-sm ring-1 ring-gray-100 backdrop-blur transition-colors hover:text-gray-700 dark:bg-slate-800/80 dark:ring-gray-700"
     @click="emit('toggle-collapse')"
   >
     <PanelLeftOpen class="size-4" />

@@ -61,13 +61,13 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
 <template>
   <div
     ref="toolbarRef"
-    class="fixed top-4 right-4 z-50 flex items-center gap-1 rounded-full border border-gray-100/50 bg-white/60 px-2 py-1.5 shadow-sm backdrop-blur-md dark:border-gray-700/50 dark:bg-gray-800/60"
+    class="fixed top-4 right-4 z-50 flex items-center gap-1 rounded-full border border-gray-100 bg-card/60 px-2 py-1.5 shadow-sm backdrop-blur-md dark:border-gray-700/50 dark:bg-gray-800/60"
   >
     <!-- 语言切换 -->
     <div class="relative">
       <button
         type="button"
-        class="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold text-gray-500 transition-all hover:bg-white hover:text-gray-800 hover:shadow-sm dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+        class="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-bold text-gray-500 transition-all hover:bg-muted hover:text-gray-800 hover:shadow-sm dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-200"
         @click="((langOpen = !langOpen), (themeOpen = false))"
       >
         <span>{{ localeShort }}</span>
@@ -84,8 +84,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
           type="button"
           :class="
             cn(
-              'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-700',
-              locale === l.code && 'bg-teal-50 text-teal-600 dark:bg-teal-900/20 dark:text-teal-400',
+              'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-muted dark:hover:bg-gray-700',
+              locale === l.code && 'bg-brand-50 text-brand-700 dark:bg-brand-900/20 dark:text-brand-400',
             )
           "
           @click="pickLocale(l.code)"
@@ -103,7 +103,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
     <div class="relative">
       <button
         type="button"
-        class="rounded-full p-2 text-gray-400 transition-all hover:bg-white hover:text-gray-800 hover:shadow-sm dark:text-gray-500 dark:hover:bg-gray-700"
+        class="rounded-full p-2 text-gray-400 transition-all hover:bg-muted hover:text-gray-800 hover:shadow-sm dark:text-gray-500 dark:hover:bg-gray-700"
         @click="((themeOpen = !themeOpen), (langOpen = false))"
       >
         <component :is="themeIcon" class="size-4" />
@@ -119,8 +119,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
           type="button"
           :class="
             cn(
-              'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-700',
-              mode === opt.value && 'bg-teal-50 text-teal-600 dark:bg-teal-900/20 dark:text-teal-400',
+              'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-muted dark:hover:bg-gray-700',
+              mode === opt.value && 'bg-brand-50 text-brand-700 dark:bg-brand-900/20 dark:text-brand-400',
             )
           "
           @click="pickTheme(opt.value)"
@@ -136,7 +136,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
     <!-- 知识库 -->
     <button
       type="button"
-      class="rounded-full p-2 text-gray-400 transition-all hover:bg-white hover:text-gray-800 hover:shadow-sm dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+      class="rounded-full p-2 text-gray-400 transition-all hover:bg-muted hover:text-gray-800 hover:shadow-sm dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-gray-200"
       :title="t('knowledge.title')"
       @click="router.push({ name: 'knowledge' })"
     >
@@ -148,7 +148,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
     <!-- 设置 -->
     <button
       type="button"
-      class="group rounded-full p-2 text-gray-400 transition-all hover:bg-white hover:text-gray-800 hover:shadow-sm dark:text-gray-500 dark:hover:bg-gray-700"
+      class="group rounded-full p-2 text-gray-400 transition-all hover:bg-muted hover:text-gray-800 hover:shadow-sm dark:text-gray-500 dark:hover:bg-gray-700"
       @click="emit('open-settings')"
     >
       <Settings class="size-4 transition-transform duration-500 group-hover:rotate-90" />

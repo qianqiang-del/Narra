@@ -39,7 +39,7 @@ const marks: Record<KnowledgeBadgeStatus, { icon: Component; class: string }> = 
   // 收录曾经成功、文档后来被删：用"归档"而不是打叉 —— 那次投递本身没错
   removed: { icon: Archive, class: 'text-zinc-400' },
   failed: { icon: AlertCircle, class: 'text-red-500' },
-  processing: { icon: Loader2, class: 'animate-spin text-amber-500' },
+  processing: { icon: Loader2, class: 'animate-spin text-gold-500' },
 }
 
 const badgeStyles: Record<KnowledgeBadgeStatus, string> = {
@@ -49,7 +49,7 @@ const badgeStyles: Record<KnowledgeBadgeStatus, string> = {
   failed:
     'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300',
   processing:
-    'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300',
+    'border-gold-200 bg-gold-50 text-gold-700 dark:border-gold-800 dark:bg-gold-900/40 dark:text-gold-300',
 }
 
 /**

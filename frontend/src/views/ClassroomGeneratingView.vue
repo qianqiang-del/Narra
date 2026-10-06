@@ -131,8 +131,8 @@ function stepBusy(index: number) {
 function nodeClass(index: number) {
   switch (stepState(index)) {
     case 'done': return 'border-transparent bg-emerald-500 text-white'
-    case 'active': return 'border-transparent bg-blue-600 text-white ring-4 ring-blue-500/20'
-    case 'ready': return 'border-blue-200 bg-white text-blue-600 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-900 dark:text-blue-300'
+    case 'active': return 'border-transparent bg-brand-700 text-white ring-4 ring-brand-600/20'
+    case 'ready': return 'border-brand-200 bg-card text-brand-700 hover:border-brand-400 dark:border-slate-700 dark:bg-slate-900 dark:text-brand-300'
     default: return 'border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-800 dark:bg-slate-800/60'
   }
 }
@@ -140,7 +140,7 @@ function nodeClass(index: number) {
 function labelClass(index: number) {
   const state = stepState(index)
   if (state === 'locked') return 'text-slate-400'
-  if (state === 'active') return 'text-blue-700 dark:text-blue-300'
+  if (state === 'active') return 'text-brand-700 dark:text-brand-300'
   return 'text-slate-700 dark:text-slate-200'
 }
 
@@ -318,11 +318,11 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main class="relative min-h-screen overflow-hidden bg-slate-50 p-6 dark:bg-slate-950">
+  <main class="narra-page narra-generating relative min-h-screen overflow-hidden bg-slate-50 p-6 dark:bg-slate-950">
     <div class="pointer-events-none absolute inset-0 overflow-hidden">
-      <div class="blob absolute -top-32 left-[12%] size-96 rounded-full bg-blue-400/20 blur-3xl" />
-      <div class="blob absolute top-1/3 -right-24 size-96 rounded-full bg-teal-400/20 blur-3xl" style="animation-delay: -3s" />
-      <div class="blob absolute -bottom-32 left-1/3 size-96 rounded-full bg-emerald-400/15 blur-3xl" style="animation-delay: -6s" />
+      <div class="narra-decorative-orb blob absolute -top-32 left-[12%] size-96 rounded-full bg-brand-400/20 blur-3xl" />
+      <div class="narra-decorative-orb blob absolute top-1/3 -right-24 size-96 rounded-full bg-brand-400/20 blur-3xl" style="animation-delay: -3s" />
+      <div class="narra-decorative-orb blob absolute -bottom-32 left-1/3 size-96 rounded-full bg-emerald-400/15 blur-3xl" style="animation-delay: -6s" />
     </div>
 
     <div class="relative mx-auto max-w-3xl space-y-5">
@@ -339,14 +339,14 @@ onUnmounted(() => {
           <span
             v-for="material in classroom.materials"
             :key="material.document_id"
-            class="rounded-full border border-slate-200 bg-white/70 px-2 py-0.5 text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300"
+            class="rounded-full border border-slate-200 bg-card/70 px-2 py-0.5 text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300"
           >
             {{ material.name }}
           </span>
         </p>
       </header>
 
-      <div v-if="loading" class="flex items-center justify-center gap-3 rounded-2xl border border-slate-200/70 bg-white/80 p-10 text-sm text-slate-500 backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
+      <div v-if="loading" class="flex items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-card/80 p-10 text-sm text-slate-500 backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
         <Loader2 class="size-5 animate-spin" />正在读取课堂状态…
       </div>
 
@@ -355,11 +355,11 @@ onUnmounted(() => {
       </div>
 
       <template v-else>
-        <div v-if="error" class="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+        <div v-if="error" class="flex items-center gap-3 rounded-2xl border border-gold-200 bg-gold-50 p-4 text-sm text-gold-800 dark:border-gold-900 dark:bg-gold-900/40 dark:text-gold-300">
           <AlertCircle class="size-5 shrink-0" />{{ error }}
         </div>
 
-        <nav class="rounded-2xl border border-slate-200/70 bg-white/80 p-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
+        <nav class="rounded-2xl border border-slate-200 bg-card/80 p-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
           <ol class="flex items-center">
             <li v-for="(step, index) in steps" :key="step.key" class="flex flex-1 items-center last:flex-none">
               <button
@@ -387,30 +387,30 @@ onUnmounted(() => {
           </ol>
         </nav>
 
-        <section v-if="activeStep.key === 'outline'" class="anim-fade-up rounded-2xl border border-slate-200/70 bg-white/80 p-8 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
+        <section v-if="activeStep.key === 'outline'" class="anim-fade-up rounded-2xl border border-slate-200 bg-card/80 p-8 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
           <div v-if="!outlineReady" class="flex flex-col items-center text-center">
             <div class="relative mb-6 flex size-16 items-center justify-center">
-              <span class="absolute inset-0 animate-ping rounded-full bg-blue-500/20" />
-              <span class="relative flex size-16 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg shadow-blue-500/30">
+              <span class="absolute inset-0 animate-ping rounded-full bg-brand-600/20" />
+              <span class="relative flex size-16 items-center justify-center rounded-full bg-brand-700 text-white shadow-lg shadow-brand-600/30">
                 <Sparkles class="size-7" />
               </span>
             </div>
             <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-50">正在生成课程大纲</h2>
-            <p class="mt-1.5 h-5 text-sm text-blue-600 dark:text-blue-300">{{ outlinePhases[phaseIndex] }}</p>
+            <p class="mt-1.5 h-5 text-sm text-brand-700 dark:text-brand-300">{{ outlinePhases[phaseIndex] }}</p>
 
             <div class="mt-8 w-full space-y-3">
               <div v-for="line in 4" :key="line" class="shimmer h-4 rounded-full" :style="{ width: `${100 - line * 7}%` }" />
             </div>
 
             <div class="mt-8 h-1 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-              <div class="indeterminate h-full w-1/3 rounded-full bg-blue-500" />
+              <div class="indeterminate h-full w-1/3 rounded-full bg-brand-600" />
             </div>
             <p class="mt-3 text-xs text-slate-400">大纲完成后会自动进入下一步</p>
           </div>
 
           <div v-else>
             <header class="flex items-center gap-2">
-              <FileText class="size-5 text-blue-600 dark:text-blue-400" />
+              <FileText class="size-5 text-brand-700 dark:text-brand-400" />
               <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-50">课程大纲</h2>
               <span class="ml-auto text-xs text-slate-400">{{ outlineRows.length }} 页</span>
             </header>
@@ -443,9 +443,9 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <section v-else-if="activeStep.key === 'roles'" class="anim-fade-up rounded-2xl border border-slate-200/70 bg-white/80 p-6 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
+        <section v-else-if="activeStep.key === 'roles'" class="anim-fade-up rounded-2xl border border-slate-200 bg-card/80 p-6 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
           <header class="flex items-center gap-2">
-            <Users class="size-5 text-blue-600 dark:text-blue-400" />
+            <Users class="size-5 text-brand-700 dark:text-brand-400" />
             <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-50">课堂角色</h2>
             <span class="ml-auto text-xs text-slate-400">{{ agents.length }} 位</span>
           </header>
@@ -474,15 +474,15 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <section v-else-if="activeStep.key === 'scenes'" class="anim-fade-up rounded-2xl border border-slate-200/70 bg-white/80 p-6 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
+        <section v-else-if="activeStep.key === 'scenes'" class="anim-fade-up rounded-2xl border border-slate-200 bg-card/80 p-6 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
           <header class="flex items-center gap-2">
-            <Layers class="size-5 text-blue-600 dark:text-blue-400" />
+            <Layers class="size-5 text-brand-700 dark:text-brand-400" />
             <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-50">正在生成场景</h2>
             <span class="ml-auto text-sm tabular-nums text-slate-500">{{ readyCount }}/{{ totalScenes }} 完成</span>
           </header>
 
           <div class="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-            <div class="h-full rounded-full bg-gradient-to-r from-blue-500 to-emerald-500 transition-all duration-500" :style="{ width: `${scenePercent}%` }" />
+            <div class="h-full rounded-full bg-gradient-to-r from-brand-600 to-emerald-500 transition-all duration-500" :style="{ width: `${scenePercent}%` }" />
           </div>
 
           <ul v-if="scenes.length" class="mt-5 space-y-2">
@@ -495,7 +495,7 @@ onUnmounted(() => {
             >
               <span class="flex size-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs text-slate-500 dark:bg-slate-800">
                 <Check v-if="scene.status === 'ready'" class="size-4 text-emerald-600 dark:text-emerald-400" />
-                <Loader2 v-else-if="scene.status === 'generating'" class="size-4 animate-spin text-blue-500" />
+                <Loader2 v-else-if="scene.status === 'generating'" class="size-4 animate-spin text-brand-600" />
                 <AlertCircle v-else-if="scene.status === 'failed'" class="size-4 text-rose-500" />
                 <span v-else>{{ scene.sort_order + 1 }}</span>
               </span>
@@ -516,7 +516,7 @@ onUnmounted(() => {
           <div v-if="canEnter" class="mt-6 flex justify-center">
             <button
               type="button"
-              class="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-700"
+              class="inline-flex items-center gap-2 rounded-xl bg-brand-700 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-brand-600/25 transition hover:bg-brand-700"
               @click="enterClassroom"
             >
               已有页面可以学习，进入课堂<ArrowRight class="size-4" />
@@ -524,7 +524,7 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <section v-else class="anim-fade-up rounded-2xl border border-slate-200/70 bg-white/80 p-10 text-center shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
+        <section v-else class="anim-fade-up rounded-2xl border border-slate-200 bg-card/80 p-10 text-center shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
           <div class="mx-auto flex size-16 items-center justify-center rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-500/30">
             <Rocket class="size-7" />
           </div>
@@ -537,7 +537,7 @@ onUnmounted(() => {
 
           <button
             type="button"
-            class="mt-6 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-medium text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-700"
+            class="mt-6 inline-flex items-center gap-2 rounded-xl bg-brand-700 px-6 py-3 text-sm font-medium text-white shadow-lg shadow-brand-600/25 transition hover:bg-brand-700"
             @click="enterClassroom"
           >
             进入课堂<ArrowRight class="size-4" />

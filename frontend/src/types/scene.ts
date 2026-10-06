@@ -58,10 +58,10 @@ export interface Scene {
 export interface Classroom { id: string; title: string; scenes: Scene[] }
 
 export const SCENE_TYPE_STYLES: Record<SceneType, { ring: string; gradient: string }> = {
-  slide: { ring: 'ring-black/5', gradient: 'from-teal-100 to-blue-100' },
-  quiz: { ring: 'ring-amber-200', gradient: 'from-orange-100 to-amber-100' },
-  interactive: { ring: 'ring-emerald-200', gradient: 'from-emerald-100 to-teal-100' },
-  complete: { ring: 'ring-amber-200', gradient: 'from-amber-100 to-orange-100' },
+  slide: { ring: 'ring-black/5', gradient: 'from-brand-100 to-brand-200' },
+  quiz: { ring: 'ring-gold-200', gradient: 'from-orange-100 to-gold-100' },
+  interactive: { ring: 'ring-emerald-200', gradient: 'from-emerald-100 to-brand-100' },
+  complete: { ring: 'ring-gold-200', gradient: 'from-gold-100 to-orange-100' },
 }
 
 /** 取交互页的沙箱 HTML；不是交互页、或旧课堂只有控件配置时返回空串。 */
