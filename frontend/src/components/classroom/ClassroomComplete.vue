@@ -62,7 +62,7 @@ const statCards = computed(() => [
   <section class="absolute inset-0 z-[105] flex items-center justify-center overflow-auto">
     <!-- 背景 -->
     <div
-      class="absolute inset-0 bg-gradient-to-br from-amber-50 via-white to-orange-50 dark:from-amber-950/20 dark:via-gray-900 dark:to-amber-950/30"
+      class="absolute inset-0 bg-gradient-to-br from-gold-50 via-white to-orange-50 dark:from-gold-900/20 dark:via-gray-900 dark:to-gold-900/30"
     />
 
     <!-- confetti -->
@@ -88,20 +88,20 @@ const statCards = computed(() => [
     <div class="relative flex flex-col items-center px-8 py-10 text-center">
       <!-- 金杯 -->
       <div class="relative mb-6">
-        <span class="absolute inset-0 -z-10 animate-pulse rounded-full bg-amber-300/30 blur-2xl" />
-        <Trophy class="size-20 text-amber-500 drop-shadow-lg md:size-24" />
+        <span class="absolute inset-0 -z-10 animate-pulse rounded-full bg-gold-300/30 blur-2xl" />
+        <Trophy class="size-20 text-gold-500 drop-shadow-lg md:size-24" />
       </div>
 
       <!-- Ribbon -->
       <span
-        class="rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-500 px-4 py-1.5 text-xs font-bold tracking-wider text-white uppercase shadow-lg shadow-amber-500/30"
+        class="rounded-full bg-gradient-to-r from-gold-400 via-orange-400 to-gold-500 px-4 py-1.5 text-xs font-bold tracking-wider text-white uppercase shadow-lg shadow-gold-500/30"
       >
         {{ t('stage.courseComplete') }}
       </span>
 
       <!-- 标题 -->
       <h2
-        class="mt-5 bg-gradient-to-br from-amber-700 via-orange-600 to-amber-800 bg-clip-text text-3xl font-black tracking-tight text-transparent md:text-4xl"
+        class="mt-5 bg-gradient-to-br from-gold-700 via-orange-600 to-gold-800 bg-clip-text text-3xl font-black tracking-tight text-transparent md:text-4xl"
       >
         {{ t('stage.courseComplete') }}
       </h2>
@@ -111,9 +111,9 @@ const statCards = computed(() => [
         <div
           v-for="(s, i) in statCards"
           :key="i"
-          class="rounded-2xl border border-amber-100 bg-white/90 px-4 py-4 shadow-sm backdrop-blur-sm dark:border-amber-900/40 dark:bg-gray-800/90"
+          class="rounded-2xl border border-gold-100 bg-white/90 px-4 py-4 shadow-sm backdrop-blur-sm dark:border-gold-900/40 dark:bg-gray-800/90"
         >
-          <div class="text-3xl font-black text-amber-600 tabular-nums dark:text-amber-400">
+          <div class="text-3xl font-black text-gold-600 tabular-nums dark:text-gold-400">
             {{ s.value }}
           </div>
           <div class="mt-1 text-[11px] font-medium tracking-wide text-gray-500 uppercase dark:text-gray-400">

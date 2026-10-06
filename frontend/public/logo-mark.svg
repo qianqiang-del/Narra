@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Narra logo mark">
+  <title>Narra 标志（图形版）</title>
+  <desc>圆环代表圆桌，外围节点代表参与讨论的视角（数量不代表角色数），中心实心圆代表汇聚出的认识。</desc>
+  <style>
+    .ring { stroke: #46639c; }
+    .node { fill: #46639c; }
+    .core { fill: #c3a05c; }
+    @media (prefers-color-scheme: dark) {
+      .ring { stroke: #93a9cf; }
+      .node { fill: #93a9cf; }
+      .core { fill: #d4b678; }
+    }
+  </style>
+
+  <!-- 外圈：圆桌 -->
+  <circle class="ring" cx="32" cy="32" r="20" fill="none" stroke-width="2.5"/>
+
+  <!-- 外围节点：分散的视角（数量不与课堂角色数挂钩） -->
+  <circle class="node" cx="32"     cy="12"     r="3.4"/>
+  <circle class="node" cx="51.02"  cy="25.82"  r="3.4"/>
+  <circle class="node" cx="43.76"  cy="48.18"  r="3.4"/>
+  <circle class="node" cx="20.24"  cy="48.18"  r="3.4"/>
+  <circle class="node" cx="12.98"  cy="25.82"  r="3.4"/>
+
+  <!-- 中心：讨论汇聚出的认识。刻意用实心圆而非尖角星芒 ——
+       尖角在小尺寸（favicon 16px）下会被读成十字或叉形。 -->
+  <circle class="core" cx="32" cy="32" r="6.2"/>
+</svg>

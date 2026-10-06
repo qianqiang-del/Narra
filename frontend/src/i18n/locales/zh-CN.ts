@@ -17,7 +17,7 @@ export default {
     close: '关闭',
   },
   home: {
-    slogan: 'Generative Learning in Multi-Agent Interactive Classroom',
+    slogan: 'Many voices, one lesson, a real discussion',
     greetingWithName: '嗨，{name}',
     greetingAnon: '嗨，欢迎回来',
     editProfile: '点击编辑个人资料',

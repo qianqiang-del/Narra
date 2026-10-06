@@ -218,7 +218,7 @@ const slideUnits = computed<SlideUnit[]>(() => {
         <div
           v-else-if="unit.type === 'list'"
           :class="cn(
-            'grid gap-3 rounded-2xl border border-slate-200/80 bg-slate-50/70 p-4 dark:border-slate-700/70 dark:bg-slate-800/40',
+            'grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-700/70 dark:bg-slate-800/40',
             unit.rows.length >= 4 ? 'md:grid-cols-2' : 'grid-cols-1',
           )"
         >
@@ -227,11 +227,11 @@ const slideUnits = computed<SlideUnit[]>(() => {
             :key="row.key || rowIndex"
             :class="
               cn(
-                'flex items-start gap-3 rounded-xl bg-white/80 px-3.5 py-3 ring-1 ring-slate-200/60 dark:bg-slate-900/50 dark:ring-slate-700/60',
+                'flex items-start gap-3 rounded-xl bg-card/80 px-3.5 py-3 ring-1 ring-slate-200/60 dark:bg-slate-900/50 dark:ring-slate-700/60',
               )
             "
           >
-            <span class="mt-2 size-1.5 shrink-0 rounded-full bg-teal-500" />
+            <span class="mt-2 size-1.5 shrink-0 rounded-full bg-brand-600" />
             <span class="text-[15px] leading-relaxed text-gray-600 dark:text-gray-300"><strong v-if="row.label" class="font-semibold text-gray-800 dark:text-gray-100">{{ row.label }}：</strong>{{ row.text }}</span>
           </div>
         </div>
@@ -262,7 +262,7 @@ const slideUnits = computed<SlideUnit[]>(() => {
     class="flex size-full flex-col gap-4 overflow-y-auto px-8 py-7 md:px-12"
   >
     <div class="flex shrink-0 items-center gap-2">
-      <span class="inline-flex w-fit items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-[11px] font-bold tracking-wide text-amber-700 uppercase dark:bg-amber-900/30 dark:text-amber-300">
+      <span class="inline-flex w-fit items-center gap-1.5 rounded-full bg-gold-100 px-3 py-1 text-[11px] font-bold tracking-wide text-gold-700 uppercase dark:bg-gold-900/30 dark:text-gold-300">
         {{ t('scene.typeQuiz') }}
       </span>
       <span class="text-xs text-gray-400 tabular-nums dark:text-gray-500">{{ questions.length }}</span>
@@ -275,13 +275,13 @@ const slideUnits = computed<SlideUnit[]>(() => {
         cn(
           'shrink-0 rounded-2xl border bg-white/75 p-5 transition-all duration-300 dark:bg-gray-800/60',
           props.activeContentKey === item.key
-            ? 'border-teal-300 ring-2 ring-teal-200/70 dark:border-teal-700 dark:ring-teal-900/50'
+            ? 'border-brand-300 ring-2 ring-brand-200/70 dark:border-brand-800 dark:ring-brand-900/50'
             : 'border-gray-200 dark:border-gray-700',
         )
       "
     >
       <div class="flex items-start gap-3">
-        <span class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+        <span class="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-gold-100 text-xs font-bold text-gold-700 dark:bg-gold-900/40 dark:text-gold-300">
           {{ qi + 1 }}
         </span>
         <h2 class="text-lg font-bold tracking-tight text-gray-800 md:text-xl dark:text-gray-100">
@@ -301,7 +301,7 @@ const slideUnits = computed<SlideUnit[]>(() => {
                 ? 'border-emerald-400 bg-emerald-50 text-emerald-800 dark:bg-emerald-900/25 dark:text-emerald-200'
                 : revealedOf(item.key) && pickedOf(item.key) === opt
                   ? 'border-red-300 bg-red-50 text-red-700 dark:bg-red-900/25 dark:text-red-200'
-                  : 'border-gray-200 bg-white text-gray-700 hover:border-teal-300 hover:bg-teal-50/50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:border-teal-600',
+                  : 'border-gray-200 bg-white text-gray-700 hover:border-brand-300 hover:bg-brand-50/50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:border-brand-700',
             )
           "
           @click="pickQuiz(item.key, opt)"
@@ -323,7 +323,7 @@ const slideUnits = computed<SlideUnit[]>(() => {
 
       <p
         v-if="revealedOf(item.key) && item.explanation"
-        class="mt-3 rounded-xl bg-teal-50 px-4 py-2.5 text-[13px] leading-6 text-teal-800 dark:bg-teal-950/30 dark:text-teal-200"
+        class="mt-3 rounded-xl bg-brand-50 px-4 py-2.5 text-[13px] leading-6 text-brand-800 dark:bg-brand-950/30 dark:text-brand-200"
       >
         {{ item.explanation }}
       </p>
@@ -351,7 +351,7 @@ const slideUnits = computed<SlideUnit[]>(() => {
     <h2 class="text-3xl font-bold text-gray-800 dark:text-gray-100">{{ scene.title }}</h2>
     <div v-for="(block, index) in scene.blocks" :key="index" class="text-[15px] leading-relaxed text-gray-700 dark:text-gray-200">
       <h3 v-if="block.type === 'heading'" class="text-xl font-semibold">{{ block.content || block.text }}</h3>
-      <div v-else-if="block.type === 'callout'" class="rounded-xl border border-teal-200 bg-teal-50 p-4 text-teal-900 dark:border-teal-800 dark:bg-teal-950/30 dark:text-teal-100">{{ block.content || block.text }}</div>
+      <div v-else-if="block.type === 'callout'" class="rounded-xl border border-brand-200 bg-brand-50 p-4 text-brand-900 dark:border-brand-800 dark:bg-brand-950/30 dark:text-brand-100">{{ block.content || block.text }}</div>
       <li v-else-if="block.type === 'list-item'" class="ml-5 list-disc">{{ block.content || block.text }}</li>
       <p v-else>{{ block.content || block.text }}</p>
     </div>

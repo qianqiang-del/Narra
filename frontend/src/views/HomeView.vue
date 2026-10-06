@@ -395,16 +395,16 @@ function openClassroom(id: string) {
 <template>
   <!-- §5.0 根容器 -->
   <div
-    class="relative flex min-h-[100dvh] w-full flex-col items-center overflow-x-hidden bg-gradient-to-b from-slate-50 to-slate-100 p-4 pt-16 md:p-8 md:pt-16 dark:from-slate-950 dark:to-slate-900"
+    class="narra-page narra-home relative flex min-h-[100dvh] w-full flex-col items-center overflow-x-hidden bg-background p-4 pt-16 md:p-8 md:pt-16"
   >
     <!-- §5.2 背景光斑装饰 -->
     <div class="pointer-events-none absolute inset-0 overflow-hidden">
       <div
-        class="absolute top-0 left-1/4 h-96 w-96 animate-pulse rounded-full bg-blue-500/10 blur-3xl"
+        class="narra-decorative-orb absolute top-0 left-1/4 h-96 w-96 animate-pulse rounded-full bg-brand-400/12 blur-3xl"
         style="animation-duration: 4s"
       />
       <div
-        class="absolute right-1/4 bottom-0 h-96 w-96 animate-pulse rounded-full bg-teal-500/10 blur-3xl"
+        class="narra-decorative-orb absolute right-1/4 bottom-0 h-96 w-96 animate-pulse rounded-full bg-gold-500/10 blur-3xl"
         style="animation-duration: 6s"
       />
     </div>
@@ -416,7 +416,7 @@ function openClassroom(id: string) {
     <div class="relative z-20 mt-[10vh] flex w-full max-w-[800px] flex-col items-center">
       <!-- Logo + Pro 徽章 -->
       <div class="relative">
-        <img src="/logo-horizontal.png" alt="Narra" class="mb-2 -ml-2 h-12 md:-ml-3 md:h-16" />
+        <img src="/logo-horizontal.svg" alt="Narra" class="mb-2 h-12 w-[208px] md:h-16 md:w-[277px]" />
         <div class="absolute top-0 left-full mt-[10px] ml-1.5 md:mt-[14px] md:ml-2">
           <UiTooltip content="专业模式">
             <ProBadge
@@ -428,12 +428,15 @@ function openClassroom(id: string) {
         </div>
       </div>
 
-      <!-- Slogan -->
-      <p class="mb-8 text-sm text-muted-foreground/60">{{ t('home.slogan') }}</p>
+      <!-- Slogan：先一道金铜短线，再一句小字 -->
+      <div class="mb-7 flex flex-col items-center gap-3">
+        <span class="h-[2px] w-11 rounded-full bg-accent-decoration" />
+        <p class="text-sm tracking-wide text-muted-foreground">{{ t('home.slogan') }}</p>
+      </div>
 
       <!-- §5.3 Composer 统一输入卡片 -->
       <div
-        class="w-full rounded-2xl border border-border/60 bg-white/80 shadow-xl shadow-black/[0.03] backdrop-blur-xl transition-shadow focus-within:shadow-2xl focus-within:shadow-teal-500/[0.06] dark:bg-slate-900/80 dark:shadow-black/20"
+        class="w-full rounded-2xl border border-border bg-card/80 shadow-soft backdrop-blur-xl transition-[border-color,box-shadow] duration-200 focus-within:border-brand-200 focus-within:shadow-soft"
       >
         <!-- 顶部行：GreetingBar（左） / AgentBar（右） -->
         <div class="relative z-20 flex items-start justify-between">
@@ -532,10 +535,14 @@ function openClassroom(id: string) {
     <!-- §5.7–§5.9 最近学习折叠区 -->
     <RecentSection @open-classroom="openClassroom" @toast="toast" />
 
-    <!-- 页脚 -->
-    <div class="mt-auto pt-12 pb-4 text-center text-xs text-muted-foreground/40">
-      {{ t('home.footer') }}
-    </div>
+    <!-- 页脚：深蓝收口。一块深色压底，视线不会直接掉出画面。 -->
+    <footer class="mt-auto shrink-0 border-t border-gold-500/20 bg-[#151d2e] px-6 py-5">
+      <div class="mx-auto flex max-w-5xl flex-wrap items-center justify-center gap-x-6 gap-y-2 text-center text-xs text-[#aab3c6]">
+        <span class="font-display text-sm tracking-wide text-[#e8eefb]">Narra</span>
+        <span class="hidden sm:inline text-[#3d4759]">·</span>
+        <span>{{ t('home.footer') }}</span>
+      </div>
+    </footer>
 
     <!-- §5.10 设置弹窗 -->
     <SettingsDialog v-model:open="settingsOpen" v-model:section="settingsSection" />

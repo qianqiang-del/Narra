@@ -107,7 +107,7 @@ function statusText(item: RerankModel) {
   <section class="space-y-5">
     <div class="flex items-center justify-between gap-3 pr-8">
       <h3 class="text-sm font-semibold">已保存的配置</h3>
-      <button v-if="!formOpen" type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700" @click="resetForm()">
+      <button v-if="!formOpen" type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-800" @click="resetForm()">
         <Plus class="size-3.5" />新增配置
       </button>
     </div>
@@ -119,17 +119,17 @@ function statusText(item: RerankModel) {
       </div>
       <div class="grid gap-3 sm:grid-cols-2">
         <label class="text-sm font-medium">配置名称
-          <input v-model="form.name" required maxlength="120" placeholder="硅基流动 · bge-reranker-v2-m3" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-teal-400" />
+          <input v-model="form.name" required maxlength="120" placeholder="硅基流动 · bge-reranker-v2-m3" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-brand-400" />
         </label>
         <label class="text-sm font-medium">请求超时（秒）
-          <input v-model.number="form.timeoutSeconds" required type="number" min="1" max="600" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-teal-400" />
+          <input v-model.number="form.timeoutSeconds" required type="number" min="1" max="600" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-brand-400" />
         </label>
       </div>
       <label class="block text-sm font-medium">Base URL
-        <input v-model="form.baseUrl" required type="url" placeholder="https://api.siliconflow.cn/v1" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-teal-400" />
+        <input v-model="form.baseUrl" required type="url" placeholder="https://api.siliconflow.cn/v1" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:border-brand-400" />
       </label>
       <label class="block text-sm font-medium">模型 ID
-        <input v-model="form.model" required maxlength="160" placeholder="BAAI/bge-reranker-v2-m3" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-sm outline-none focus:border-teal-400" />
+        <input v-model="form.model" required maxlength="160" placeholder="BAAI/bge-reranker-v2-m3" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-sm outline-none focus:border-brand-400" />
       </label>
       <label class="block text-sm font-medium">API Key
         <div class="relative mt-1">
@@ -138,7 +138,7 @@ function statusText(item: RerankModel) {
             :type="showApiKey ? 'text' : 'password'"
             autocomplete="new-password"
             placeholder="可留空；编辑时留空表示保持不变"
-            class="w-full rounded-lg border border-input bg-background px-3 py-2 pr-10 text-sm outline-none focus:border-teal-400"
+            class="w-full rounded-lg border border-input bg-background px-3 py-2 pr-10 text-sm outline-none focus:border-brand-400"
           />
           <button
             type="button"
@@ -158,7 +158,7 @@ function statusText(item: RerankModel) {
       <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
       <div class="flex justify-end gap-2 border-t border-border pt-3">
         <button type="button" class="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted" @click="closeForm">取消</button>
-        <button type="submit" :disabled="submitting" class="rounded-lg bg-teal-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{{ submitting ? '保存中…' : '保存' }}</button>
+        <button type="submit" :disabled="submitting" class="rounded-lg bg-brand-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{{ submitting ? '保存中…' : '保存' }}</button>
       </div>
     </form>
 
@@ -185,7 +185,7 @@ function statusText(item: RerankModel) {
           <button type="button" :disabled="testingId === item.id" class="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50" @click="testModel(item)">
             <Wifi class="size-3" />{{ testingId === item.id ? '测试中…' : '测试' }}
           </button>
-          <button type="button" :class="cn('relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors', item.enabled ? 'bg-teal-600' : 'bg-muted', item.testStatus !== 'success' && 'opacity-50')" @click="toggle(item)">
+          <button type="button" :class="cn('relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors', item.enabled ? 'bg-brand-700' : 'bg-muted', item.testStatus !== 'success' && 'opacity-50')" @click="toggle(item)">
             <span :class="cn('mt-0.5 inline-block h-4 w-4 rounded-full bg-white shadow transition-transform', item.enabled ? 'translate-x-4' : 'translate-x-0.5')" />
           </button>
           <button type="button" :class="cn('rounded p-1 text-muted-foreground hover:text-destructive', deleteConfirmId === item.id && 'bg-destructive text-white')" @click="remove(item)"><Trash2 class="size-4" /></button>

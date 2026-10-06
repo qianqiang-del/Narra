@@ -106,7 +106,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
     <div class="flex min-w-0 items-center gap-3">
       <button
         type="button"
-        class="shrink-0 rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+        class="shrink-0 rounded-lg p-2 text-gray-400 transition-colors hover:bg-muted hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
         @click="emit('back')"
       >
         <ArrowLeft class="size-5" />
@@ -125,12 +125,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
     <div ref="rootRef" class="flex shrink-0 items-center gap-2">
       <!-- 语言 / 主题 / 设置 -->
       <div
-        class="flex shrink-0 items-center gap-1 rounded-full border border-gray-100/50 bg-white/60 px-2 py-1.5 shadow-sm backdrop-blur-md dark:border-gray-700/50 dark:bg-gray-800/60"
+        class="flex shrink-0 items-center gap-1 rounded-full border border-gray-100 bg-card/60 px-2 py-1.5 shadow-sm backdrop-blur-md dark:border-gray-700/50 dark:bg-gray-800/60"
       >
         <div class="relative">
           <button
             type="button"
-            class="flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold text-gray-500 transition-all hover:bg-white hover:text-gray-800 dark:text-gray-400 dark:hover:bg-gray-700"
+            class="flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold text-gray-500 transition-all hover:bg-muted hover:text-gray-800 dark:text-gray-400 dark:hover:bg-gray-700"
             @click="((langOpen = !langOpen), (themeOpen = false), (exportOpen = false))"
           >
             {{ localeShort }}
@@ -146,8 +146,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
               type="button"
               :class="
                 cn(
-                  'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-700',
-                  locale === l.code && 'bg-teal-50 text-teal-600 dark:bg-teal-900/20 dark:text-teal-400',
+                  'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-muted dark:hover:bg-gray-700',
+                  locale === l.code && 'bg-brand-50 text-brand-700 dark:bg-brand-900/20 dark:text-brand-400',
                 )
               "
               @click="pickLocale(l.code)"
@@ -164,7 +164,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         <div class="relative">
           <button
             type="button"
-            class="rounded-full p-2 text-gray-400 transition-all hover:bg-white hover:shadow-sm dark:text-gray-500 dark:hover:bg-gray-700"
+            class="rounded-full p-2 text-gray-400 transition-all hover:bg-muted hover:shadow-sm dark:text-gray-500 dark:hover:bg-gray-700"
             @click="((themeOpen = !themeOpen), (langOpen = false), (exportOpen = false))"
           >
             <component :is="themeIcon" class="size-4" />
@@ -179,8 +179,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
               type="button"
               :class="
                 cn(
-                  'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-700',
-                  mode === opt.value && 'bg-teal-50 text-teal-600 dark:bg-teal-900/20 dark:text-teal-400',
+                  'flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition-colors hover:bg-muted dark:hover:bg-gray-700',
+                  mode === opt.value && 'bg-brand-50 text-brand-700 dark:bg-brand-900/20 dark:text-brand-400',
                 )
               "
               @click="pickTheme(opt.value)"
@@ -195,7 +195,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
 
         <button
           type="button"
-          class="group rounded-full p-2 text-gray-400 transition-all hover:bg-white hover:shadow-sm dark:text-gray-500 dark:hover:bg-gray-700"
+          class="group rounded-full p-2 text-gray-400 transition-all hover:bg-muted hover:shadow-sm dark:text-gray-500 dark:hover:bg-gray-700"
           @click="emit('open-settings')"
         >
           <Settings class="size-4 transition-transform duration-500 group-hover:rotate-90" />
@@ -206,8 +206,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
       <label
         :class="
           cn(
-            'inline-flex h-9 shrink-0 items-center gap-2.5 rounded-full border bg-white/60 px-3 shadow-sm backdrop-blur-md transition-colors duration-200 dark:bg-gray-800/60',
-            proMode ? 'border-teal-500/60' : 'border-gray-100/50 dark:border-gray-700/50',
+            'inline-flex h-9 shrink-0 items-center gap-2.5 rounded-full border bg-card/60 px-3 shadow-sm backdrop-blur-md transition-colors duration-200 dark:bg-gray-800/60',
+            proMode ? 'border-brand-600/60' : 'border-gray-100 dark:border-gray-700/50',
           )
         "
       >
@@ -215,7 +215,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
           :class="
             cn(
               'text-[11px] font-bold tracking-[0.14em] uppercase tabular-nums',
-              proMode ? 'text-teal-600 dark:text-teal-300' : 'text-gray-400',
+              proMode ? 'text-brand-700 dark:text-brand-300' : 'text-gray-400',
             )
           "
         >
@@ -223,7 +223,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
         </span>
         <SwitchRoot
           :model-value="proMode"
-          class="relative h-5 w-9 shrink-0 rounded-full transition-colors data-[state=checked]:bg-teal-500 data-[state=unchecked]:bg-gray-200 dark:data-[state=unchecked]:bg-gray-700"
+          class="relative h-5 w-9 shrink-0 rounded-full transition-colors data-[state=checked]:bg-brand-600 data-[state=unchecked]:bg-gray-200 dark:data-[state=unchecked]:bg-gray-700"
           @update:model-value="emit('toggle-pro')"
         >
           <SwitchThumb
@@ -241,7 +241,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
               cn(
                 'shrink-0 rounded-full p-2 transition-colors',
                 canExport
-                  ? 'text-gray-400 hover:bg-white hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-700'
+                  ? 'text-gray-400 hover:bg-muted hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-700'
                   : 'cursor-not-allowed text-gray-300 opacity-50 dark:text-gray-600',
               )
             "
@@ -268,7 +268,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
             v-for="item in exportItems"
             :key="item.id"
             type="button"
-            class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
+            class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] text-gray-600 transition-colors hover:bg-muted dark:text-gray-300 dark:hover:bg-gray-700"
             @click="((exportOpen = false), emit('export', item.id))"
           >
             <component :is="item.icon" class="size-3.5 text-gray-400" />

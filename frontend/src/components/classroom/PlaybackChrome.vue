@@ -921,12 +921,12 @@ onBeforeUnmount(() => {
         <div
           class="w-full max-w-sm overflow-hidden rounded-2xl border-0 bg-background shadow-[0_25px_60px_-12px_rgba(0,0,0,0.15)]"
         >
-          <div class="h-1 bg-gradient-to-r from-amber-400 via-orange-400 to-red-400" />
+          <div class="h-1 bg-gradient-to-r from-gold-400 via-orange-400 to-red-400" />
           <div class="px-6 pt-6">
             <div
-              class="flex size-12 items-center justify-center rounded-full bg-amber-50 ring-1 ring-amber-200/50 dark:bg-amber-950/30"
+              class="flex size-12 items-center justify-center rounded-full bg-gold-50 ring-1 ring-gold-200/50 dark:bg-gold-900/30"
             >
-              <AlertTriangle class="size-5 text-amber-500" />
+              <AlertTriangle class="size-5 text-gold-500" />
             </div>
             <h3 class="mt-4 text-base font-bold">{{ t('stage.confirmSwitchTitle') }}</h3>
             <p class="mt-1.5 text-sm leading-relaxed text-gray-500 dark:text-gray-400">
@@ -943,7 +943,7 @@ onBeforeUnmount(() => {
             </button>
             <button
               type="button"
-              class="flex-1 cursor-pointer rounded-xl border-0 bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-medium text-white shadow-md shadow-amber-200/50 transition-opacity hover:opacity-90"
+              class="flex-1 cursor-pointer rounded-xl border-0 bg-gradient-to-r from-gold-500 to-orange-500 px-4 py-2 text-sm font-medium text-white shadow-md shadow-gold-200/50 transition-opacity hover:opacity-90"
               @click="confirmSwitch"
             >
               {{ t('stage.confirmSwitchTitle') }}

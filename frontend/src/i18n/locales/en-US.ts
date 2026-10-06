@@ -17,7 +17,7 @@ export default {
     close: 'Close',
   },
   home: {
-    slogan: 'Generative Learning in Multi-Agent Interactive Classroom',
+    slogan: 'Many voices, one lesson, a real discussion',
     greetingWithName: 'Hi, {name}',
     greetingAnon: 'Hi, welcome back',
     editProfile: 'Click to edit your profile',

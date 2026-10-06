@@ -96,10 +96,10 @@ function onDrop(e: DragEvent) {
     <div
       :class="
         cn(
-          'relative aspect-[16/9] w-full overflow-hidden rounded-2xl bg-gradient-to-br from-teal-50 to-blue-50 ring-1 transition-transform duration-200 group-hover:scale-[1.02] dark:from-teal-900/20 dark:to-blue-900/20',
+          'relative aspect-[16/9] w-full overflow-hidden rounded-2xl bg-gradient-to-br from-brand-50 to-brand-100/70 ring-1 ring-brand-200/50 transition-[transform,box-shadow] duration-200 group-hover:scale-[1.02] group-hover:shadow-soft dark:from-brand-900/25 dark:to-brand-950/30 dark:ring-brand-800/40',
           dragOver
-            ? 'scale-[1.03] ring-2 ring-teal-500 ring-offset-2 ring-offset-background'
-            : 'ring-teal-200/50 dark:ring-teal-800/40',
+            ? 'scale-[1.03] ring-2 ring-brand-600 ring-offset-2 ring-offset-background'
+            : 'ring-brand-200/50 dark:ring-brand-800/40',
         )
       "
       @click="!deleteOpen && emit('open', folder.id)"
@@ -118,8 +118,8 @@ function onDrop(e: DragEvent) {
 
       <!-- 空文件夹 -->
       <div v-else class="flex size-full items-center justify-center">
-        <div class="flex size-14 items-center justify-center rounded-2xl bg-teal-100 dark:bg-teal-900/40">
-          <Folder class="size-7 text-teal-500" />
+        <div class="flex size-14 items-center justify-center rounded-2xl bg-brand-100 dark:bg-brand-900/40">
+          <Folder class="size-7 text-brand-600" />
         </div>
       </div>
 
@@ -133,7 +133,7 @@ function onDrop(e: DragEvent) {
       <!-- 拖拽悬停遮罩 -->
       <div
         v-if="dragOver"
-        class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-teal-500/20 backdrop-blur-[2px]"
+        class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-brand-600/20 backdrop-blur-[2px]"
       >
         <Folder class="size-8 text-white drop-shadow" />
       </div>
@@ -142,14 +142,14 @@ function onDrop(e: DragEvent) {
       <div class="absolute inset-x-2 top-2 z-20 flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
         <button
           type="button"
-          class="flex size-7 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-colors hover:bg-destructive/80"
+          class="flex size-7 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-[border-color,box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-soft hover:bg-destructive/80"
           @click.stop="deleteOpen = true"
         >
           <Trash2 class="size-3.5" />
         </button>
         <button
           type="button"
-          class="flex size-7 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-colors hover:bg-black/50"
+          class="flex size-7 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-[border-color,box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-soft hover:bg-black/50"
           @click.stop="startRename"
         >
           <Pencil class="size-3.5" />
@@ -166,7 +166,7 @@ function onDrop(e: DragEvent) {
 
         <div
           v-if="count > 0"
-          class="flex items-center gap-1.5 text-center text-[11px] text-amber-300"
+          class="flex items-center gap-1.5 text-center text-[11px] text-gold-300"
         >
           <AlertTriangle class="size-3.5 shrink-0" />
           <span>{{ t('home.deleteOnlyFolderDesc') }}</span>
@@ -175,14 +175,14 @@ function onDrop(e: DragEvent) {
         <div class="flex flex-col items-stretch gap-1.5">
           <button
             type="button"
-            class="rounded-lg bg-white/15 px-3.5 py-1 text-[12px] font-medium text-white/85 transition-colors hover:bg-white/25"
+            class="rounded-lg bg-white/15 px-3.5 py-1 text-[12px] font-medium text-white/85 transition-[border-color,box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-soft hover:bg-muted/25"
             @click="((deleteOpen = false), emit('delete-only', folder.id))"
           >
             {{ t('home.deleteOnlyFolder') }}
           </button>
           <button
             type="button"
-            class="rounded-lg px-3.5 py-1 text-[12px] font-medium text-white/60 transition-colors hover:text-white/90"
+            class="rounded-lg px-3.5 py-1 text-[12px] font-medium text-white/60 transition-[border-color,box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-soft hover:text-white/90"
             @click="deleteOpen = false"
           >
             {{ t('common.cancel') }}
@@ -194,7 +194,7 @@ function onDrop(e: DragEvent) {
     <!-- 信息行 -->
     <div class="mt-2.5 flex items-center gap-2 px-1">
       <span
-        class="inline-flex shrink-0 items-center rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-medium text-teal-600 dark:bg-teal-900/30 dark:text-teal-400"
+        class="inline-flex shrink-0 items-center rounded-full bg-brand-100 px-2 py-0.5 text-[11px] font-medium text-brand-700 dark:bg-brand-900/30 dark:text-brand-400"
       >
         {{ t('home.folder') }}
       </span>
@@ -205,7 +205,7 @@ function onDrop(e: DragEvent) {
         v-model="draft"
         type="text"
         maxlength="80"
-        class="w-full border-b border-teal-400/60 bg-transparent text-[15px] font-medium text-foreground/90 outline-none placeholder:text-muted-foreground/40"
+        class="w-full border-b border-brand-400/70 bg-transparent text-[15px] font-medium text-foreground/90 outline-none placeholder:text-muted-foreground/40"
         @keydown.enter.prevent="commitRename"
         @keydown.esc="editing = false"
         @blur="commitRename"

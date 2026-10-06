@@ -23,7 +23,9 @@ import 'vue-sonner/style.css'
     （ltr / en），与注入上下文的兜底默认值一致，行为不变。
   -->
   <ConfigProvider :scroll-body="{ padding: 0, margin: 0 }">
-    <RouterView />
+    <div class="narra-shell">
+      <RouterView />
+    </div>
   </ConfigProvider>
   <Toaster position="top-center" rich-colors />
 </template>

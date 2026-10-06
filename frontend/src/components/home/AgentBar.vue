@@ -104,7 +104,7 @@ defineExpose({ roleVoices })
     <UiTooltip :content="t('agentBar.configure')">
       <button
         type="button"
-        class="group flex w-full cursor-pointer items-center gap-2 rounded-full border border-border/50 px-2.5 py-2 text-muted-foreground/70 transition-all hover:bg-muted/60 hover:text-foreground"
+        class="group flex w-full cursor-pointer items-center gap-2 rounded-full border border-border px-2.5 py-2 text-muted-foreground/70 transition-all hover:bg-muted/60 hover:text-foreground"
         @click="toggleOpen"
       >
         <span class="hidden flex-1 truncate text-left text-xs font-medium text-muted-foreground/60 sm:block">
@@ -113,13 +113,13 @@ defineExpose({ roleVoices })
 
         <div class="flex shrink-0 items-center gap-1.5">
           <!-- 教师 -->
-          <div class="size-8 overflow-hidden rounded-full ring-2 ring-blue-400/40">
+          <div class="size-8 overflow-hidden rounded-full ring-2 ring-brand-400/40">
             <img v-if="teacher" :src="teacher.avatar" alt="" class="size-full object-cover" />
             <div v-else class="size-full animate-pulse bg-muted" />
           </div>
 
           <!-- auto：不预告角色。角色是在生成课件时才定下来的，这里只留个 Shuffle 表明当前模式 -->
-          <Shuffle v-if="mode === 'auto'" class="size-4 text-teal-400" />
+          <Shuffle v-if="mode === 'auto'" class="size-4 text-brand-400" />
 
           <!-- preset：已选头像 + 溢出计数 -->
           <template v-else>
@@ -231,7 +231,7 @@ defineExpose({ roleVoices })
             </p>
             <button
               type="button"
-              class="mt-1 rounded-md border border-border/60 px-2.5 py-1 text-[11px] transition-colors hover:bg-muted"
+              class="mt-1 rounded-md border border-border px-2.5 py-1 text-[11px] transition-colors hover:bg-muted"
               @click="rolesStore.load()"
             >
               {{ t('common.retry') }}
@@ -257,7 +257,7 @@ defineExpose({ roleVoices })
             >
               <CheckboxRoot
                 :model-value="selectedIds.includes(r.id)"
-                class="flex size-3.5 shrink-0 items-center justify-center rounded border border-border data-[state=checked]:border-teal-500 data-[state=checked]:bg-teal-500 data-[state=checked]:text-white"
+                class="flex size-3.5 shrink-0 items-center justify-center rounded border border-border data-[state=checked]:border-brand-600 data-[state=checked]:bg-brand-600 data-[state=checked]:text-white"
                 @update:model-value="toggleRole(r.id)"
               >
                 <CheckboxIndicator>
@@ -285,12 +285,12 @@ defineExpose({ roleVoices })
         <div v-else class="flex flex-col items-center gap-4 pt-6 pb-3">
           <div class="relative flex items-center justify-center">
             <span
-              class="absolute size-10 animate-ping rounded-full bg-teal-400/20 [animation-duration:3s]"
+              class="absolute size-10 animate-ping rounded-full bg-brand-400/20 [animation-duration:3s]"
             />
             <span
-              class="absolute size-12 animate-pulse rounded-full bg-teal-400/10 [animation-duration:2.5s]"
+              class="absolute size-12 animate-pulse rounded-full bg-brand-400/10 [animation-duration:2.5s]"
             />
-            <Shuffle class="relative size-5 text-teal-400" />
+            <Shuffle class="relative size-5 text-brand-400" />
           </div>
           <p class="text-[11px] text-muted-foreground/60">{{ t('agentBar.autoHint') }}</p>
           <p class="text-[10px] text-muted-foreground/40">{{ t('agentBar.autoVoiceHint') }}</p>

@@ -49,7 +49,7 @@ watch([open, () => props.documentId], async ([isOpen, id]) => {
         class="fixed top-1/2 left-1/2 z-[105] flex max-h-[85vh] w-[min(760px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl focus:outline-none"
       >
         <header class="flex items-center gap-3 border-b border-border px-5 py-4">
-          <FileText class="size-4 shrink-0 text-teal-500" />
+          <FileText class="size-4 shrink-0 text-brand-600" />
           <DialogTitle class="min-w-0 flex-1 truncate text-[15px] font-medium">
             {{ title || t('knowledge.preview.loading') }}
           </DialogTitle>

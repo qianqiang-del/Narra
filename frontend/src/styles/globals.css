@@ -37,6 +37,19 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  /* ── v3 新增：语义色 / 月光 / 楷体 / 三档圆角 ── */
+  --color-success: var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-warning: var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-info: var(--info);
+  --color-info-bg: var(--info-bg);
+  --color-moon: var(--moon);
+  --color-footer-bg: var(--footer-bg);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-line: var(--accent-line);
+  --font-kai: var(--font-kai);
   --color-muted: var(--muted);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-secondary: var(--secondary);
@@ -46,6 +59,42 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+
+  /* 品牌色阶：雾霾蓝。低饱和的蓝，与金铜强调色同处一个「冷灰 + 一点暖」的光圈。
+     刻意不叫 primary —— primary 是语义（随主题变），brand 是品牌本色。 */
+  --color-brand-50: var(--brand-50);
+  --color-brand-100: var(--brand-100);
+  --color-brand-200: var(--brand-200);
+  --color-brand-300: var(--brand-300);
+  --color-brand-400: var(--brand-400);
+  --color-brand-500: var(--brand-500);
+  --color-brand-600: var(--brand-600);
+  --color-brand-700: var(--brand-700);
+  --color-brand-800: var(--brand-800);
+  --color-brand-900: var(--brand-900);
+  --color-brand-950: var(--brand-950);
+
+  /* 强调色阶：金铜。只用在需要点睛处（当前页描边、主答者标记、图标强调）。 */
+  --color-gold-50: var(--gold-50);
+  --color-gold-100: var(--gold-100);
+  --color-gold-200: var(--gold-200);
+  --color-gold-300: var(--gold-300);
+  --color-gold-400: var(--gold-400);
+  --color-gold-500: var(--gold-500);
+  --color-gold-600: var(--gold-600);
+  --color-gold-700: var(--gold-700);
+  --color-gold-800: var(--gold-800);
+  --color-gold-900: var(--gold-900);
+
+  /* 标题衬线体。正文保持无衬线（可读性优先），只给标题用。 */
+  --font-display: var(--font-display);
+
+  /* 极轻阴影：几乎看不见，只在需要「浮起来」时给一点层次。 */
+  --shadow-xs: var(--shadow-xs);
+  --shadow-soft: var(--shadow-soft);
+  --shadow-pop: var(--shadow-pop);
+  --shadow-lg: var(--shadow-lg);
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -60,73 +109,149 @@
      @font-face per unicode subset. Previously this came from next/font wrapping
      a single latin-only file, which left Cyrillic and Vietnamese text to OS
      fallback fonts. */
-  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: #0f766e;
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.58 0.22 27);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --font-sans: 'PingFang SC', 'Microsoft YaHei', 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Noto Serif SC', 'Songti SC', 'STSong', Georgia, serif;
+
+  /* ── 品牌色阶：雾霾蓝 ──────────────────────────────────────────
+     50–200 取自同族实测值（冷灰蓝底上的浅蓝），600 为主色，900/950 供深色区使用。 */
+  --brand-50: #eef2f9;
+  --brand-100: #dbe4f2;
+  --brand-200: #b9c8e3;
+  --brand-300: #93a9cf;
+  --brand-400: #6d86b4;
+  --brand-500: #56719f;
+  --brand-600: #46639c;
+  --brand-700: #38507f;
+  --brand-800: #2e4168;
+  --brand-900: #233049;
+  --brand-950: #1b2436;
+
+  /* ── 强调色阶：金铜 ──────────────────────────────────────────── */
+  --gold-50: #faf5ec;
+  --gold-100: #f4ecdd;
+  --gold-200: #e8d5b4;
+  --gold-300: #dcc08a;
+  --gold-400: #d0ad6d;
+  --gold-500: #c3a05c;
+  --gold-600: #a8873f;
+  --gold-700: #8a6f3c;
+  --gold-800: #6d5730;
+  --gold-900: #4f3f24;
+
+  /* ── 中性色：全部偏蓝，与主色同色温 ────────────────────────────
+     之前这里是绿灰（#f3f5f3 / #25302d），配蓝主色会冷暖打架。 */
+  --background: #f4f5f9;
+  --foreground: #2b3340;
+  --card: #fdfdff;
+  --card-foreground: #2b3340;
+  --popover: #fdfdff;
+  --popover-foreground: #2b3340;
+  --primary: var(--brand-600);
+  --primary-foreground: #ffffff;
+  --secondary: var(--brand-50);
+  --secondary-foreground: var(--brand-700);
+  --muted: #eef0f6;
+  --muted-foreground: #68748a;
+  --faint: #98a1b3;
+  --accent: var(--gold-50);
+  --accent-foreground: var(--gold-800);
+  --destructive: #b55d74;
+  --border: #e2e5ee;
+  --input: #cdd3e0;
+  --ring: var(--brand-400);
+  --surface-2: #eef0f6;
+  /* ── v3 新增（浅色）── */
+  --moon: #e8eefb;
+  --success: #5e8f74;
+  --success-bg: #eaf3ec;
+  --warning: #b07a24;
+  --warning-bg: #faf0da;
+  --info: #46639c;
+  --info-bg: #eef2f9;
+  --footer-bg: #151d2e;
+  --footer-text: #aab3c6;
+  --accent-soft: var(--gold-50);
+  --accent-line: var(--gold-200);
+  --font-kai: 'Kaiti SC', 'STKaiti', KaiTi, 'Noto Serif SC', serif;
+  --accent-decoration: var(--gold-500);
   --chart-1: oklch(0.809 0.105 251.813);
   --chart-2: oklch(0.623 0.214 259.815);
   --chart-3: oklch(0.546 0.245 262.881);
   --chart-4: oklch(0.488 0.243 264.376);
   --chart-5: oklch(0.424 0.199 265.638);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+
+  /* 圆角基准 12px：比默认的 8px/10px 更柔和，与低饱和配色是一挂的。 */
+  --radius: 0.75rem;
+  --radius-lg: 1.25rem;
+  --radius-pill: 999px;
+
+  /* 极轻阴影三档 */
+  --shadow-xs: 0 1px 2px rgba(30, 41, 66, 0.05);
+  --shadow-soft: 0 1px 3px rgba(30, 41, 66, 0.05), 0 8px 22px rgba(30, 41, 66, 0.07);
+  --shadow-pop: 0 6px 20px rgba(23, 32, 56, 0.10);
+  --shadow-lg: 0 14px 40px rgba(23, 32, 56, 0.16);
+
+  --sidebar: #f8faf8;
+  --sidebar-foreground: #2b3340;
+  --sidebar-primary: var(--brand-600);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--brand-50);
+  --sidebar-accent-foreground: var(--brand-700);
+  --sidebar-border: #e2e5ee;
+  --sidebar-ring: var(--brand-400);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: #0f766e;
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.371 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  /* 深色不是纯黑也不是绿黑，是带蓝的深色底，和浅色模式同一色温。
+     纯黑（#0a0a0a）长时间看发硬，绿黑（#1b2220）与蓝主色打架。 */
+  --background: #151d2e;
+  --foreground: #e8ecf5;
+  --card: #1b2436;
+  --card-foreground: #e8ecf5;
+  --popover: #1b2436;
+  --popover-foreground: #e8ecf5;
+  /* 深色下主色要提亮，否则在深底上对比度不够、按钮会「看不见」。 */
+  --primary: var(--brand-300);
+  --primary-foreground: #1b2436;
+  --secondary: #212c42;
+  --secondary-foreground: var(--brand-100);
+  --muted: #212c42;
+  --muted-foreground: #93a0b8;
+  --faint: #5f6b80;
+  --accent: #3e3629;
+  --accent-foreground: var(--gold-300);
+  --destructive: #db7890;
+  --border: #2a3549;
+  --input: #3a4763;
+  --ring: var(--brand-300);
+  --shadow-pop: 0 6px 20px rgba(0, 0, 0, 0.38);
+  --surface-2: #1b2436;
+  /* ── v3 新增（深色）：全部深蓝，替掉原来的暖棕 ── */
+  --moon: #1e2942;
+  --success: #7fae90;
+  --success-bg: #1d2e28;
+  --warning: #d3a45c;
+  --warning-bg: #33291a;
+  --info: #a4bae0;
+  --info-bg: #1b2436;
+  --footer-bg: #0f1626;
+  --footer-text: #8b97ad;
+  --accent-soft: #3a3122;
+  --accent-line: #6d5730;
+  --accent-decoration: var(--gold-300);
   --chart-1: oklch(0.809 0.105 251.813);
   --chart-2: oklch(0.623 0.214 259.815);
   --chart-3: oklch(0.546 0.245 262.881);
   --chart-4: oklch(0.488 0.243 264.376);
   --chart-5: oklch(0.424 0.199 265.638);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar: #1b2436;
+  --sidebar-foreground: #e8ecf5;
+  --sidebar-primary: var(--brand-300);
+  --sidebar-primary-foreground: #1b2436;
+  --sidebar-accent: #212c42;
+  --sidebar-accent-foreground: #e8ecf5;
+  --sidebar-border: #2a3549;
+  --sidebar-ring: var(--brand-300);
 }
 
 @layer base {
@@ -153,6 +278,7 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-sans);
   }
   /* Modal overlays that lock body scroll normally compensate for the removed
      page scrollbar by adding right-side spacing on <body>. This app already
@@ -171,6 +297,435 @@
     margin-right: 0 !important;
   }
 }
+
+/* Narra visual system: shared by every route, including teammate-owned pages. */
+.narra-shell {
+  min-height: 100dvh;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+.narra-shell button,
+.narra-shell input,
+.narra-shell textarea,
+.narra-shell select {
+  font-family: inherit;
+}
+
+/* 焦点指示 —— 用 box-shadow 而不是 outline。
+   outline 画在元素的矩形盒上，不跟随 border-radius，所以圆角卡片一旦聚焦，
+   外面就套一个直角蓝框（视觉上像"框从卡片里鼓出来"）。
+   box-shadow 画在 border 之外但形状随圆角走，所以贴合。
+
+   颜色压到主色混 42% 白，比原来 72% 白淡一档；偏移 0，不外扩。
+   可访问性保留 —— 键盘 Tab 依然有可见指示，鼠标点击不显示（focus-visible）。 */
+.narra-shell :where(button, a, input, textarea, select):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 58%, var(--border));
+}
+
+.narra-shell .narra-decorative-orb,
+.narra-shell .blob {
+  display: none !important;
+}
+
+/* Page-level surfaces. Keeping this here means teammate pages receive the
+   same visual language without changing their data flow or route contracts. */
+.narra-shell .narra-page {
+  background-image: none !important;
+  background-color: var(--background) !important;
+}
+.narra-shell .narra-home {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--background) 88%, var(--card)), var(--background)) !important;
+}
+.narra-shell .narra-workspace {
+  background: var(--background) !important;
+}
+.narra-shell .narra-knowledge,
+.narra-shell .narra-generating,
+.narra-shell .narra-preview {
+  padding-top: max(1rem, env(safe-area-inset-top));
+}
+.narra-shell .narra-generating > .relative,
+.narra-shell .narra-preview > .z-10 {
+  position: relative;
+  z-index: 1;
+}
+.narra-shell .narra-not-found h1 {
+  color: var(--primary);
+}
+
+/* Brand utility compatibility ——
+   这些类名散落在队友维护的组件里。直接改它们的类名会持续产生冲突，
+   所以在 CSS 层把它们统一劫持到设计系统的角色色：改的是「这个类名该显示成什么颜色」，
+   不是组件的逻辑。
+
+   相比把每个档位压成同一个色，这里保留深浅层次：深色档走 --primary，
+   浅色档走 --brand-400 / 30% 混色，避免深色模式下出现浅底浅字。 */
+.narra-shell :where([class~='bg-brand-50'], [class~='bg-brand-50\/60'], [class~='bg-brand-50\/80']) {
+  background-color: var(--brand-50) !important;
+}
+.narra-shell :where([class~='bg-brand-100'], [class~='bg-brand-100\/60']) {
+  background-color: var(--brand-100) !important;
+}
+.narra-shell :where([class~='bg-brand-600\/10'], [class~='bg-brand-600\/15'], [class~='bg-brand-600\/20']) {
+  background-color: color-mix(in srgb, var(--primary) 12%, transparent) !important;
+}
+.narra-shell :where([class~='bg-brand-700'], [class~='bg-brand-800']) {
+  background-color: var(--primary) !important;
+}
+
+/* 文字分档：浅档保持浅蓝，深档走主色 */
+.narra-shell :where([class~='text-brand-200'], [class~='text-brand-300'], [class~='text-brand-400']) {
+  color: var(--brand-400) !important;
+}
+.narra-shell :where([class~='text-brand-600'], [class~='text-brand-700'], [class~='text-brand-800'], [class~='text-brand-900']) {
+  color: var(--primary) !important;
+}
+
+/* 边框分两档：浅档是细分割线，深档是强调描边 */
+.narra-shell :where([class~='border-brand-100'], [class~='border-brand-200'], [class~='border-brand-300'], [class~='border-brand-400']) {
+  border-color: color-mix(in srgb, var(--primary) 28%, var(--border)) !important;
+}
+.narra-shell :where([class~='border-brand-600'], [class~='border-brand-700'], [class~='border-brand-800']) {
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--border)) !important;
+}
+
+.narra-shell :where([class~='ring-brand-200'], [class~='ring-brand-300'], [class~='ring-brand-400'], [class~='ring-brand-600']) {
+  --tw-ring-color: color-mix(in srgb, var(--primary) 36%, transparent) !important;
+}
+
+.narra-shell :where([class~='hover\:bg-brand-50']:hover, [class~='hover\:bg-brand-100']:hover) {
+  background-color: var(--brand-50) !important;
+}
+.narra-shell :where([class~='hover\:text-brand-700']:hover, [class~='hover\:text-brand-800']:hover) {
+  color: var(--primary) !important;
+}
+
+/* 深色变体刻意挂在 html .dark 祖先上。 */
+.dark .narra-shell :where([class~='dark\:bg-brand-900\/20'], [class~='dark\:bg-brand-900\/30'], [class~='dark\:bg-brand-950\/30']) {
+  background-color: color-mix(in srgb, var(--primary) 15%, var(--background)) !important;
+}
+.dark .narra-shell :where([class~='dark\:bg-brand-600\/10'], [class~='dark\:bg-brand-600\/15']) {
+  background-color: color-mix(in srgb, var(--primary) 15%, transparent) !important;
+}
+.dark .narra-shell :where([class~='dark\:text-brand-200'], [class~='dark\:text-brand-300'], [class~='dark\:text-brand-400']) {
+  color: var(--primary) !important;
+}
+.dark .narra-shell :where([class~='dark\:border-brand-700'], [class~='dark\:border-brand-800']) {
+  border-color: color-mix(in srgb, var(--primary) 52%, var(--border)) !important;
+}
+
+/* ── 衬线标题 ──────────────────────────────────────────────────
+   只作用于真正的标题标签（h1/h2/h3）上的大字号。图标、徽章、计数器虽然也用
+   text-xl/2xl，但它们不是标签，匹配不到。字体字重降到 400 —— 衬线体本身笔画
+   已经有粗细变化，再叠 font-semibold 会显得又重又乱。 */
+.narra-shell :is(h1, h2, h3):where([class*='text-xl'], [class*='text-2xl'], [class*='text-3xl'], [class*='text-4xl']) {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* ── 灰阶统一 ──────────────────────────────────────────────────
+   gray / zinc 两套中性灰的中性色（偏暖或偏冷）统一到设计系统的蓝灰语义 token。
+   刻意不动 background 类：bg-gray-700 / bg-gray-800 有 61 处是当深色卡片背景用的，
+   一并改会让深色区失控。
+
+   slate 已经偏蓝、与主色同调，保留不动。 */
+.narra-shell :where([class~='text-gray-300'], [class~='text-zinc-300'], [class~='text-slate-300']) {
+  color: var(--faint) !important;
+}
+.narra-shell :where([class~='text-gray-400'], [class~='text-zinc-400'], [class~='text-slate-400'],
+                    [class~='text-gray-500'], [class~='text-zinc-500'], [class~='text-slate-500']) {
+  color: var(--muted-foreground) !important;
+}
+.narra-shell :where([class~='text-gray-600'], [class~='text-zinc-600'], [class~='text-slate-600'],
+                    [class~='text-gray-700'], [class~='text-zinc-700'],
+                    [class~='text-gray-800'], [class~='text-gray-900']) {
+  color: var(--foreground) !important;
+}
+
+/* 边框：浅档是分割线（等于 --border），深档是强调描边（掺一点主色）。 */
+.narra-shell :where([class~='border-gray-100'], [class~='border-zinc-100'], [class~='border-slate-100'],
+                    [class~='border-gray-200'], [class~='border-zinc-200'], [class~='border-slate-200'],
+                    [class~='border-gray-300'], [class~='border-zinc-300'], [class~='border-slate-300']) {
+  border-color: var(--border) !important;
+}
+.narra-shell :where([class~='border-gray-600'], [class~='border-zinc-600'],
+                    [class~='border-gray-700'], [class~='border-zinc-700']) {
+  border-color: color-mix(in srgb, var(--primary) 32%, var(--border)) !important;
+}
+
+/* 深色模式下的文字与边框同样要跟着换，否则深色区还是灰的。 */
+.dark .narra-shell :where([class~='dark\:text-gray-400'], [class~='dark\:text-zinc-400'],
+                          [class~='dark\:text-gray-500'], [class~='dark\:text-zinc-500']) {
+  color: var(--muted-foreground) !important;
+}
+.dark .narra-shell :where([class~='dark\:text-gray-200'], [class~='dark\:text-zinc-200'],
+                          [class~='dark\:text-gray-300'], [class~='dark\:text-zinc-300']) {
+  color: var(--foreground) !important;
+}
+.dark .narra-shell :where([class~='dark\:border-gray-600'], [class~='dark\:border-zinc-600'],
+                          [class~='dark\:border-gray-700'], [class~='dark\:border-zinc-700']) {
+  border-color: color-mix(in srgb, var(--primary) 30%, var(--border)) !important;
+}
+
+/* ── 衬线标题 ──────────────────────────────────────────────────
+   只作用于真正的标题标签（h1/h2/h3）上的大字号。图标、徽章、计数器虽然也用
+   text-xl/2xl，但它们不是标签，匹配不到。字体字重降到 400 —— 衬线体本身笔画
+   已经有粗细变化，再叠 font-semibold 会显得又重又乱。 */
+.narra-shell :is(h1, h2, h3):where([class*='text-xl'], [class*='text-2xl'], [class*='text-3xl'], [class*='text-4xl']) {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* ── 灰阶统一 ──────────────────────────────────────────────────
+   gray / zinc 两套中性灰的中性色（偏暖或偏冷）统一到设计系统的蓝灰语义 token。
+   刻意不动 background 类：bg-gray-700 / bg-gray-800 有 61 处是当深色卡片背景用的，
+   一并改会让深色区失控。
+
+   slate 已经偏蓝、与主色同调，保留不动。 */
+.narra-shell :where([class~='text-gray-300'], [class~='text-zinc-300'], [class~='text-slate-300']) {
+  color: var(--faint) !important;
+}
+.narra-shell :where([class~='text-gray-400'], [class~='text-zinc-400'], [class~='text-slate-400'],
+                    [class~='text-gray-500'], [class~='text-zinc-500'], [class~='text-slate-500']) {
+  color: var(--muted-foreground) !important;
+}
+.narra-shell :where([class~='text-gray-600'], [class~='text-zinc-600'], [class~='text-slate-600'],
+                    [class~='text-gray-700'], [class~='text-zinc-700'],
+                    [class~='text-gray-800'], [class~='text-gray-900']) {
+  color: var(--foreground) !important;
+}
+
+/* 边框：浅档是分割线（等于 --border），深档是强调描边（掺一点主色）。 */
+.narra-shell :where([class~='border-gray-100'], [class~='border-zinc-100'], [class~='border-slate-100'],
+                    [class~='border-gray-200'], [class~='border-zinc-200'], [class~='border-slate-200'],
+                    [class~='border-gray-300'], [class~='border-zinc-300'], [class~='border-slate-300']) {
+  border-color: var(--border) !important;
+}
+.narra-shell :where([class~='border-gray-600'], [class~='border-zinc-600'],
+                    [class~='border-gray-700'], [class~='border-zinc-700']) {
+  border-color: color-mix(in srgb, var(--primary) 32%, var(--border)) !important;
+}
+
+/* 深色模式下的文字与边框同样要跟着换，否则深色区还是灰的。 */
+.dark .narra-shell :where([class~='dark\:text-gray-400'], [class~='dark\:text-zinc-400'],
+                          [class~='dark\:text-gray-500'], [class~='dark\:text-zinc-500']) {
+  color: var(--muted-foreground) !important;
+}
+.dark .narra-shell :where([class~='dark\:text-gray-200'], [class~='dark\:text-zinc-200'],
+                          [class~='dark\:text-gray-300'], [class~='dark\:text-zinc-300']) {
+  color: var(--foreground) !important;
+}
+.dark .narra-shell :where([class~='dark\:border-gray-600'], [class~='dark\:border-zinc-600'],
+                          [class~='dark\:border-gray-700'], [class~='dark\:border-zinc-700']) {
+  border-color: color-mix(in srgb, var(--primary) 30%, var(--border)) !important;
+}
+
+/* ── 阴影改轻 ──────────────────────────────────────────────────
+   Tailwind 默认的 shadow-sm / shadow-md 对这个界面来说太重：卡片、弹层、输入框
+   全部带一圈明显的投影，界面显得"浮浮的"，和低饱和配色的克制感打架。
+   这里统一换成几乎看不见的极轻版（透明度只有 .05~.07）。 */
+/* 卡片类：sm / md 用极轻版（几乎看不见，只给一点层次）。 */
+.narra-shell :where([class~='shadow-sm'], [class~='shadow-md']) {
+  box-shadow: var(--shadow-soft) !important;
+}
+/* 弹层 / 聚焦类：lg / xl / 2xl 原来是 14~40px 的大偏移，聚焦时会在元素外围
+   鼓出一圈"多出来的框"。这里压到中等档：够区分层次，又不会溢出边界。 */
+.narra-shell :where([class~='shadow-lg'], [class~='shadow-xl'], [class~='shadow-2xl']) {
+  box-shadow: var(--shadow-pop) !important;
+}
+
+/* ── 金铜强调色 ────────────────────────────────────────────────
+   主色铺得太满会闷，需要一个"点睛色"把视线拉到该看的地方。
+   金铜色只在"当前选中"的位置出现，量很少但很显眼：
+
+   - 左侧场景栏：当前页的左边条 + 标题变金铜
+   - 各类列表：选中项的左边条
+
+   刻意不给文字上色（那是主色的活），只用在"指示当前位置"的地方。 */
+.narra-shell [data-current='true'],
+.narra-shell [data-active='true'] {
+  border-left-color: var(--accent-decoration) !important;
+}
+
+/* ── 阴影改轻 ──────────────────────────────────────────────────
+   Tailwind 默认的 shadow-sm / shadow-md 对这个界面来说太重：卡片、弹层、输入框
+   全部带一圈明显的投影，界面显得"浮浮的"，和低饱和配色的克制感打架。
+   这里统一换成几乎看不见的极轻版（透明度只有 .05~.07）。 */
+/* 卡片类：sm / md 用极轻版（几乎看不见，只给一点层次）。 */
+.narra-shell :where([class~='shadow-sm'], [class~='shadow-md']) {
+  box-shadow: var(--shadow-soft) !important;
+}
+/* 弹层 / 聚焦类：lg / xl / 2xl 原来是 14~40px 的大偏移，聚焦时会在元素外围
+   鼓出一圈"多出来的框"。这里压到中等档：够区分层次，又不会溢出边界。 */
+.narra-shell :where([class~='shadow-lg'], [class~='shadow-xl'], [class~='shadow-2xl']) {
+  box-shadow: var(--shadow-pop) !important;
+}
+
+/* ── 金铜强调色 ────────────────────────────────────────────────
+   主色铺得太满会闷，需要一个"点睛色"把视线拉到该看的地方。
+   金铜色只在"当前选中"的位置出现，量很少但很显眼：
+
+   - 左侧场景栏：当前页的左边条 + 标题变金铜
+   - 各类列表：选中项的左边条
+
+   刻意不给文字上色（那是主色的活），只用在"指示当前位置"的地方。 */
+.narra-shell [data-current='true'],
+.narra-shell [data-active='true'] {
+  border-left-color: var(--accent-decoration) !important;
+}
+
+/* ── 背景与分割线接入设计系统 ────────────────────────────────────
+   这一段是之前漏掉的关键一环：页面背景大量直接写 Tailwind 默认的 slate / gray
+   （bg-slate-50、from-slate-50、bg-gray-100…），不经过语义 token，所以改
+   --background 完全不生效。这里把它们接到 token 上，主题换色才真正起作用。
+
+   只接管"浅底 / 页面底 / 分割线"这类；bg-slate-700、bg-slate-900 这类深底
+   是按钮和深色卡片本体，动了会失控，保持原样。 */
+.narra-shell :where([class~='bg-slate-50'], [class~='from-slate-50'], [class~='to-slate-50']) {
+  background-color: var(--background) !important;
+}
+.narra-shell :where([class~='bg-slate-100'], [class~='from-slate-100'], [class~='to-slate-100']) {
+  background-color: var(--surface) !important;
+}
+.narra-shell :where([class~='bg-gray-50']) {
+  background-color: var(--surface-2) !important;
+}
+.narra-shell :where([class~='bg-gray-100']) {
+  background-color: var(--muted) !important;
+}
+/* gray-200 常被当分割线 / hover 底色，比边框更浅一档 */
+.narra-shell :where([class~='bg-gray-200']) {
+  background-color: color-mix(in srgb, var(--muted) 70%, var(--background)) !important;
+}
+.narra-shell :where([class~='hover\:bg-gray-50']:hover, [class~='hover\:bg-gray-100']:hover) {
+  background-color: var(--surface-2) !important;
+}
+
+/* 深色模式下的页面底：slate-900 / slate-950 都是"深蓝黑"，换成设计系统的深蓝。 */
+.dark .narra-shell :where([class~='dark\:bg-slate-900'], [class~='dark\:from-slate-900'],
+                          [class~='dark\:to-slate-900'], [class~='dark\:from-slate-950'],
+                          [class~='dark\:to-slate-950']) {
+  background-color: var(--background) !important;
+}
+.dark .narra-shell :where([class~='dark\:bg-slate-800'], [class~='dark\:bg-slate-950']) {
+  background-color: var(--card) !important;
+}
+
+/* ── 背景与分割线接入设计系统 ────────────────────────────────────
+   这一段是之前漏掉的关键一环：页面背景大量直接写 Tailwind 默认的 slate / gray
+   （bg-slate-50、from-slate-50、bg-gray-100…），不经过语义 token，所以改
+   --background 完全不生效。这里把它们接到 token 上，主题换色才真正起作用。
+
+   只接管"浅底 / 页面底 / 分割线"这类；bg-slate-700、bg-slate-900 这类深底
+   是按钮和深色卡片本体，动了会失控，保持原样。 */
+.narra-shell :where([class~='bg-slate-50'], [class~='from-slate-50'], [class~='to-slate-50']) {
+  background-color: var(--background) !important;
+}
+.narra-shell :where([class~='bg-slate-100'], [class~='from-slate-100'], [class~='to-slate-100']) {
+  background-color: var(--surface) !important;
+}
+.narra-shell :where([class~='bg-gray-50']) {
+  background-color: var(--surface-2) !important;
+}
+.narra-shell :where([class~='bg-gray-100']) {
+  background-color: var(--muted) !important;
+}
+/* gray-200 常被当分割线 / hover 底色，比边框更浅一档 */
+.narra-shell :where([class~='bg-gray-200']) {
+  background-color: color-mix(in srgb, var(--muted) 70%, var(--background)) !important;
+}
+.narra-shell :where([class~='hover\:bg-gray-50']:hover, [class~='hover\:bg-gray-100']:hover) {
+  background-color: var(--surface-2) !important;
+}
+
+/* 深色模式下的页面底：slate-900 / slate-950 都是"深蓝黑"，换成设计系统的深蓝。 */
+.dark .narra-shell :where([class~='dark\:bg-slate-900'], [class~='dark\:from-slate-900'],
+                          [class~='dark\:to-slate-900'], [class~='dark\:from-slate-950'],
+                          [class~='dark\:to-slate-950']) {
+  background-color: var(--background) !important;
+}
+.dark .narra-shell :where([class~='dark\:bg-slate-800'], [class~='dark\:bg-slate-950']) {
+  background-color: var(--card) !important;
+}
+
+/* ── 硬编码的 bg-white 接入 token ─────────────────────────────────
+   76 处写死了 bg-white。浅色模式下它就等于卡片色，所以看不出问题；但深色模式
+   下它是纯白，会在深蓝底上炸出一块块惨白。这里统一换成 --card：
+   浅色下几乎无变化，深色下自动变深蓝。
+
+   刻意不动 text-white（彩色按钮上的白字是对的）和 bg-black（遮罩层是对的）。 */
+.narra-shell :where([class~='bg-white']) {
+  background-color: var(--card) !important;
+}
+.dark .narra-shell :where([class~='dark\:bg-white']) {
+  background-color: var(--card) !important;
+}
+
+/* ── 硬编码的 bg-white 接入 token ─────────────────────────────────
+   76 处写死了 bg-white。浅色模式下它就等于卡片色，所以看不出问题；但深色模式
+   下它是纯白，会在深蓝底上炸出一块块惨白。这里统一换成 --card：
+   浅色下几乎无变化，深色下自动变深蓝。
+
+   刻意不动 text-white（彩色按钮上的白字是对的）和 bg-black（遮罩层是对的）。 */
+.narra-shell :where([class~='bg-white']) {
+  background-color: var(--card) !important;
+}
+.dark .narra-shell :where([class~='dark\:bg-white']) {
+  background-color: var(--card) !important;
+}
+
+/* Common teammate page surfaces. These selectors intentionally target named
+   application regions, not arbitrary lecture HTML or user-authored content. */
+.narra-shell [data-testid='workspace-rail'] {
+  background: var(--surface-2) !important;
+  border-color: var(--border) !important;
+}
+.narra-shell [data-testid='workspace-rail'] > div:first-child {
+  border-bottom: 1px solid var(--border);
+}
+.narra-shell [data-testid='workspace-rail'] button,
+.narra-shell [data-testid='workspace-rail'] input {
+  border-color: var(--border);
+}
+.narra-shell .narra-home > .relative.z-20 {
+  margin-top: clamp(4rem, 9vh, 7rem) !important;
+}
+.narra-shell .narra-home {
+  padding-inline: clamp(.75rem, 4vw, 2rem);
+}
+.narra-shell .narra-home :where(.rounded-2xl, .rounded-xl) {
+  border-color: var(--border);
+  box-shadow: 0 1px 3px rgba(29, 47, 41, .05), 0 8px 22px rgba(29, 47, 41, .06);
+}
+.narra-shell .narra-generating :where(nav, section),
+.narra-shell .narra-preview :where(.rounded-xl, .rounded-2xl) {
+  border-color: var(--border) !important;
+  background-color: color-mix(in srgb, var(--card) 94%, transparent) !important;
+  box-shadow: 0 1px 3px rgba(29, 47, 41, .05), 0 8px 22px rgba(29, 47, 41, .06) !important;
+  backdrop-filter: blur(10px);
+}
+
+@media (max-width: 760px) {
+  .narra-shell .narra-home > .relative.z-20 {
+    margin-top: 3.5rem !important;
+  }
+}
+
+/* Page titles should carry the editorial character; dense controls stay sans. */
+.narra-shell .narra-home h1,
+.narra-shell .narra-generating h1,
+.narra-shell .narra-preview h1,
+.narra-shell .narra-not-found h1 {
+  font-family: var(--font-display);
+  font-weight: 500;
+}
+
 /* ProseMirror Editor Styles */
 .prosemirror-editor {
   cursor: text;

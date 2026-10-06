@@ -435,7 +435,7 @@ function openEmbedding() {
           <nav class="mt-3 space-y-1" :aria-label="t('settings.title')">
             <button
               type="button"
-              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'theme' ? 'bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
+              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'theme' ? 'bg-brand-100 text-brand-800 dark:bg-brand-600/15 dark:text-brand-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
               @click="activeSection = 'theme'"
             >
               <Palette class="size-4" />
@@ -443,7 +443,7 @@ function openEmbedding() {
             </button>
             <button
               type="button"
-              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'llm' ? 'bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
+              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'llm' ? 'bg-brand-100 text-brand-800 dark:bg-brand-600/15 dark:text-brand-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
               @click="openLlm"
             >
               <Bot class="size-4" />
@@ -451,7 +451,7 @@ function openEmbedding() {
             </button>
             <button
               type="button"
-              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'embedding' ? 'bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
+              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'embedding' ? 'bg-brand-100 text-brand-800 dark:bg-brand-600/15 dark:text-brand-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
               @click="openEmbedding"
             >
               <Database class="size-4" />
@@ -459,7 +459,7 @@ function openEmbedding() {
             </button>
             <button
               type="button"
-              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'rerank' ? 'bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
+              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'rerank' ? 'bg-brand-100 text-brand-800 dark:bg-brand-600/15 dark:text-brand-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
               @click="openRerank"
             >
               <ArrowUpDown class="size-4" />
@@ -467,7 +467,7 @@ function openEmbedding() {
             </button>
             <button
               type="button"
-              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'mcp' ? 'bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
+              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'mcp' ? 'bg-brand-100 text-brand-800 dark:bg-brand-600/15 dark:text-brand-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
               @click="openMcp"
             >
               <Plug class="size-4" />
@@ -493,7 +493,7 @@ function openEmbedding() {
                 cn(
                   'flex items-center justify-center gap-2 rounded-xl border px-3 py-3 text-[13px] transition-all',
                   mode === opt.value
-                    ? 'border-teal-300 bg-teal-50 text-teal-700 shadow-sm dark:border-teal-600 dark:bg-teal-500/10 dark:text-teal-300'
+                    ? 'border-brand-300 bg-brand-50 text-brand-800 shadow-sm dark:border-brand-700 dark:bg-brand-600/10 dark:text-brand-300'
                     : 'border-border text-muted-foreground hover:bg-muted',
                 )
               "
@@ -522,7 +522,7 @@ function openEmbedding() {
                   v-model="embeddingForm.base_url"
                   type="url"
                   placeholder="https://api.openai.com/v1"
-                  class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-teal-400 focus:ring-2 focus:ring-teal-200 dark:focus:ring-teal-900"
+                  class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-brand-400 focus:ring-2 focus:ring-brand-200 dark:focus:ring-brand-900"
                 />
                 <p v-if="embeddingBaseUrlHint" class="mt-1.5 text-xs font-normal text-destructive">
                   {{ embeddingHintMessage(embeddingBaseUrlHint) }}
@@ -536,7 +536,7 @@ function openEmbedding() {
                     v-model="embeddingForm.model"
                     type="text"
                     placeholder="text-embedding-3-small"
-                    class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-teal-400 focus:ring-2 focus:ring-teal-200 dark:focus:ring-teal-900"
+                    class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-brand-400 focus:ring-2 focus:ring-brand-200 dark:focus:ring-brand-900"
                   />
                 </label>
                 <label class="block text-sm font-medium">
@@ -546,7 +546,7 @@ function openEmbedding() {
                     type="number"
                     min="1"
                     placeholder="1536"
-                    class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-teal-400 focus:ring-2 focus:ring-teal-200 dark:focus:ring-teal-900"
+                    class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-brand-400 focus:ring-2 focus:ring-brand-200 dark:focus:ring-brand-900"
                   />
                 </label>
               </div>
@@ -563,7 +563,7 @@ function openEmbedding() {
                     min="1"
                     step="1"
                     placeholder="30"
-                    class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-teal-400 focus:ring-2 focus:ring-teal-200 dark:focus:ring-teal-900"
+                    class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-brand-400 focus:ring-2 focus:ring-brand-200 dark:focus:ring-brand-900"
                   />
                 </label>
                 <label class="block text-sm font-medium">
@@ -573,7 +573,7 @@ function openEmbedding() {
                     type="password"
                     autocomplete="new-password"
                     :placeholder="apiKeyConfigured ? t('settings.embeddingAPIKeyConfigured') : t('settings.embeddingAPIKeyPlaceholder')"
-                    class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-teal-400 focus:ring-2 focus:ring-teal-200 dark:focus:ring-teal-900"
+                    class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-brand-400 focus:ring-2 focus:ring-brand-200 dark:focus:ring-brand-900"
                   />
                 </label>
               </div>
@@ -593,7 +593,7 @@ function openEmbedding() {
                 </button>
                 <button
                   type="submit"
-                  class="rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  class="rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-800 disabled:cursor-not-allowed disabled:opacity-50"
                   :disabled="testingEmbedding || savingEmbedding"
                 >
                   {{ savingEmbedding ? t('settings.saving') : t('settings.save') }}
@@ -615,7 +615,7 @@ function openEmbedding() {
               <button
                 v-if="!mcpFormOpen"
                 type="button"
-                class="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-teal-700"
+                class="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-800"
                 @click="openAddForm"
               >
                 <Plus class="size-3.5" />
@@ -628,25 +628,25 @@ function openEmbedding() {
               <div class="grid gap-3 sm:grid-cols-2">
                 <label class="block text-sm font-medium">
                   {{ t('mcp.form.serverId') }}
-                  <input v-model="mcpForm.serverId" required placeholder="tavily" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-200" />
+                  <input v-model="mcpForm.serverId" required placeholder="tavily" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-200" />
                 </label>
                 <label class="block text-sm font-medium">
                   {{ t('mcp.form.name') }}
-                  <input v-model="mcpForm.name" required placeholder="Tavily Search" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-200" />
+                  <input v-model="mcpForm.name" required placeholder="Tavily Search" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-200" />
                 </label>
               </div>
               <label class="block text-sm font-medium">
                 {{ t('mcp.form.endpoint') }}
-                <input v-model="mcpForm.endpoint" required type="url" placeholder="https://mcp.tavily.com/mcp" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-200" />
+                <input v-model="mcpForm.endpoint" required type="url" placeholder="https://mcp.tavily.com/mcp" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-200" />
               </label>
               <label class="block text-sm font-medium">
                 {{ t('mcp.form.apiKey') }}
-                <input v-model="mcpForm.apiKey" type="password" autocomplete="new-password" placeholder="sk-..." class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-200" />
+                <input v-model="mcpForm.apiKey" type="password" autocomplete="new-password" placeholder="sk-..." class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-200" />
               </label>
               <div class="grid gap-3 sm:grid-cols-3">
                 <label v-for="field in timeoutFields" :key="field.key" class="block text-sm font-medium">
                   {{ t(field.labelKey) }}
-                  <input v-model="mcpForm[field.key]" :placeholder="defaultMcpTimeouts[field.key]" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 font-mono text-sm outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-200" />
+                  <input v-model="mcpForm[field.key]" :placeholder="defaultMcpTimeouts[field.key]" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 font-mono text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-200" />
                 </label>
               </div>
               <p class="text-[11px] text-muted-foreground">{{ t('mcp.timeoutHint') }}</p>
@@ -655,7 +655,7 @@ function openEmbedding() {
                 <button type="button" class="rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted" @click="closeAddForm">
                   {{ t('common.cancel') }}
                 </button>
-                <button type="submit" :disabled="mcpFormSubmitting" class="rounded-lg bg-teal-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-teal-700 disabled:opacity-50">
+                <button type="submit" :disabled="mcpFormSubmitting" class="rounded-lg bg-brand-700 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-brand-800 disabled:opacity-50">
                   {{ mcpFormSubmitting ? t('mcp.form.submitting') : t('mcp.form.submit') }}
                 </button>
               </div>
@@ -728,7 +728,7 @@ function openEmbedding() {
                   type="button"
                   :class="cn(
                     'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors',
-                    srv.enabled ? 'bg-teal-600' : 'bg-muted'
+                    srv.enabled ? 'bg-brand-700' : 'bg-muted'
                   )"
                   @click="toggleEnabled(srv.id, srv.enabled)"
                 >
@@ -759,7 +759,7 @@ function openEmbedding() {
               <!-- 选工具：不勾的不挂给模型 -->
               <div
                 v-if="toolsTargetId === srv.id"
-                class="space-y-2 rounded-lg border border-teal-200 bg-teal-50/60 px-4 py-3 dark:border-teal-800 dark:bg-teal-950/30"
+                class="space-y-2 rounded-lg border border-brand-200 bg-brand-50/60 px-4 py-3 dark:border-brand-800 dark:bg-brand-950/30"
               >
                 <p class="text-xs font-medium">{{ t('mcp.selectTools') }}</p>
                 <p v-if="toolsLoading" class="text-xs text-muted-foreground">{{ t('mcp.loadingTools') }}</p>
@@ -772,7 +772,7 @@ function openEmbedding() {
                   >
                     <input
                       type="checkbox"
-                      class="size-3.5 accent-teal-600"
+                      class="size-3.5 accent-brand-700"
                       :checked="toolsDraft.includes(name)"
                       @change="toggleTool(name)"
                     />
@@ -791,7 +791,7 @@ function openEmbedding() {
                   <button
                     type="button"
                     :disabled="toolsSaving || toolsLoading || !!toolsError || toolsDraft.length === 0"
-                    class="rounded bg-teal-600 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
+                    class="rounded bg-brand-700 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-brand-800 disabled:opacity-50"
                     @click="saveTools(srv.id)"
                   >
                     {{ toolsSaving ? t('mcp.saving') : t('common.save') }}
@@ -802,14 +802,14 @@ function openEmbedding() {
               <!-- 超时：保存后后端按新配置重连该服务 -->
               <div
                 v-if="timeoutTargetId === srv.id"
-                class="space-y-2 rounded-lg border border-teal-200 bg-teal-50/60 px-4 py-3 dark:border-teal-800 dark:bg-teal-950/30"
+                class="space-y-2 rounded-lg border border-brand-200 bg-brand-50/60 px-4 py-3 dark:border-brand-800 dark:bg-brand-950/30"
               >
                 <div class="grid gap-3 sm:grid-cols-3">
                   <label v-for="field in timeoutFields" :key="field.key" class="block text-xs font-medium">
                     {{ t(field.labelKey) }}
                     <input
                       v-model="timeoutsDraft[field.key]"
-                      class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 font-mono text-xs outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-200"
+                      class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-1.5 font-mono text-xs outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
                     />
                   </label>
                 </div>
@@ -826,7 +826,7 @@ function openEmbedding() {
                   <button
                     type="button"
                     :disabled="timeoutsSaving || timeoutsInvalid"
-                    class="rounded bg-teal-600 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
+                    class="rounded bg-brand-700 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-brand-800 disabled:opacity-50"
                     @click="saveTimeouts(srv.id)"
                   >
                     {{ timeoutsSaving ? t('mcp.saving') : t('common.save') }}
