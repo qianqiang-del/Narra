@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
  *
  * 布局与「大模型」同款：配置卡片列表 + 按需展开的表单。多存一条、同时只启用一条
  * （后端用约束保证），启用状态由开关表达；删除与测试都作用在单条配置上。
+ * 表单打开（新增/编辑）时整块已保存列表让位，只留表单 —— 保存或取消后列表再回来。
  */
 const store = useRerankStore()
 const { models, loading } = storeToRefs(store)
@@ -24,13 +25,13 @@ const deleteConfirmId = ref<number | null>(null)
 /** API Key 是否明文显示。默认遮住：密码框看不清填了什么，填错了也发现不了 */
 const showApiKey = ref(false)
 const form = reactive({
-  name: '', baseUrl: '', apiKey: '', clearApiKey: false, timeoutSeconds: 2, model: '',
+  name: '', baseUrl: '', apiKey: '', clearApiKey: false, timeoutSeconds: 120, model: '',
 })
 
 /** 把后端返回的 Go 时长串（如 "2s"）解析成秒数，parseInt 对 "1m30s" 只会读出 1。 */
 function durationToSeconds(duration: string): number {
   const matched = duration.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/)
-  if (!matched) return 2
+  if (!matched) return 120
 
   return Number(matched[1] ?? 0) * 3600 + Number(matched[2] ?? 0) * 60 + Number(matched[3] ?? 0)
 }
@@ -40,7 +41,7 @@ function resetForm(item?: RerankModel) {
   Object.assign(form, {
     name: item?.name ?? '', baseUrl: item?.baseUrl ?? '',
     apiKey: '', clearApiKey: false,
-    timeoutSeconds: durationToSeconds(item?.timeout ?? '2s'),
+    timeoutSeconds: durationToSeconds(item?.timeout ?? '120s'),
     model: item?.model ?? '',
   })
   error.value = ''
@@ -105,9 +106,9 @@ function statusText(item: RerankModel) {
 
 <template>
   <section class="space-y-5">
-    <div class="flex items-center justify-between gap-3 pr-8">
+    <div v-if="!formOpen" class="flex items-center justify-between gap-3 pr-8">
       <h3 class="text-sm font-semibold">已保存的配置</h3>
-      <button v-if="!formOpen" type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-800" @click="resetForm()">
+      <button type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-800" @click="resetForm()">
         <Plus class="size-3.5" />新增配置
       </button>
     </div>
@@ -163,12 +164,12 @@ function statusText(item: RerankModel) {
     </form>
 
     <p v-if="error && !formOpen" class="text-sm text-destructive">{{ error }}</p>
-    <div v-if="loading" class="py-8 text-center text-sm text-muted-foreground">加载中…</div>
+    <div v-if="loading && !formOpen" class="py-8 text-center text-sm text-muted-foreground">加载中…</div>
     <div v-else-if="models.length === 0 && !formOpen" class="rounded-xl border border-dashed border-border py-10 text-center">
       <ArrowUpDown class="mx-auto mb-2 size-7 text-muted-foreground/50" />
       <p class="text-sm text-muted-foreground">尚未配置重排模型</p>
     </div>
-    <div v-else class="space-y-2">
+    <div v-else-if="!formOpen" class="space-y-2">
       <div v-for="item in models" :key="item.id" class="rounded-xl border border-border p-4">
         <div class="flex items-center gap-3">
           <div class="min-w-0 flex-1">

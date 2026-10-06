@@ -33,14 +33,14 @@ const searchUnavailable = ref(false)
 const attemptedPrices = new Set<string>()
 let formVersion = 0
 const form = reactive({
-  name: '', baseUrl: '', apiKey: '', clearApiKey: false, timeoutSeconds: 60, models: [''],
+  name: '', baseUrl: '', apiKey: '', clearApiKey: false, timeoutSeconds: 120, models: [''],
   pricing: {} as Record<string, ModelPricing>,
 })
 
 /** 把后端返回的 Go 时长串（如 "2m0s"）解析成秒数，parseInt 会把它读成 2。 */
 function durationToSeconds(duration: string): number {
   const matched = duration.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/)
-  if (!matched) return 60
+  if (!matched) return 120
 
   return Number(matched[1] ?? 0) * 3600 + Number(matched[2] ?? 0) * 60 + Number(matched[3] ?? 0)
 }
@@ -57,7 +57,7 @@ function resetForm(provider?: LlmProvider) {
   Object.assign(form, {
     name: provider?.name ?? '', baseUrl: provider?.baseUrl ?? '',
     apiKey: '', clearApiKey: false,
-    timeoutSeconds: durationToSeconds(provider?.timeout ?? '60s'),
+    timeoutSeconds: durationToSeconds(provider?.timeout ?? '120s'),
     models: provider ? [...provider.models] : [''],
     pricing: copyModelPricing(provider?.pricing),
   })
