@@ -286,7 +286,7 @@ const apiBaseURL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 const embeddingForm = ref<EmbeddingForm>({
   base_url: '',
   model: '',
-  timeout: 30,
+  timeout: 120,
   dimensions: 0,
   api_key: '',
 })
@@ -336,7 +336,7 @@ function blockedByNativeEndpoint() {
 
 function durationToSeconds(duration: string): number {
   const matched = duration.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/)
-  if (!matched) return 30
+  if (!matched) return 120
 
   return Number(matched[1] ?? 0) * 3600 + Number(matched[2] ?? 0) * 60 + Number(matched[3] ?? 0)
 }
@@ -562,7 +562,7 @@ function openEmbedding() {
                     type="number"
                     min="1"
                     step="1"
-                    placeholder="30"
+                    placeholder="120"
                     class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-brand-400 focus:ring-2 focus:ring-brand-200 dark:focus:ring-brand-900"
                   />
                 </label>
