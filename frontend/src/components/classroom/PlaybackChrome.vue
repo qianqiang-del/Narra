@@ -419,12 +419,19 @@ function stepToNextPlayableScene(): boolean {
 }
 
 function handleNarrationEnded() {
+  if (!autoPlay.value) {
+    playing.value = false
+    narrationIndex.value = 0
+    return
+  }
   const nextIndex = nextNarrationIndex(narrationIndex.value + 1)
   if (nextIndex >= 0) {
     narrationIndex.value = nextIndex
     void playNarrationSegment()
   } else if (autoPlay.value && stepToNextPlayableScene()) {
-    window.setTimeout(() => playNarrationSegment(), 0)
+    window.setTimeout(() => {
+      if (autoPlay.value) playNarrationSegment()
+    }, 0)
   } else {
     playing.value = false
     narrationIndex.value = 0
@@ -514,7 +521,9 @@ function toggleAutoPlay() {
       narrationIndex.value = firstPlayable
       playNarrationSegment()
     } else if (stepToNextPlayableScene()) {
-      window.setTimeout(() => playNarrationSegment(), 0)
+      window.setTimeout(() => {
+        if (autoPlay.value) playNarrationSegment()
+      }, 0)
     } else {
       autoPlay.value = false
       toast('当前没有可自动播放的讲解音频')
@@ -534,7 +543,11 @@ watch(activeIndex, () => {
   const shouldContinue = autoPlay.value && playing.value
   stopAudio()
   updateNotes()
-  if (shouldContinue) window.setTimeout(() => playNarrationSegment(), 0)
+  if (shouldContinue) {
+    window.setTimeout(() => {
+      if (autoPlay.value) playNarrationSegment()
+    }, 0)
+  }
 })
 // 进课堂时落在第一页看得进去的页面上；后面每有一页就绪都会重建列表，这里保证不会把人从正在看的那页挪走。
 watch(
@@ -552,7 +565,9 @@ watch(() => props.sceneDetails, () => {
     const firstPlayable = nextNarrationIndex(narrationIndex.value)
     if (firstPlayable >= 0) {
       narrationIndex.value = firstPlayable
-      window.setTimeout(() => playNarrationSegment(), 0)
+      window.setTimeout(() => {
+        if (autoPlay.value) playNarrationSegment()
+      }, 0)
     }
   }
 }, { deep: true })
