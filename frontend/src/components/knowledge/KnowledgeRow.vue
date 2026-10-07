@@ -56,7 +56,6 @@ const badgeStyles: Record<KnowledgeBadgeStatus, string> = {
  * 来源标签的配色：手动录入与文件导入是两条不同的入口，只靠文字区分太弱。
  *
  * 色相刻意避开状态徽章用的绿 / 黄 / 红（见 badgeStyles），否则会被误读成收录状态。
- * 课程材料标签（待使用 / 已关联）说的是生命周期而不是来源，保持中性色、不参与着色。
  */
 const sourceTagStyles: Record<KnowledgeSourceType, string> = {
   manual:
@@ -65,8 +64,17 @@ const sourceTagStyles: Record<KnowledgeSourceType, string> = {
     'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300',
 }
 
-/** 中性标签样式：浅边框、无底色，与停用徽章同一口径。 */
-const neutralTagStyle = 'border-border text-zinc-600 dark:text-zinc-400'
+/**
+ * 课程材料的生命周期标签：待使用是临时的（到期会被清理），已关联是长期保留的。
+ * 两者都用中性灰的话扫一眼分不出来，所以各给一个色：待使用取金铜（提醒会过期），
+ * 已关联取品牌蓝（已经挂到课堂上）。
+ */
+const materialTagStyles = {
+  pending:
+    'border-gold-200 bg-gold-50 text-gold-700 dark:border-gold-800 dark:bg-gold-900/40 dark:text-gold-300',
+  associated:
+    'border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-700 dark:bg-brand-600/10 dark:text-brand-300',
+} as const
 
 /**
  * 记录的展示状态：把后端四个原始状态收成四个徽章。
@@ -158,13 +166,13 @@ const model = computed<RowModel>(() => {
       ? null
       : { label: t('knowledge.status.disabled'), class: badgeStyles.removed },
     // 课程材料显示"待使用 / 已关联"（由 expiresAt 是否为空区分），知识库文档显示来源类型；
-    // 来源同时带配色，手动录入与文件导入在列表里一眼可分，不必读文字。
+    // 两者都带配色：材料看生命周期（金铜=待使用，品牌蓝=已关联），知识库看来源入口。
     tag: isMaterial
       ? {
           label: t(
             document.expiresAt ? 'knowledge.material.pending' : 'knowledge.material.associated',
           ),
-          class: neutralTagStyle,
+          class: document.expiresAt ? materialTagStyles.pending : materialTagStyles.associated,
         }
       : { label: t(`knowledge.source.${source}`), class: sourceTagStyles[source] },
     meta: [
