@@ -182,6 +182,16 @@ func (s *discussionService) Start(ctx context.Context, conversationID uint64, co
 }
 
 func (s *discussionService) StartAtScene(ctx context.Context, conversationID uint64, content string, sceneID uint64) (*responsedto.DiscussionStart, error) {
+	return s.StartWithStyle(ctx, conversationID, content, sceneID, "balanced")
+}
+
+func (s *discussionService) StartWithStyle(ctx context.Context, conversationID uint64, content string, sceneID uint64, style string) (*responsedto.DiscussionStart, error) {
+	if style == "" {
+		style = "balanced"
+	}
+	if style != "balanced" && style != "multi_perspective" {
+		return nil, apperrors.New(apperrors.CodeInvalidParam, "讨论方式无效")
+	}
 	text := strings.TrimSpace(content)
 	if text == "" {
 		return nil, apperrors.New(apperrors.CodeMissingParam, "消息内容不能为空")
@@ -280,7 +290,7 @@ func (s *discussionService) StartAtScene(ctx context.Context, conversationID uin
 		WebSearch bool `json:"web_search"`
 	}
 	_ = json.Unmarshal(classroom.GenerationConfig, &features)
-	go s.run(orchestrator, conversationID, message.ID, participants, classroom.Title, classroom.Requirement, lessonMaterial, models.ModelID, models.Pricing, features.WebSearch)
+	go s.run(orchestrator, conversationID, message.ID, participants, classroom.Title, classroom.Requirement, lessonMaterial, models.ModelID, models.Pricing, features.WebSearch, style)
 
 	handedOver = true
 	s.logger.Info("讨论已受理",
@@ -305,7 +315,7 @@ func (s *discussionService) StartAtScene(ctx context.Context, conversationID uin
 // 这是唯一一处"结果没人接收"的调用：它返回时 HTTP 请求早已结束，所以成败只能靠
 // 日志和事件表说话 —— 讨论失败时编排器会自己往事件表写一条 run.failed，
 // 前端据此把等待结束掉，不会一直转圈。
-func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversationID uint64, triggerMessageID uint64, participants []discussion.Participant, classroomTitle string, classroomRequirement string, lessonMaterial string, modelID string, pricing *discussion.ModelPricing, webSearch bool) {
+func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversationID uint64, triggerMessageID uint64, participants []discussion.Participant, classroomTitle string, classroomRequirement string, lessonMaterial string, modelID string, pricing *discussion.ModelPricing, webSearch bool, style string) {
 	// 无论怎么结束都要放锁，否则这条对话只能讨论一次。
 	defer s.release(conversationID)
 
@@ -333,6 +343,7 @@ func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversat
 		ModelID:              modelID,
 		ModelPricing:         pricing,
 		WebSearch:            webSearch,
+		DiscussionStyle:      style,
 		// MaxTurns 留 0：轮数由后端定（默认值在编排器里），前端不参与。
 	})
 	if err != nil {

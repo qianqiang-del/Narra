@@ -161,6 +161,12 @@ type boundedDiscussionTool struct {
 
 func (t *boundedDiscussionTool) Info(context.Context) (*schema.ToolInfo, error) { return t.info, nil }
 func (t *boundedDiscussionTool) InvokableRun(ctx context.Context, args string, opts ...tool.Option) (string, error) {
+	if len(args) > 4096 {
+		return "工具参数过长，请缩短查询内容后再试。", nil
+	}
+	if !json.Valid([]byte(args)) {
+		return "工具参数不是合法 JSON，请检查后再试。", nil
+	}
 	t.state.mu.Lock()
 	if len(t.state.calls) >= 4 {
 		t.state.mu.Unlock()

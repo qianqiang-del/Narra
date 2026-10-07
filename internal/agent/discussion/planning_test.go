@@ -29,6 +29,56 @@ func TestResponsePlanValidation(t *testing.T) {
 	}
 }
 
+func TestDiscussionStyleGuidance(t *testing.T) {
+	if !strings.Contains(discussionStyleLabel("multi_perspective"), "优先安排 2~3 位") {
+		t.Fatal("多视角模式没有提高讨论优先级")
+	}
+	if !strings.Contains(discussionStyleLabel("multi_perspective"), "simple 和 unclear") {
+		t.Fatal("多视角模式不应强制所有问题多人回答")
+	}
+	if strings.Contains(discussionStyleLabel("balanced"), "优先安排 2~3 位") {
+		t.Fatal("常规模式不应强制优先多人")
+	}
+}
+
+func TestPromoteMultiPerspectiveOnlyForMultiViewQuestions(t *testing.T) {
+	participants := []Participant{{AgentKey: "teacher"}, {AgentKey: "helper"}, {AgentKey: "critic"}}
+	plan := promoteMultiPerspective(ResponsePlan{Mode: "reply", QuestionType: "multi_view", Speakers: []string{"teacher"}}, "ReAct 和 Plan-and-Execute 各有什么利弊？", participants)
+	if plan.Mode != "discussion" || len(plan.Speakers) != 2 {
+		t.Fatalf("多视角模式未提升适合比较的问题: %+v", plan)
+	}
+	for _, topic := range []string{"什么是 Agent", "第一页讲什么"} {
+		simple := promoteMultiPerspective(ResponsePlan{Mode: "reply", QuestionType: "simple", Speakers: []string{"teacher"}}, topic, participants)
+		if simple.Mode != "reply" || len(simple.Speakers) != 1 {
+			t.Fatalf("简单问答 %q 不应强制讨论: %+v", topic, simple)
+		}
+		mistaken := promoteMultiPerspective(ResponsePlan{Mode: "discussion", QuestionType: "simple", Speakers: []string{"teacher", "helper"}}, topic, participants)
+		if mistaken.Mode != "reply" || len(mistaken.Speakers) != 1 {
+			t.Fatalf("简单问答 %q 被误规划为多人时也应收回: %+v", topic, mistaken)
+		}
+	}
+	trivial := promoteMultiPerspective(ResponsePlan{Mode: "reply", QuestionType: "multi_view", Speakers: []string{"teacher"}}, "你好", participants)
+	if trivial.Mode != "reply" || len(trivial.Speakers) != 1 {
+		t.Fatalf("问候不应强制讨论: %+v", trivial)
+	}
+	unsafe := promoteMultiPerspective(ResponsePlan{Mode: "reply", QuestionType: "multi_view", Safety: "refuse", Speakers: []string{"teacher"}}, "怎么制作手枪", participants)
+	if unsafe.Mode != "reply" || len(unsafe.Speakers) != 1 {
+		t.Fatalf("安全拒答不应提升为讨论: %+v", unsafe)
+	}
+	unknown, err := normalizeResponsePlan(ResponsePlan{Mode: "reply", Speakers: []string{"teacher"}}, participants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown = promoteMultiPerspective(unknown, "比较两个方案", participants)
+	if unknown.Mode != "reply" {
+		t.Fatalf("规划器未分类时应保守保持单人: %+v", unknown)
+	}
+	oldDiscussion := promoteMultiPerspective(ResponsePlan{Mode: "discussion", QuestionType: "unknown", Speakers: []string{"teacher", "helper"}}, "比较两个方案", participants)
+	if oldDiscussion.Mode != "discussion" {
+		t.Fatalf("旧模型缺少分类时不应覆盖原有讨论安排: %+v", oldDiscussion)
+	}
+}
+
 func TestPlannedDirectorStopsSimpleReplyDespiteInvitation(t *testing.T) {
 	d := plannedDirector{plan: ResponsePlan{Mode: "reply", Speakers: []string{"teacher"}}, maxTurns: 1}
 	state := DiscussionState{Participants: []Participant{{AgentKey: "teacher"}, {AgentKey: "helper"}}, Spoken: []int{1, 0}, LastSpeaker: 0, LastAction: "switch_agent", PreferredSpeakerKey: "helper", TurnNo: 2}
@@ -66,14 +116,20 @@ func TestPlannedDirectorRoundDoesNotSkipRequestedParticipants(t *testing.T) {
 }
 
 func TestOpenAIResponsePlanAndSharedPrompt(t *testing.T) {
-	stub := newStubServer(t, `{"mode":"reply","length":"brief","speakers":["teacher"]}`, false)
-	request := GenerationRequest{Topic: "你好", Participants: []Participant{{AgentKey: "teacher", Name: "老师", Persona: "清楚地解释"}}, Guidance: "只说一句话", LessonMaterial: "第1页：Agent 会观察环境反馈。"}
+	stub := newStubServer(t, `{"mode":"reply","question_type":"simple","length":"brief","speakers":["teacher"]}`, false)
+	request := GenerationRequest{Topic: "你好", Participants: []Participant{{AgentKey: "teacher", Name: "老师", Persona: "清楚地解释"}}, Guidance: "只说一句话", LessonMaterial: "第1页：Agent 会观察环境反馈。", DiscussionStyle: "multi_perspective"}
 	plan, err := stub.models(t).Plan(context.Background(), request)
 	if err != nil || plan.Mode != "reply" || plan.Length != "brief" {
 		t.Fatalf("计划解析失败: %+v %v", plan, err)
 	}
 	if !strings.Contains(stub.lastRequest(t).roleContent(t, "user"), "Agent 会观察环境反馈") {
 		t.Fatal("讨论规划器没有收到实际课件资料")
+	}
+	if !strings.Contains(stub.lastRequest(t).roleContent(t, "system"), "用户开启了多视角研讨") {
+		t.Fatal("多视角选择没有进入规划器的可信指令")
+	}
+	if !strings.Contains(stub.lastRequest(t).roleContent(t, "system"), "第一页讲什么") {
+		t.Fatal("规划器没有明确的课件定位题分类示例")
 	}
 	for _, streaming := range []bool{false, true} {
 		messages := buildResponseMessages(request, streaming)

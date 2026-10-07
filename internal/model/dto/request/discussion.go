@@ -6,6 +6,7 @@ package request
 // 角色取这堂课实际选定的那些，模型取课堂讨论设置（未设置时沿用生成快照），
 // 两者都已经在库里了，再让前端传一遍只会多一个可能对不上的来源。
 type StartDiscussion struct {
-	Content string `json:"content"`  // 用户这句话的正文
-	SceneID uint64 `json:"scene_id"` // 可选：发问时正在查看的课件页
+	Content         string `json:"content"`          // 用户这句话的正文
+	SceneID         uint64 `json:"scene_id"`         // 可选：发问时正在查看的课件页
+	DiscussionStyle string `json:"discussion_style"` // balanced 或 multi_perspective
 }

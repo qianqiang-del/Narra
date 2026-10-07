@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
+
 	"narra/pkg/llm"
 )
 
@@ -110,6 +113,29 @@ func TestDiscussionWhiteboardToolRoundTrip(t *testing.T) {
 				t.Fatal(calls)
 			}
 		})
+	}
+}
+
+type recordingTool struct{ calls int }
+
+func (t *recordingTool) Info(context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{Name: "test_search"}, nil
+}
+func (t *recordingTool) InvokableRun(context.Context, string, ...tool.Option) (string, error) {
+	t.calls++
+	return "ok", nil
+}
+
+func TestDiscussionToolRejectsOversizedArguments(t *testing.T) {
+	inner := &recordingTool{}
+	bounded := &boundedDiscussionTool{inner: inner, info: &schema.ToolInfo{Name: "test_search"}, state: &generationToolsState{}}
+	for _, args := range []string{strings.Repeat("x", 4097), "not-json"} {
+		if _, err := bounded.InvokableRun(context.Background(), args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if inner.calls != 0 {
+		t.Fatal("invalid tool arguments reached remote tool")
 	}
 }
 

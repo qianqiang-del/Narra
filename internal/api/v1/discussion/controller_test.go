@@ -28,6 +28,7 @@ type fakeDiscussionService struct {
 	gotConversationID uint64
 	gotContent        string
 	gotSceneID        uint64
+	gotStyle          string
 	called            bool
 
 	result      *responsedto.DiscussionStart
@@ -107,6 +108,11 @@ func (f *fakeDiscussionService) StartAtScene(ctx context.Context, conversationID
 	return f.result, f.err
 }
 
+func (f *fakeDiscussionService) StartWithStyle(ctx context.Context, conversationID uint64, content string, sceneID uint64, style string) (*responsedto.DiscussionStart, error) {
+	f.gotStyle = style
+	return f.StartAtScene(ctx, conversationID, content, sceneID)
+}
+
 // newTestEngine 挂上真实路由，返回引擎与假服务。
 func newTestEngine(svc *fakeDiscussionService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
@@ -174,7 +180,7 @@ func TestStartPassesContentAndReturnsIDs(t *testing.T) {
 	}
 	engine := newTestEngine(svc)
 
-	_, envelope := doStart(t, engine, "/api/v1/conversations/7/discussions", `{"content":"为什么操作前要先确认枪口安全？","scene_id":42}`)
+	_, envelope := doStart(t, engine, "/api/v1/conversations/7/discussions", `{"content":"为什么操作前要先确认枪口安全？","scene_id":42,"discussion_style":"multi_perspective"}`)
 
 	if code := envelope["code"]; code != float64(apperrors.CodeSuccess) {
 		t.Fatalf("响应码 = %v，期望 %d", code, apperrors.CodeSuccess)
@@ -190,6 +196,9 @@ func TestStartPassesContentAndReturnsIDs(t *testing.T) {
 	}
 	if svc.gotSceneID != 42 {
 		t.Errorf("交给业务层的课件页 ID = %d，期望 42", svc.gotSceneID)
+	}
+	if svc.gotStyle != "multi_perspective" {
+		t.Errorf("交给业务层的讨论方式 = %q", svc.gotStyle)
 	}
 
 	data, ok := envelope["data"].(map[string]any)

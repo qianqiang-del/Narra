@@ -258,7 +258,7 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (result Result,
 		if historyErr != nil {
 			return o.abandon(run, historyErr, nil, log, rootSpanID, rootSpanStartedAt)
 		}
-		planRequest := GenerationRequest{Topic: trigger.Content, Participants: request.Participants, History: history, ClassroomTitle: request.ClassroomTitle, ClassroomRequirement: request.ClassroomRequirement, LessonMaterial: request.LessonMaterial}
+		planRequest := GenerationRequest{Topic: trigger.Content, Participants: request.Participants, History: history, ClassroomTitle: request.ClassroomTitle, ClassroomRequirement: request.ClassroomRequirement, LessonMaterial: request.LessonMaterial, DiscussionStyle: request.DiscussionStyle}
 		plan, planErr := planner.Plan(ctx, planRequest)
 		if ctx.Err() != nil {
 			return o.abandon(run, ctx.Err(), nil, log, rootSpanID, rootSpanStartedAt)
@@ -274,6 +274,8 @@ func (o *Orchestrator) Run(ctx context.Context, request Request) (result Result,
 			plan = safetyPlan
 			plan.Speakers = []string{fallbackResponsePlan(request.Participants).Speakers[0]}
 			request.safetyRefusal = true
+		} else if request.DiscussionStyle == "multi_perspective" {
+			plan = promoteMultiPerspective(plan, trigger.Content, request.Participants)
 		}
 		limit := len(plan.Speakers)
 		if plan.Mode == "discussion" && limit > 1 {
@@ -532,6 +534,7 @@ func (o *Orchestrator) speak(
 			ClassroomRequirement: request.ClassroomRequirement,
 			LessonMaterial:       request.LessonMaterial,
 			WebSearch:            request.WebSearch,
+			DiscussionStyle:      request.DiscussionStyle,
 		})
 	}
 	if err != nil {
