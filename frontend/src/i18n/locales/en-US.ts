@@ -173,6 +173,8 @@ export default {
     elementCount: '{count} elements',
   },
   roundtable: {
+    multiPerspective: 'Multi-perspective',
+    multiPerspectiveHint: 'Favor complementary viewpoints for this question; simple questions may still get one answer',
     teacher: 'TEACHER',
     you: 'YOU',
     inputPlaceholder: 'Type your message...',

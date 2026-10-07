@@ -5,7 +5,7 @@
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Activity, ArrowDown, ArrowLeft, BookOpen, MessageCircle, MessageSquare, PanelRightClose, PanelRightOpen, Plus, Send, Square, Users } from 'lucide-vue-next'
+import { Activity, ArrowDown, ArrowLeft, BookOpen, MessageCircle, MessageSquare, PanelRightClose, PanelRightOpen, Plus, Send, Square, Users, MessagesSquare } from 'lucide-vue-next'
 import ChatMessage from './ChatMessage.vue'
 import TraceTimeline from './TraceTimeline.vue'
 import DiscussionModelSelector from './DiscussionModelSelector.vue'
@@ -35,6 +35,7 @@ const props = defineProps<{
   loadingConversations: boolean
   error: string
   draft: string
+  multiPerspective?: boolean
   thinking: boolean
   yourTurn: boolean
   speakingName?: string
@@ -56,6 +57,7 @@ const emit = defineEmits<{
   (e: 'audio-caption', payload: { id: string; text: string }): void
   (e: 'send', text: string): void
   (e: 'update:draft', text: string): void
+  (e: 'update:multi-perspective', value: boolean): void
   (e: 'back'): void
   (e: 'retry'): void
   (e: 'input-activate'): void
@@ -299,7 +301,10 @@ function playAudio(path?: string | null, text?: string, id?: string) {
           <textarea :value="draft" rows="2" class="max-h-28 min-w-0 flex-1 resize-none bg-transparent px-1 py-1 text-[13px] leading-5 text-[#68748a] outline-none placeholder:text-[#a99b8a] dark:text-[#e8eefb]" :placeholder="t('chat.inputPlaceholder')" :aria-label="t('chat.inputPlaceholder')" @input="emit('update:draft', ($event.target as HTMLTextAreaElement).value)" @focus="emit('input-activate')" @keydown="onKeydown" />
           <button type="submit" :disabled="busy || modelBusy || !!error || !draft.trim()" :aria-label="t('workspace.send')" :title="t('workspace.send')" class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[#8f5b38] text-white transition-colors hover:bg-[#2a3549] disabled:opacity-40 dark:bg-[#b8794b] dark:hover:bg-[#d39461]"><Send class="size-3.5" /></button>
         </form>
-        <p class="px-4 py-2 text-[10px] text-[#a99b8a]">{{ t('chat.keyboardHint') }}</p>
+        <div class="flex items-center justify-between gap-2 px-4 py-2">
+          <button type="button" :aria-pressed="multiPerspective" :disabled="busy || modelBusy" :title="t('roundtable.multiPerspectiveHint')" :class="cn('flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-medium transition-colors disabled:opacity-40', multiPerspective ? 'border-[#4f8a7b] bg-[#e8f3ef] text-[#326a5b] dark:bg-[#183a32] dark:text-[#a4d6c5]' : 'border-[#d6dce7] text-[#68748a] hover:border-[#4f8a7b] dark:border-[#344054] dark:text-[#c8d2e2]')" @click="emit('update:multi-perspective', !multiPerspective)"><MessagesSquare class="size-3.5" />{{ t('roundtable.multiPerspective') }}</button>
+          <span class="text-[10px] text-[#a99b8a]">{{ t('chat.keyboardHint') }}</span>
+        </div>
       </template>
     </div>
 

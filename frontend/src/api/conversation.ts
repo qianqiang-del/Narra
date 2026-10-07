@@ -144,10 +144,11 @@ export function startDiscussion(
   conversationId: number,
   content: string,
   sceneId?: number,
+  discussionStyle: 'balanced' | 'multi_perspective' = 'balanced',
 ): Promise<DiscussionStart> {
   return request<DiscussionStartDTO>(`/conversations/${conversationId}/discussions`, {
     method: 'POST',
-    body: JSON.stringify({ content, ...(sceneId ? { scene_id: sceneId } : {}) }),
+    body: JSON.stringify({ content, discussion_style: discussionStyle, ...(sceneId ? { scene_id: sceneId } : {}) }),
   }).then((item) => ({
     conversationId: item.conversation_id,
     messageId: item.message_id,
