@@ -62,6 +62,7 @@ type Summarizer interface {
 // 不带 trace_id、库句柄这类东西 —— 那些是编排层的事，模型不需要也不该看到。
 type GenerationRequest struct {
 	WebSearch            bool
+	DiscussionStyle      string
 	Guidance             string
 	ClassroomTitle       string
 	ClassroomRequirement string

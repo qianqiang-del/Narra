@@ -16,6 +16,7 @@ import {
   Mic,
   MicOff,
   Send,
+  MessagesSquare,
 } from 'lucide-vue-next'
 import {
   HoverCardContent,
@@ -45,11 +46,13 @@ const props = defineProps<{
   asrEnabled?: boolean
   /** 收起：高度归零，把纵向空间让给舞台（由底部工具栏的开关控制） */
   collapsed?: boolean
+  multiPerspective?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'send', text: string): void
   (e: 'toggle-recording'): void
+  (e: 'update:multi-perspective', value: boolean): void
 }>()
 
 const { t } = useI18n()
@@ -333,6 +336,7 @@ onBeforeUnmount(stopRecognition)
                 <MessageSquare class="size-4" />
               </button>
             </div>
+            <button type="button" :aria-pressed="multiPerspective" :disabled="busy" :title="t('roundtable.multiPerspectiveHint')" :class="cn('mt-1 flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-medium disabled:opacity-40', multiPerspective ? 'border-[#4f8a7b] bg-[#e8f3ef] text-[#326a5b]' : 'border-[#d6dce7] text-[#68748a] hover:border-[#4f8a7b]')" @click="emit('update:multi-perspective', !multiPerspective)"><MessagesSquare class="size-3.5" />{{ t('roundtable.multiPerspective') }}</button>
           </div>
         </div>
       </div>

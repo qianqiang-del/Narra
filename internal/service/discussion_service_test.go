@@ -40,6 +40,13 @@ import (
 // 讨论用的模型是替身（不调真实大模型）：本用例要验的是入口链路，不是模型答得好不好。
 const discussionIntegrationEnv = "NARRA_INTEGRATION_TEST"
 
+func TestDiscussionStartRejectsUnknownStyleBeforeDatabase(t *testing.T) {
+	service := &discussionService{}
+	if _, err := service.StartWithStyle(context.Background(), 1, "你好", 0, "force_all"); err == nil {
+		t.Fatal("未知讨论方式应在访问数据库前被拒绝")
+	}
+}
+
 var (
 	discussionTestDBOnce sync.Once
 	discussionTestDB     *gorm.DB

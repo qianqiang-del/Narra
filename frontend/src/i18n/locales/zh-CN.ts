@@ -171,6 +171,8 @@ export default {
     elementCount: '{count} 个元素',
   },
   roundtable: {
+    multiPerspective: '多视角研讨',
+    multiPerspectiveHint: '本次提问优先邀请不同角色补充观点；简单问题仍可能由一人回答',
     teacher: '教师',
     you: '你',
     inputPlaceholder: '输入你的消息...',

@@ -83,7 +83,7 @@ func (c *Controller) Start(ctx *gin.Context) {
 		return
 	}
 
-	result, err := c.svc.StartAtScene(ctx.Request.Context(), id, input.Content, input.SceneID)
+	result, err := c.svc.StartWithStyle(ctx.Request.Context(), id, input.Content, input.SceneID, input.DiscussionStyle)
 	if err != nil {
 		response.BizError(ctx, err)
 		return

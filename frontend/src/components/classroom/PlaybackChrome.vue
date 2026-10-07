@@ -145,6 +145,7 @@ const recording = ref(false)
 const chatTab = ref<'lecture' | 'trace' | 'chat'>('chat')
 const chatView = ref<'list' | 'conversation'>('list')
 const chatDraft = ref('')
+const multiPerspective = ref(false)
 const discussionError = ref('')
 
 const sessions = ref<ChatSession[]>([])
@@ -739,7 +740,7 @@ async function sendMessage(text: string) {
     display.thinking = true
     syncDiscussion()
 
-    const started = await startDiscussion(conversationId, text, askedSceneId)
+    const started = await startDiscussion(conversationId, text, askedSceneId, multiPerspective.value ? 'multi_perspective' : 'balanced')
     const pending = display.bubbles.find((item) => item.id === pendingId)
     if (pending) pending.id = `message-${started.messageId}`
     discussionRunning.value = true
@@ -988,7 +989,9 @@ onBeforeUnmount(() => {
         :participants="participants"
         :speaking-agent-id="speakingAgentKey"
         :asr-enabled="asrEnabled"
+        :multi-perspective="multiPerspective"
         @send="sendMessage"
+        @update:multi-perspective="multiPerspective = $event"
         @toggle-recording="toggleRecording"
       />
 
@@ -1025,6 +1028,7 @@ onBeforeUnmount(() => {
       :loading-conversations="loadingConversations"
       :error="discussionError"
       :draft="chatDraft"
+      :multi-perspective="multiPerspective"
       :thinking="thinking"
       :your-turn="yourTurn"
       :speaking-name="speakingName"
@@ -1042,6 +1046,7 @@ onBeforeUnmount(() => {
       @audio-ended="handleChatAudioEnded"
       @audio-caption="updateAudioCaption"
       @send="sendMessage"
+      @update:multi-perspective="multiPerspective = $event"
       @update:draft="chatDraft = $event"
       @back="backToConversationList"
       @retry="retryDiscussion"
