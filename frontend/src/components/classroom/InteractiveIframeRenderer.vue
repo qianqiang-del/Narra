@@ -10,7 +10,7 @@
  *   interactive —— 课堂主画布，可交互
  *   thumbnail   —— 侧栏缩略图，禁鼠标事件，进入视口才挂载 iframe
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const props = withDefaults(
@@ -32,18 +32,39 @@ const { t } = useI18n()
 const hostRef = ref<HTMLDivElement | null>(null)
 const scale = ref(0.1)
 /** 缩略图懒加载：进入视口才真正挂载 iframe */
-const shouldMount = ref(props.interactive)
+const shouldMount = ref(false)
+const frameKey = ref(0)
 
 let resizeObserver: ResizeObserver | null = null
 let intersectionObserver: IntersectionObserver | null = null
+let mountFrame = 0
 
 const sandboxHTML = computed(() => props.html?.trim() ?? '')
 
 const frameStyle = computed(() => ({
   width: `${BASE_W}px`,
   height: `${BASE_H}px`,
-  transform: `scale(${scale.value})`,
+  transform: `translate(-50%, -50%) scale(${scale.value})`,
 }))
+
+function updateScale() {
+  const box = hostRef.value?.getBoundingClientRect()
+  if (!box || box.width <= 0 || box.height <= 0) return
+  scale.value = Math.min(box.width / BASE_W, box.height / BASE_H)
+}
+
+function mountInteractiveFrame() {
+  window.cancelAnimationFrame(mountFrame)
+  shouldMount.value = false
+  if (!sandboxHTML.value) return
+  frameKey.value += 1
+  void nextTick(() => {
+    mountFrame = window.requestAnimationFrame(() => {
+      updateScale()
+      shouldMount.value = true
+    })
+  })
+}
 
 onMounted(() => {
   const host = hostRef.value
@@ -52,14 +73,21 @@ onMounted(() => {
   resizeObserver = new ResizeObserver((entries) => {
     const box = entries[0]?.contentRect
     if (!box) return
-    scale.value = Math.min(box.width / BASE_W, box.height / BASE_H)
+    if (box.width > 0 && box.height > 0) {
+      scale.value = Math.min(box.width / BASE_W, box.height / BASE_H)
+    }
   })
   resizeObserver.observe(host)
+  updateScale()
 
-  if (!props.interactive) {
+  if (props.interactive) {
+    mountInteractiveFrame()
+  } else {
     intersectionObserver = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
+          updateScale()
+          frameKey.value += 1
           shouldMount.value = true
           intersectionObserver?.disconnect()
           intersectionObserver = null
@@ -71,7 +99,16 @@ onMounted(() => {
   }
 })
 
+watch([sandboxHTML, () => props.interactive], () => {
+  if (props.interactive) {
+    mountInteractiveFrame()
+    return
+  }
+  if (!sandboxHTML.value) shouldMount.value = false
+})
+
 onBeforeUnmount(() => {
+  window.cancelAnimationFrame(mountFrame)
   resizeObserver?.disconnect()
   intersectionObserver?.disconnect()
 })
@@ -81,10 +118,11 @@ onBeforeUnmount(() => {
   <div ref="hostRef" class="relative size-full overflow-hidden bg-white dark:bg-gray-800">
     <iframe
       v-if="shouldMount && sandboxHTML"
+      :key="frameKey"
       :srcdoc="sandboxHTML"
       :style="frameStyle"
       :class="interactive ? 'pointer-events-auto' : 'pointer-events-none'"
-      class="absolute top-1/2 left-1/2 origin-center -translate-x-1/2 -translate-y-1/2 border-0 bg-white select-none"
+      class="absolute top-1/2 left-1/2 origin-center border-0 bg-white select-none"
       sandbox="allow-scripts allow-forms"
       referrerpolicy="no-referrer"
       tabindex="-1"
