@@ -3,10 +3,8 @@
  * CanvasArea —— 文档 §6.5（舞台 16:9 盒子 + 底部工具栏）。
  * 播放提示按钮 / 场景序号徽章 / 生成中占位 / 课程完成页在此挂载。
  *
- * 场景内容整体等比缩放到画布：以进入页面时的画布尺寸为基准，画布变多少内容就变多少
- * （收起圆桌/侧栏、窗口缩放、放映放大都会同步缩放字体），不再是只多出空白。
+ * 场景内容铺满 16:9 画布，画布本身由外层舞台按可用空间约束。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2, Play } from 'lucide-vue-next'
 
@@ -61,49 +59,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-
-/**
- * 内容整体等比缩放：以「进入页面时量到的画布尺寸」为基准，
- * 倍数 = 当前画布 / 基准画布 —— 收起圆桌、收起侧栏、窗口缩放、放映放大，
- * 画布变多少，内容（字体/卡片/间距）就跟着变多少，不再是只多出空白。
- */
-const frameRef = ref<HTMLElement | null>(null)
-/** 画布当前尺寸（ResizeObserver 实时更新） */
-const frameSize = ref({ w: 0, h: 0 })
-/** 基准画布尺寸：首次量到画布尺寸时锁定 */
-const sceneBase = ref<{ w: number; h: number } | null>(null)
-let resizeObserver: ResizeObserver | null = null
-
-onMounted(() => {
-  const frame = frameRef.value
-  if (!frame) return
-  resizeObserver = new ResizeObserver((entries) => {
-    const box = entries[0]?.contentRect
-    if (!box || box.width <= 0 || box.height <= 0) return
-    frameSize.value = { w: box.width, h: box.height }
-    if (!sceneBase.value) sceneBase.value = { w: box.width, h: box.height }
-  })
-  resizeObserver.observe(frame)
-})
-
-const sceneScale = computed(() => {
-  const base = sceneBase.value
-  const { w, h } = frameSize.value
-  if (!base || w <= 0 || h <= 0) return 1
-  return Math.min(w / base.w, h / base.h)
-})
-
-const stageStyle = computed(() => {
-  const base = sceneBase.value
-  if (!base) return undefined
-  return {
-    width: `${base.w}px`,
-    height: `${base.h}px`,
-    transform: `translate(-50%, -50%) scale(${sceneScale.value})`,
-  }
-})
-
-onBeforeUnmount(() => resizeObserver?.disconnect())
 </script>
 
 <template>
@@ -125,7 +80,6 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
       "
     >
       <div
-        ref="frameRef"
         :class="
           cn(
             'canvas-frame relative overflow-hidden bg-white transition-all duration-700 dark:bg-gray-800',
@@ -133,14 +87,7 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
           )
         "
       >
-        <!--
-          场景舞台：以进入页面时的画布尺寸为基准整体等比缩放，
-          画布一变（收起圆桌/侧栏、窗口缩放、放映）内容就跟着一起变。
-        -->
-        <div
-          :class="cn('scene-stage', sceneBase ? 'absolute top-1/2 left-1/2' : 'size-full')"
-          :style="stageStyle"
-        >
+        <div class="scene-stage size-full">
           <!-- 课程完成页 -->
           <ClassroomComplete v-if="courseComplete" :stats="stats" />
 
@@ -175,18 +122,18 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
           </div>
 
           <!-- 播放提示按钮 -->
-          <button
+          <div
             v-if="showPlayHint && !courseComplete"
-            type="button"
-            class="absolute inset-0 z-[102] flex items-center justify-center"
-            @click="emit('toggle-play')"
+            class="pointer-events-none absolute inset-0 z-[102] flex items-center justify-center"
           >
-            <span
-              class="flex size-16 animate-pulse items-center justify-center rounded-full bg-brand-700/90 text-white shadow-lg shadow-brand-300/30"
+            <button
+              type="button"
+              class="pointer-events-auto flex size-16 animate-pulse items-center justify-center rounded-full bg-brand-700/90 text-white shadow-lg shadow-brand-300/30"
+              @click="emit('toggle-play')"
             >
               <Play class="ml-1 size-7" />
-            </span>
-          </button>
+            </button>
+          </div>
         </div>
       </div>
     </div>
