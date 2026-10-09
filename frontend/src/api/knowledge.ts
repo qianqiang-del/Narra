@@ -201,8 +201,8 @@ export const DEFAULT_UPLOAD_LIMITS: KnowledgeUploadLimits = {
  * 边界由后端给结论，前端拦错反而会让用户以为格式不被支持。
  */
 export const SUPPORTED_EXTENSIONS = [
-  '.md', '.markdown', '.txt', '.text', '.pdf',
-  '.docx', '.pptx', '.xlsx', '.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif',
+  '.md', '.markdown', '.txt', '.pdf',
+  '.docx', '.png', '.jpg', '.jpeg',
 ] as const
 
 /**
@@ -212,7 +212,7 @@ export const SUPPORTED_EXTENSIONS = [
  * **首次使用时触发环境准备**（现场下载解释器与依赖，分钟级）。所以"首次上传会慢一点"
  * 的提示必须按这条边界判断，别对着 .md 也说。
  */
-export const PLAIN_TEXT_EXTENSIONS = ['.md', '.markdown', '.txt', '.text'] as const
+export const PLAIN_TEXT_EXTENSIONS = ['.md', '.markdown', '.txt'] as const
 
 /** 这份文件是否需要 Python 解析器（即首次上传时可能要等环境准备） */
 export function needsDocumentParser(fileName: string): boolean {

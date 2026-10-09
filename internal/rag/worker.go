@@ -28,7 +28,7 @@ const unusablePathReason = "上传暂存文件不存在或路径无效"
 // 名字就是它的文档 ID（failed/<文档ID>/upload.<ext>）。
 //
 // 与待处理目录（pending/）用纳秒时间戳命名不同，这里用文档 ID 是因为归档的文件
-// 需要被反查：磁盘上捡到一份 upload.pptx，看目录名就知道它属于哪一篇、该不该清。
+// 需要被反查：磁盘上捡到一份 upload.docx，看目录名就知道它属于哪一篇、该不该清。
 const failedDirName = "failed"
 
 // 后台任务的节奏参数。刻意不做成配置：它们是"任务多久算死了"的内部一致性约束，

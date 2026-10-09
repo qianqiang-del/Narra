@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-vue-next'
 
+import { SUPPORTED_EXTENSIONS } from '@/api/knowledge'
 import type { ChatMessage } from '@/data/workspace'
 import { useUploadLimits } from '@/lib/upload-limits'
 import { cn } from '@/lib/utils'
@@ -50,6 +51,8 @@ const draft = ref('')
 const scrollRef = ref<HTMLDivElement | null>(null)
 
 /* ── 课程材料上传（与主页 GenerationToolbar 同款） ── */
+
+const acceptAttr = SUPPORTED_EXTENSIONS.join(',')
 
 interface MaterialItem {
   id: string
@@ -280,7 +283,7 @@ watch(
               type="file"
               multiple
               class="hidden"
-              accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.markdown,image/*"
+              :accept="acceptAttr"
               @change="onFilePick"
             />
           </label>

@@ -21,11 +21,11 @@ const plainParserName = "plain"
 // 设上限是为了让"传错了文件"变成一句明确的报错，而不是把内存吃满。
 const plainTextMaxBytes = 32 << 20
 
-// PlainTextParser 直接读取已经是纯文本的文档（.md / .markdown / .txt / .text），
+// PlainTextParser 直接读取已经是纯文本的文档（.md / .markdown / .txt），
 // 以及本质就是文本的源码与数据文件（.go / .py / .json 等，见 codeTextExtensions）。
 //
 // 它存在的理由是 PythonParser 的一条硬边界：python/parse_document.py 只处理
-// docx / pptx / xlsx / pdf 和图片，其它后缀一律抛 PARSER_UNSUPPORTED_TYPE。
+// docx / pdf 和图片，其它后缀一律抛 PARSER_UNSUPPORTED_TYPE。
 // 而知识库导入最常见的格式恰恰是 Markdown、纯文本与代码 —— 为了这些格式去起一个
 // Python 子进程（首次运行还要下载解释器和 docling，分钟级）既慢又没必要：
 // 它们的正文本来就是解析的目标产物，读出来即可，没有"解析"这一步可做。
@@ -36,7 +36,7 @@ type PlainTextParser struct{}
 var _ Parser = (*PlainTextParser)(nil)
 
 // plainTextExtensions 是本实现负责的后缀（全小写，含点）。
-var plainTextExtensions = []string{".md", ".markdown", ".txt", ".text"}
+var plainTextExtensions = []string{".md", ".markdown", ".txt"}
 
 // codeTextExtensions 是"本质上是文本"的源码与数据文件后缀。
 //

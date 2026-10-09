@@ -3,10 +3,10 @@
 文档解析模块
 
 将支持的文档转换为 Markdown 并输出 JSON:
-- .docx/.pptx/.xlsx 通过 Docling 转换,文档内图片导出为临时文件并以路径引用
+- .docx 通过 Docling 转换,文档内图片导出为临时文件并以路径引用
 - .pdf 优先提取数字版文字层；只有缺文字层的页才走 OCR —— 整份都没文字层的纯扫描件
   整份 OCR，文字层与扫描页混排的混合型只对缺文字层的扫描页 OCR，再按页号合并
-- .jpg/.jpeg/.png/.bmp/.tiff/.tif 使用 RapidOCR 直接识别
+- .jpg/.jpeg/.png 使用 RapidOCR 直接识别
 
 输出格式:JSON 对象,与 Go 侧 ingestion.ParseResult 字段一一对应:
 - markdown: 转换后的 Markdown 文本
@@ -41,7 +41,7 @@ try:
 except ImportError:
     from image_alt import build_image_markdown
 
-IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 
 @dataclass
@@ -86,8 +86,6 @@ def _get_docling_converter() -> Any:
                     format_options={
                         InputFormat.PDF: None,
                         InputFormat.DOCX: None,
-                        InputFormat.XLSX: None,
-                        InputFormat.PPTX: None,
                     }
                 )
     return _docling_converter
@@ -389,7 +387,7 @@ def parse_path(
     suffix = path.suffix.lower()
     result = ParseResult(metadata={"file_type": suffix})
     try:
-        if suffix in (".docx", ".pptx", ".xlsx"):
+        if suffix == ".docx":
             picture_recognizer = _build_picture_recognizer(
                 ocr_engine, api_base_url, api_key, api_model
             )
