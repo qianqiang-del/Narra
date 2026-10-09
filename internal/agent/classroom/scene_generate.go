@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -270,9 +268,8 @@ func persistSceneWithRetry(ctx context.Context, deps Deps, sceneID uint64, owner
 // 每段音频写库都要带 owner：段落本身没有租约，靠所属页面的租约保护。页面租约易主后，
 // 迟到的音频会被挡在库外——否则它会把上一版讲稿的录音挂到已经改过的段落上。
 func synthesizeSegments(ctx context.Context, deps Deps, classroomID, sceneID uint64, owner, voice string, segments []entity.SceneSegment, pool ttsLimiter) error {
-	dir := filepath.Join(deps.AudioDir, strconv.FormatUint(classroomID, 10))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+	if deps.Audio == nil {
+		return fmt.Errorf("课堂音频存储未接入，无法保存合成音频")
 	}
 	for i := range segments {
 		segment := &segments[i]
@@ -308,15 +305,11 @@ func synthesizeSegments(ctx context.Context, deps Deps, classroomID, sceneID uin
 			return err
 		}
 		name := strconv.FormatUint(segment.ID, 10) + ".wav"
-		tmp := filepath.Join(dir, name+".tmp")
-		if err := os.WriteFile(tmp, audio, 0o644); err != nil {
-			return err
+		audioPath, err := deps.Audio.Save(classroomID, name, audio)
+		if err != nil {
+			return fmt.Errorf("保存课堂音频 %s 失败: %w", name, err)
 		}
-		if err := os.Rename(tmp, filepath.Join(dir, name)); err != nil {
-			return err
-		}
-		rel := filepath.ToSlash(filepath.Join(strconv.FormatUint(classroomID, 10), name))
-		if err := deps.Segments.UpdateAudio(ctx, sceneID, segment.ID, owner, rel, entity.SceneSegmentStatusReady); err != nil {
+		if err := deps.Segments.UpdateAudio(ctx, sceneID, segment.ID, owner, audioPath, entity.SceneSegmentStatusReady); err != nil {
 			return err
 		}
 	}

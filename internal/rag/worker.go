@@ -276,20 +276,24 @@ func (w *Worker) runOnce(ctx context.Context) {
 //
 // 成败对暂存文件的处置：
 //   - 成功：内容已经进库，原件没有用了，删掉整个暂存目录；
-//   - 失败且失败现场已落库：原件**留下来**并归档到 failed/<文档ID>/ —— 它是 parse
-//     阶段重试的输入，删掉就等于把"重试这一份"的能力一起删了。归档本身还受租约
-//     保护：如果用户已经点了重试、新一轮接手，旧 Worker 彻底停手（见 archiveStagedFile）；
+//   - 失败且失败现场已落库、且原件在对象存储（metadata 有 upload_key）：本地只是
+//     临时区，直接清掉暂存即可 —— 原件始终在 OSS，重试按 key 重新下载；
+//   - 失败且失败现场已落库、本地模式：原件**留下来**并归档到 failed/<文档ID>/ ——
+//     它是 parse 阶段重试的输入，删掉就等于把"重试这一份"的能力一起删了。归档本身
+//     还受租约保护：如果用户已经点了重试、新一轮接手，旧 Worker 彻底停手
+//     （见 archiveStagedFile）；
 //   - 失败但失败现场没落库（旧租约迟到、行已被删、写库本身失败）：文件一个字节都不动。
 //     旧租约归档会把新一轮正在用的输入挪走；写库失败时留在原地，下一轮还能用。
 //     只有"文档确实已经不在了"这一种情况才清理暂存目录；
 //   - 取消（服务关停）：既不归档也不落终态，原件留在暂存目录不动 ——
 //     这一行很快会被周期 ResetStale 打回 pending，下次处理还要原样用它。
 func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocument, attempt int32) {
-	path := uploadPath(document.Metadata)
+	stagedPath := uploadPath(document.Metadata)
+	objectKey := uploadKey(document.Metadata)
 
 	// 处理之前按现实材料再算一次恢复点，而不是照抄行上的 ingest_stage：
 	// 用户点重试之后材料又少了（人工动库、操作失误）时，这里会自己退回还能走的那一步。
-	stage, err := w.resolveRecoveryStage(ctx, &document, path)
+	stage, err := w.resolveRecoveryStage(ctx, &document, stagedPath, objectKey)
 	if err != nil {
 		if errors.Is(err, ErrRecoveryInputMissing) {
 			// 原件、正文、切片全都不在了：只能失败并请用户重新上传。
@@ -302,12 +306,13 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 		return
 	}
 
-	// 只有真的要读原文件（parse）时才强制校验路径：chunk / embed 的输入在库里，
-	// 原件已经不在了也不该挡下它们。校验本身仍然必要 —— 路径从 metadata 里读出来，
+	// 只有真的要读原文件（parse）时才强制校验"原件可用"：本地暂存路径有效、
+	// 或对象存储里有 key，满足其一即可。校验本身仍然必要 —— 路径从 metadata 里读出来，
 	// 而 metadata 的写入者对路径没有任何约束力，不加这道判断就等于允许
 	// "构造一条记录、让后台进程删掉任意目录"。这道分支**不清理任何目录** ——
 	// 路径本身就不可信，filepath.Dir 指到哪儿都有可能。
-	if stage == entity.KnowledgeDocumentStageParse && (path == "" || !w.isUnderRoot(path)) {
+	if stage == entity.KnowledgeDocumentStageParse && objectKey == "" &&
+		(stagedPath == "" || !w.isUnderRoot(stagedPath)) {
 		payload, _ := json.Marshal(map[string]any{"error": unusablePathReason, "stage": "worker"})
 		applied, err := w.store.MarkFailed(ctx, document.ID, attempt, payload, unusablePathReason)
 		if err != nil {
@@ -323,8 +328,23 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 	stopHeartbeat := w.startHeartbeat(ctx, document.ID, attempt)
 	defer stopHeartbeat() // 必须用 defer：任务 panic 时也要把心跳停掉，否则这一行永远不会被回收
 
+	// 解析输入：本地暂存还在就直接用（上传后第一次解析的常规路径）；否则从对象存储
+	// 下载到 uploadRoot/work 下的临时目录，用完即删。chunk / embed 的输入在库里，
+	// 不需要原件，也就不做这次下载。
+	inputPath := stagedPath
+	if stage == entity.KnowledgeDocumentStageParse && objectKey != "" && !w.usableLocalStagedFile(stagedPath) {
+		downloaded, cleanup, downloadErr := w.downloadOriginal(document.ID, attempt, objectKey)
+		if downloadErr != nil {
+			_, _ = w.ingester.failIngest(ctx, &document, attempt, "parse", downloadErr)
+			w.discardStagedFile(stagedPath)
+			return
+		}
+		defer cleanup()
+		inputPath = downloaded
+	}
+
 	_, err = w.ingester.processExistingFile(ctx, &document, FileInput{
-		Path:      path,
+		Path:      inputPath,
 		Title:     taskTitle(document.Metadata, document.Title),
 		SourceURI: sourceURI(document),
 	}, attempt, stage)
@@ -333,7 +353,7 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 		if errors.Is(err, context.Canceled) {
 			logger.Info("收录任务被取消，暂存文件保留等待周期回收",
 				zap.Uint64("document_id", document.ID),
-				zap.String("path", path),
+				zap.String("path", stagedPath),
 			)
 			return
 		}
@@ -343,12 +363,18 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 		logger.Warn("文件收录失败",
 			zap.Uint64("document_id", document.ID),
 			zap.Int32("ingest_attempt", attempt),
-			zap.String("path", path),
+			zap.String("path", stagedPath),
 			zap.Error(err),
 		)
 
 		if failureRecorded(err) {
-			w.archiveStagedFile(ctx, document.ID, attempt, path)
+			if objectKey != "" {
+				// 对象存储是原件的唯一存储：失败不需要归档，本地临时文件直接清掉，
+				// 重试时按 upload_key 重新下载（归档目录只是本地模式的补丁）。
+				w.discardStagedFile(stagedPath)
+				return
+			}
+			w.archiveStagedFile(ctx, document.ID, attempt, stagedPath)
 			return
 		}
 
@@ -357,11 +383,11 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 		if !w.ingester.documentExists(document.ID) {
 			logger.Info("文档已被删除，不再归档失败原件，直接清理暂存目录",
 				zap.Uint64("document_id", document.ID))
-			w.discardStagedFile(path)
+			w.discardStagedFile(stagedPath)
 		}
 		return
 	}
-	w.discardStagedFile(path)
+	w.discardStagedFile(stagedPath)
 }
 
 // resolveRecoveryStage 按现实材料算这次从哪一步开始（见 ResolveRecoveryStage）。
@@ -370,16 +396,18 @@ func (w *Worker) processOne(ctx context.Context, document entity.KnowledgeDocume
 // （调用方不该把一次查询失败记成文档失败，留给周期回收重试）；材料全无时返回
 // ErrRecoveryInputMissing，由调用方写成终态并把"重新上传"告诉用户。
 //
-// 原件的判断只看"路径存在且文件还在"；路径是否落在上传根目录内由 processOne 在
-// 确定要走 parse 之后再核对（那是防越界删除的安全边界，不是恢复点计算的一部分）。
-func (w *Worker) resolveRecoveryStage(ctx context.Context, document *entity.KnowledgeDocument, path string) (string, error) {
+// 原件的判断有两种形态：本地暂存文件存在（含旧数据），或对象存储里有 upload_key。
+// key 存在即视为可用，不做 HeadObject 预检 —— 真下载失败会在解析阶段报明确错误。
+// 路径是否落在上传根目录内由 processOne 在确定要走 parse 之后再核对
+// （那是防越界删除的安全边界，不是恢复点计算的一部分）。
+func (w *Worker) resolveRecoveryStage(ctx context.Context, document *entity.KnowledgeDocument, path, objectKey string) (string, error) {
 	counts, err := w.store.CountChunksByDocument(ctx, []uint64{document.ID})
 	if err != nil {
 		return "", fmt.Errorf("统计已落库的切片失败: %w", err)
 	}
 
-	hasOriginal := false
-	if strings.TrimSpace(path) != "" {
+	hasOriginal := strings.TrimSpace(objectKey) != ""
+	if !hasOriginal && strings.TrimSpace(path) != "" {
 		if _, err := os.Stat(path); err == nil {
 			hasOriginal = true
 		}
@@ -585,6 +613,45 @@ func uploadPath(raw json.RawMessage) string {
 	}
 	path, _ := metadata["upload_path"].(string)
 	return strings.TrimSpace(path)
+}
+
+// uploadKey 从 metadata 里读原件的对象存储 key，读不到返回空串。
+func uploadKey(raw json.RawMessage) string {
+	var metadata map[string]any
+	if json.Unmarshal(raw, &metadata) != nil {
+		return ""
+	}
+	key, _ := metadata["upload_key"].(string)
+	return strings.TrimSpace(key)
+}
+
+// usableLocalStagedFile 判断本地暂存路径能否直接作为解析输入：
+// 必须在 uploadRoot 之内且确实是文件。对象存储模式下它不是唯一来源 ——
+// 不可用时回落到从 OSS 下载（见 downloadOriginal）。
+func (w *Worker) usableLocalStagedFile(path string) bool {
+	if path == "" || !w.isUnderRoot(path) {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// downloadOriginal 把对象存储里的原件下载到 uploadRoot/work/<文档ID>-<租约>/ 下的临时文件，
+// 返回本地路径与清理函数。
+//
+// 目录带租约编号：同一文档被周期回收后重新认领时，新执行者的下载目录不会与旧执行者
+// 撞名；旧目录由旧执行者的 cleanup 负责，进程被杀时残留的也只是一个不再被使用的目录。
+func (w *Worker) downloadOriginal(documentID uint64, attempt int32, objectKey string) (string, func(), error) {
+	dir := filepath.Join(w.uploadRoot, "work", fmt.Sprintf("%d-%d", documentID, attempt))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", func() {}, fmt.Errorf("创建解析临时目录失败: %w", err)
+	}
+	dest := filepath.Join(dir, "upload"+safeObjectExtension(objectKey))
+	if err := w.ingester.FetchOriginal(objectKey, dest); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", func() {}, fmt.Errorf("从对象存储下载原件失败: %w", err)
+	}
+	return dest, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 // taskTitle 决定这条任务该用什么标题。

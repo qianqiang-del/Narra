@@ -6,9 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -70,11 +67,17 @@ type classroomService struct {
 	materials  materialDocumentReader
 	queue      JobQueue
 	tx         repository.TransactionManager
-	// audioDir 是课堂音频的根目录，删除课堂时按 <audioDir>/<课堂 ID> 清理。
-	audioDir string
+	// audio 是课堂音频的清理入口（本地目录或对象存储）；nil 表示未接入，删除时跳过。
+	audio classroomAudioStore
 }
 
-// NewClassroomService 构造课堂服务。queue 受理成功后投递生成任务，audioDir 供删除课堂时清理音频。
+// classroomAudioStore 是删除课堂时对音频存储的最小依赖面；
+// classroom.AudioStore（本地实现与 OSS 实现）都满足它。
+type classroomAudioStore interface {
+	RemoveClassroom(classroomID uint64) error
+}
+
+// NewClassroomService 构造课堂服务。queue 受理成功后投递生成任务，audio 供删除课堂时清理音频。
 func NewClassroomService(
 	classrooms repository.ClassroomRepository,
 	agents repository.ClassroomAgentRepository,
@@ -84,7 +87,7 @@ func NewClassroomService(
 	materials materialDocumentReader,
 	queue JobQueue,
 	tx repository.TransactionManager,
-	audioDir string,
+	audio classroomAudioStore,
 ) ClassroomService {
 	return &classroomService{
 		classrooms: classrooms,
@@ -95,7 +98,7 @@ func NewClassroomService(
 		materials:  materials,
 		queue:      queue,
 		tx:         tx,
-		audioDir:   audioDir,
+		audio:      audio,
 	}
 }
 
@@ -527,15 +530,16 @@ func classroomMaterialIDs(raw json.RawMessage) []uint64 {
 	return materialDocumentIDs(config.Materials)
 }
 
-// removeAudio 删掉这门课的音频目录。删的是本程序自己写出去的目录，
-// 路径由 audioDir 加课程 ID 拼成，不含任何外部输入。
+// removeAudio 删掉这门课的音频（本地目录或对象存储）。
+//
+// 本地模式下删的是本程序自己写出去的目录，路径由音频根目录加课堂 ID 拼成；
+// 对象存储模式下按知识空间里的音频前缀删除，社区 ID 同样来自数据库，不含外部输入。
 func (s *classroomService) removeAudio(classroomID uint64) error {
-	if s.audioDir == "" {
+	if s.audio == nil {
 		return nil
 	}
-	dir := filepath.Join(s.audioDir, strconv.FormatUint(classroomID, 10))
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("删除音频目录 %s 失败: %w", dir, err)
+	if err := s.audio.RemoveClassroom(classroomID); err != nil {
+		return fmt.Errorf("删除课堂 %d 的音频失败: %w", classroomID, err)
 	}
 	return nil
 }

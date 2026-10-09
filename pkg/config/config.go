@@ -131,7 +131,39 @@ type StorageConfig struct {
 	AudioDir  string `mapstructure:"audio_dir"`
 	// KnowledgeDir 是知识库资产的持久目录：解析产出的图片发布在这里（见 internal/rag/documentimage），
 	// 与 upload_dir 的暂存定位不同 —— 暂存文件收录成功即删，这里的内容要活到文档删除为止。
-	KnowledgeDir string `mapstructure:"knowledge_dir"`
+	// 启用 OSS 后本目录退化为历史数据目录：读取旧文件仍可用，新内容一律进 OSS。
+	KnowledgeDir string           `mapstructure:"knowledge_dir"`
+	OSS          OSSStorageConfig `mapstructure:"oss"`
+}
+
+// OSSStorageConfig 是阿里云 OSS 的接入配置。
+//
+// 启用后原件、文档图片与课堂音频统一存进 OSS；本地目录只保留上传解析所需的临时区。
+// 凭证建议走环境变量 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，别写进仓库里的 yaml。
+type OSSStorageConfig struct {
+	Enabled         bool          `mapstructure:"enabled"`
+	Endpoint        string        `mapstructure:"endpoint"`          // Bucket 所在地域的服务地址，如 oss-cn-hangzhou.aliyuncs.com
+	Bucket          string        `mapstructure:"bucket"`            // Bucket 名称；需配置为公共读（图片/音频直链播放）
+	AccessKeyID     string        `mapstructure:"access_key_id"`     // RAM 用户 AccessKey ID
+	AccessKeySecret string        `mapstructure:"access_key_secret"` // RAM 用户 AccessKey Secret
+	Timeout         time.Duration `mapstructure:"timeout"`           // 单次对象操作读写超时；<=0 用 30s
+}
+
+// Validate 校验对象存储配置：启用时四项接入信息缺一不可。
+func (c StorageConfig) Validate() error {
+	if !c.OSS.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.OSS.Endpoint) == "" {
+		return fmt.Errorf("storage.oss.endpoint 不能为空（启用 OSS 时必填）")
+	}
+	if strings.TrimSpace(c.OSS.Bucket) == "" {
+		return fmt.Errorf("storage.oss.bucket 不能为空（启用 OSS 时必填）")
+	}
+	if strings.TrimSpace(c.OSS.AccessKeyID) == "" || strings.TrimSpace(c.OSS.AccessKeySecret) == "" {
+		return fmt.Errorf("storage.oss.access_key_id / access_key_secret 不能为空（可用环境变量 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET 覆盖）")
+	}
+	return nil
 }
 
 // WorkerConfig 是后台生成任务的执行配置。

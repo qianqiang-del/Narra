@@ -11,7 +11,7 @@ import TraceTimeline from './TraceTimeline.vue'
 import DiscussionModelSelector from './DiscussionModelSelector.vue'
 
 import { cn } from '@/lib/utils'
-import { registerAudio } from '@/lib/audioPlayback'
+import { registerAudio, resolveAudioSrc } from '@/lib/audioPlayback'
 import { discussionStatus } from '@/lib/discussionAppearance'
 import type { DiscussionTrace } from '@/lib/discussionTrace'
 import type { Bubble, ChatNote, ChatSession, Participant } from '@/types/classroom'
@@ -113,7 +113,7 @@ function playAudio(path?: string | null, text?: string, id?: string) {
   if (props.running || props.sending) return
   const normalized = path?.trim().replaceAll('\\', '/')
   if (normalized) {
-    const player = new Audio(`/audio/${normalized}`)
+    const player = new Audio(resolveAudioSrc(normalized))
     registerAudio(player)
     if (text && id) emit('audio-caption', { id, text })
     player.onended = () => {
