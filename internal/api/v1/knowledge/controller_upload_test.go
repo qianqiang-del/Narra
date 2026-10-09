@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -120,7 +121,7 @@ func pendingEntries(t *testing.T, root string) []os.DirEntry {
 	return entries
 }
 
-// 批量上传的主路径：两个文件一次提交，202 + 逐项 pending，各自落在独立的随机目录里。
+// 批量上传的主路径：两个文件一次提交，202 + 逐项 pending，各自落在独立的暂存目录里。
 func TestUploadBatchAcceptsFiles(t *testing.T) {
 	svc := &stubUploadService{}
 	controller, root := newUploadController(t, svc, config.KnowledgeIngestConfig{})
@@ -161,22 +162,34 @@ func TestUploadBatchAcceptsFiles(t *testing.T) {
 		t.Errorf("原始文件名 = %q，期望保留用户看到的名字", batch.Items[0].OriginalName)
 	}
 
-	// 落盘路径由服务端随机生成，与原始文件名无关：目录名必须是 32 位随机十六进制。
+	// 落盘路径由服务端生成，与原始文件名无关：目录名是本地时间戳（可按名字排序，
+	// 重试碰撞时带 -N 后缀）。
 	if len(svc.submitted) != 2 {
 		t.Fatalf("提交次数 = %d，期望 2", len(svc.submitted))
 	}
-	randomDir := regexp.MustCompile(`^[0-9a-f]{32}$`)
+	stagingDir := regexp.MustCompile(`^\d{8}-\d{6}\.\d{9}(-\d+)?$`)
 	for index, input := range svc.submitted {
 		dir := filepath.Dir(input.Path)
 		if !strings.HasPrefix(dir, filepath.Join(root, "pending")) {
 			t.Errorf("第 %d 个文件落在受控目录之外: %s", index+1, dir)
 		}
-		if !randomDir.MatchString(filepath.Base(dir)) {
-			t.Errorf("第 %d 个文件的目录名 %q 不是随机十六进制", index+1, filepath.Base(dir))
+		if !stagingDir.MatchString(filepath.Base(dir)) {
+			t.Errorf("第 %d 个文件的目录名 %q 不是时间戳格式", index+1, filepath.Base(dir))
 		}
 		if _, err := os.Stat(input.Path); err != nil {
 			t.Errorf("第 %d 个文件应当已落盘: %v", index+1, err)
 		}
+	}
+}
+
+// 暂存目录名：时间戳可按名字排序；重试后缀保证碰撞后名字一定变化（时钟没走也不打转）。
+func TestStagingDirNameIsSortableTimestamp(t *testing.T) {
+	first := stagingDirName(0)
+	if _, err := time.ParseInLocation("20060102-150405.000000000", first, time.Local); err != nil {
+		t.Fatalf("目录名不是时间戳格式: %q (%v)", first, err)
+	}
+	if retry := stagingDirName(1); !strings.HasSuffix(retry, "-1") || retry == first {
+		t.Fatalf("重试名应带 -1 后缀且不同于首次: first=%q retry=%q", first, retry)
 	}
 }
 
