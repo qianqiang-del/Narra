@@ -351,6 +351,7 @@ export default {
     saving: 'Saving',
     save: 'Save',
     rerank: 'Rerank Models',
+    vlm: 'Vision Models',
     mcpTools: 'MCP Tools',
   },
   mcp: {

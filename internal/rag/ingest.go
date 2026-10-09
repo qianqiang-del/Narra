@@ -153,6 +153,15 @@ type TxRunner interface {
 	Run(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
+// VisionProvider 提供当前启用的视觉模型（VLM）配置：设置页维护，启用即生效。
+//
+// 收录链路在每次解析前现取一次 —— 与 embedding / rerank 的常驻运行时不同，
+// 视觉配置只在这一个点用到，没有需要热推送的理由（实现方是 vlm 设置服务）。
+// 返回 ok = false 表示"未启用视觉理解"，不是错误。
+type VisionProvider interface {
+	CurrentVision(ctx context.Context) (documentparser.VLMConfig, bool, error)
+}
+
 // IngestOptions 是收录器的运行约束，由配置与装配点注入。
 type IngestOptions struct {
 	// Tx 跨表写入的事务管理器，SubmitFile 与 Retry 依赖它。必须非 nil：
@@ -175,6 +184,9 @@ type IngestOptions struct {
 	// （IngestText、纯文本解析）可以不依赖它 —— 解析出图片却没接发布器时收录会
 	// 明确失败，而不是等临时目录一删、正文里的引用全变成死链（见 backfillImages）。
 	Images ImagePublisher
+
+	// Vision 是视觉模型配置的提供者；nil 表示未接入（解析只走 OCR）。
+	Vision VisionProvider
 
 	// MaterialTTL 是课程材料（Purpose = material）未关联课堂时的保留时长。
 	// <= 0 按默认 7 天处理；只在上传建行时用来算 expires_at。
@@ -201,6 +213,8 @@ type Ingester struct {
 	embedding *embedding.Manager
 	parser    documentparser.Parser
 	images    ImagePublisher
+	// vision 是当前启用的视觉模型配置来源；nil 表示未接入（解析只走 OCR）。
+	vision VisionProvider
 
 	// tx 与 queueCapacity 由 SubmitFile / Retry 使用：每次提交在事务里先校验队列
 	// 还有没有空位，再落三张表的行。
@@ -334,6 +348,7 @@ func NewIngester(
 		embedding:     embeddingManager,
 		parser:        parser,
 		images:        options.Images,
+		vision:        options.Vision,
 		tx:            options.Tx,
 		queueCapacity: options.QueueCapacity,
 		materialTTL:   materialTTL,
@@ -610,8 +625,21 @@ func (i *Ingester) processExistingFile(
 		if err != nil {
 			return i.failIngest(ctx, document, attempt, "select_parser", err)
 		}
+		request := documentparser.Request{Path: input.Path}
+		// 视觉配置每次解析现取：设置页启停/改模型后，下一份文档立即生效。
+		// 取配置失败降级为纯 OCR（告警），不让整个收录失败 —— 视觉描述是增量，
+		// 本地 OCR 的正文仍然完整可用。
+		if i.vision != nil {
+			vision, ok, err := i.vision.CurrentVision(ctx)
+			if err != nil {
+				logger.Warn("读取视觉模型配置失败，本次解析只走 OCR",
+					zap.Uint64("document_id", document.ID), zap.Error(err))
+			} else if ok {
+				request.VLM = &vision
+			}
+		}
 		started := time.Now().UTC()
-		result, err := parser.Parse(ctx, documentparser.Request{Path: input.Path})
+		result, err := parser.Parse(ctx, request)
 		if err != nil {
 			return i.failIngest(ctx, document, attempt, "parse", err)
 		}
@@ -631,10 +659,18 @@ func (i *Ingester) processExistingFile(
 			title = preferHeadingTitle(title, markdown)
 		}
 
-		metadata := marshalMetadata(map[string]any{
+		parseMetadata := map[string]any{
 			"parser":   parserName(result),
 			"parse_ms": time.Since(started).Milliseconds(),
-		})
+		}
+		// 视觉理解的现场（启用了哪个模型 / 是否发生降级 / 调用了几次）由脚本写进
+		// metadata，原样带进文档行，排障时不必翻 worker 日志。
+		for _, key := range []string{"vision", "vlm_model", "vlm_calls", "vision_fallback"} {
+			if value, ok := result.Metadata[key]; ok {
+				parseMetadata[key] = value
+			}
+		}
+		metadata := marshalMetadata(parseMetadata)
 		if err := store.SaveParsedContent(ctx, document.ID, attempt, entity.ParsedContent{
 			Title:    truncateTitle(title),
 			Content:  markdown,

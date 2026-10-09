@@ -40,6 +40,13 @@ const (
 	// 100 页按本地小模型的速度大致是几分钟，留得出余量给后续的切分与向量化。
 	defaultMaxOCRPages = 100
 
+	// defaultMaxVLMCalls 单次解析允许调用视觉模型（VLM）的次数上限
+	// （扫描页 + 内嵌图 + 独立图片合计）。
+	//
+	// 与 OCR 不同，视觉调用按量计费：不设闸门时一份图超多的文档能把预算直接烧穿。
+	// 超限快速失败（错误码 PARSER_TOO_MANY_VLM_CALLS），提示调大 document_parser.max_vlm_calls。
+	defaultMaxVLMCalls = 100
+
 	scriptName       = "parse_document.py"
 	requirementsName = "requirements.txt"
 )
@@ -76,6 +83,9 @@ type Config struct {
 	// MaxOCRPages 单次解析允许 OCR 的页数上限，必须为正。
 	// 超过时脚本快速失败（PARSER_TOO_MANY_OCR_PAGES），避免一份大扫描件占满解析预算。
 	MaxOCRPages int
+	// MaxVLMCalls 单次解析允许调用视觉模型（VLM）的次数上限（扫描页 + 内嵌图 + 独立图片
+	// 合计），必须为正。超过时脚本快速失败（PARSER_TOO_MANY_VLM_CALLS）。
+	MaxVLMCalls int
 	// OCREngine 见 OCREngineXxx 常量。
 	OCREngine string
 	// OCRAPIBaseURL / OCRAPIKey / OCRAPIModel 仅在 OCREngine 为 api 时使用。
@@ -116,6 +126,9 @@ func (c Config) WithDefaults() Config {
 	if c.MaxOCRPages <= 0 {
 		c.MaxOCRPages = defaultMaxOCRPages
 	}
+	if c.MaxVLMCalls <= 0 {
+		c.MaxVLMCalls = defaultMaxVLMCalls
+	}
 	if strings.TrimSpace(c.OCREngine) == "" {
 		c.OCREngine = OCREngineRapidOCR
 	}
@@ -144,6 +157,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxOCRPages <= 0 {
 		return fmt.Errorf("document_parser.max_ocr_pages 必须大于 0")
+	}
+	if c.MaxVLMCalls <= 0 {
+		return fmt.Errorf("document_parser.max_vlm_calls 必须大于 0")
 	}
 
 	switch c.OCREngine {

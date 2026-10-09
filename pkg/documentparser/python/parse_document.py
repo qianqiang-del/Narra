@@ -7,6 +7,8 @@
 - .pdf 优先提取数字版文字层；只有缺文字层的页才走 OCR —— 整份都没文字层的纯扫描件
   整份 OCR，文字层与扫描页混排的混合型只对缺文字层的扫描页 OCR，再按页号合并
 - .jpg/.jpeg/.png 使用 RapidOCR 直接识别
+- 视觉模型（VLM）由设置页启用：启用后每个视觉单元（扫描页 / 内嵌图 / 独立图片）
+  在 OCR 之外额外生成一段图片描述；单次调用失败自动降级为纯 OCR，不中断解析
 
 输出格式:JSON 对象,与 Go 侧 ingestion.ParseResult 字段一一对应:
 - markdown: 转换后的 Markdown 文本
@@ -160,6 +162,133 @@ def _run_pdf_ocr(
     return markdown, pages, "rapidocr"
 
 
+# PDF 扫描页渲染精度。与 rapid_ocr / api_ocr 的 OCR_DPI 保持一致：两边看的是同一张
+# 渲染图，精度不一致只会让"OCR 与视觉描述对不上"这类问题变得难查。
+PDF_RENDER_DPI = 200
+
+
+def _vision_markdown(description: str, text: str) -> str:
+    """组合一个视觉单元的输出：图片描述段 + OCR 文字段（空段自动省略）。"""
+    blocks: list[str] = []
+    if description.strip():
+        blocks.append("## 图片内容\n\n" + description.strip())
+    if text.strip():
+        blocks.append("## 图中文字\n\n" + text.strip())
+    return "\n\n".join(blocks)
+
+
+class VisionRunner:
+    """视觉理解调用器：计数、硬闸门、失败降级与现场记录。
+
+    启用条件是"设置页存在启用中的视觉模型配置"（由 Go 侧把地址与模型名随请求下发）。
+    任何一次调用失败都只降级为纯 OCR 并留 stderr 日志 —— 视觉描述是增量信息，不该
+    拖垮整份文档；只有"需要的图片数超过闸门"才快速失败（与 max_ocr_pages 同理，
+    视觉调用按量计费，不设限能把预算烧穿）。
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: int,
+        max_calls: int,
+        result: ParseResult,
+    ) -> None:
+        self.base_url = (base_url or "").strip()
+        self.api_key = api_key or ""
+        self.model = (model or "").strip()
+        self.timeout = timeout if timeout and timeout > 0 else 120
+        self.max_calls = max_calls
+        self.result = result
+        self.calls = 0
+        self.fallback = False
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.base_url and self.model)
+
+    def __bool__(self) -> bool:
+        # 未启用时让 `if vision:` 为假，调用点的判断保持一行。
+        return self.enabled
+
+    def describe(self, image: Path) -> str:
+        return self._call(image, bytes_mode=False)
+
+    def describe_bytes(self, data: bytes, mime: str) -> str:
+        return self._call((data, mime), bytes_mode=True)
+
+    def _call(self, image: Any, bytes_mode: bool) -> str:
+        if not self.enabled:
+            return ""
+        if self.max_calls > 0 and self.calls >= self.max_calls:
+            raise ParserError(
+                "PARSER_TOO_MANY_VLM_CALLS",
+                f"这份文档需要视觉理解的图片/页面超过单次上限 {self.max_calls} 张；"
+                "请拆分文件，或调大 document_parser.max_vlm_calls",
+            )
+        self.calls += 1
+        try:
+            try:
+                from .vlm_image import describe_image, describe_image_bytes
+            except ImportError:
+                from vlm_image import describe_image, describe_image_bytes
+            if bytes_mode:
+                data, mime = image
+                description = describe_image_bytes(
+                    data, mime, self.base_url, self.api_key, self.model, self.timeout
+                )
+            else:
+                description = describe_image(
+                    image, self.base_url, self.api_key, self.model, self.timeout
+                )
+        except Exception as exc:  # noqa: BLE001 - 调用失败只降级，不让整篇解析失败
+            print(f"视觉模型调用失败，本次降级为纯 OCR: {exc}", file=sys.stderr)
+            self.fallback = True
+            return ""
+        if not description.strip():
+            print("视觉模型返回空描述，本次降级为纯 OCR", file=sys.stderr)
+            self.fallback = True
+            return ""
+        return description
+
+    def finalize(self) -> None:
+        """把视觉理解的现场写进 metadata；未启用时什么都不写。"""
+        if not self.enabled:
+            return
+        self.result.metadata["vision"] = "ocr+vlm"
+        self.result.metadata["vlm_model"] = self.model
+        self.result.metadata["vlm_calls"] = self.calls
+        if self.fallback:
+            self.result.metadata["vision_fallback"] = True
+
+
+def _descriptions_for_pages(
+    path: Path, pages: list[dict[str, Any]], vision: VisionRunner
+) -> dict[int, str]:
+    """渲染指定页（只包含"OCR 出了字"的页）并逐页取视觉描述。
+
+    空白页不描述：为一个没有内容的页面付一次视觉调用，只是花钱买噪音。
+    单页调用失败由 VisionRunner 记降级并返回空串，不影响其它页。
+    """
+    wanted = {page["number"] for page in pages if str(page.get("text", "")).strip()}
+    if not wanted:
+        return {}
+    descriptions: dict[int, str] = {}
+    import fitz  # PyMuPDF，延迟导入：纯文字层路径完全不需要它
+
+    pdf = fitz.open(str(path))
+    try:
+        for number, page in enumerate(pdf, start=1):
+            if number not in wanted:
+                continue
+            image_bytes = page.get_pixmap(dpi=PDF_RENDER_DPI).tobytes("png")
+            descriptions[number] = vision.describe_bytes(image_bytes, "image/png")
+    finally:
+        pdf.close()
+    return descriptions
+
+
 def ocr_image_api(path: Path, base_url: str, api_key: str, model: str) -> str:
     """Call the optional API OCR backend only when it is selected."""
     try:
@@ -221,6 +350,7 @@ def _convert_with_docling(
     result: ParseResult,
     recognizer: Callable[[Path], str] | None,
     work_dir: str = "",
+    vision: VisionRunner | None = None,
 ) -> str:
     """使用 Docling 转换文档；Office 图片导出到 work_dir 下的 images/ 目录。
 
@@ -256,7 +386,14 @@ def _convert_with_docling(
                 image_path.write_bytes(image_data)
                 posix = image_path.as_posix()
                 result.picture_paths.append(posix)
-                replacements.append(build_image_markdown(image_path, recognizer))
+                image_markdown = build_image_markdown(image_path, recognizer)
+                if vision:
+                    description = vision.describe(image_path)
+                    if description:
+                        # 描述接在图片引用之后：alt 里那 200 字的 OCR 摘要放不下
+                        # 图表的关键数据，而描述正是为检索这些内容准备的。
+                        image_markdown = f"{image_markdown}\n\n**图片内容**：{description}"
+                replacements.append(image_markdown)
             except Exception as exc:  # noqa: BLE001
                 print(f"图片导出失败: {exc}", file=sys.stderr)
                 replacements.append("[图片: 导出失败]")
@@ -292,6 +429,7 @@ def _parse_pdf(
     api_key: str,
     api_model: str,
     max_ocr_pages: int = 0,
+    vision: VisionRunner | None = None,
 ) -> str:
     """逐页决定走文字层还是 OCR。
 
@@ -322,6 +460,17 @@ def _parse_pdf(
                 "fallback_reason": "text_layer_empty",
             }
         )
+        if vision:
+            # 视觉描述只加在"OCR 出了字"的页上，并按页号重建分块，页序与标记保持原样。
+            descriptions = _descriptions_for_pages(path, result.pages, vision)
+            blocks: list[str] = []
+            for page in result.pages:
+                block = _vision_markdown(
+                    descriptions.get(page["number"], ""), page.get("text", "")
+                )
+                if block:
+                    blocks.append(f"<!-- page:{page['number']} -->\n{block}")
+            markdown = "\n\n".join(blocks).strip()
         return markdown
 
     # 有文字层、且没有缺文字层的扫描页：纯文字层路径，完全不加载 OCR 依赖
@@ -339,14 +488,18 @@ def _parse_pdf(
         path, ocr_engine, api_base_url, api_key, api_model, scanned_pages
     )
     ocr_by_number = {page["number"]: page for page in ocr_pages}
+    descriptions: dict[int, str] = {}
+    if vision:
+        descriptions = _descriptions_for_pages(path, ocr_pages, vision)
 
     merged_pages: list[dict[str, Any]] = []
     blocks: list[str] = []
     for page in pages:
         merged = ocr_by_number.get(page["number"], page)
         merged_pages.append(merged)
-        if merged["text"]:
-            blocks.append(f"<!-- page:{page['number']} -->\n{merged['text']}")
+        block = _vision_markdown(descriptions.get(page["number"], ""), merged["text"])
+        if block:
+            blocks.append(f"<!-- page:{page['number']} -->\n{block}")
 
     result.pages = merged_pages
     print(
@@ -375,6 +528,11 @@ def parse_path(
     api_model: str = "",
     work_dir: str = "",
     max_ocr_pages: int = 100,
+    vlm_api_url: str = "",
+    vlm_api_key: str = "",
+    vlm_api_model: str = "",
+    vlm_timeout: int = 0,
+    max_vlm_calls: int = 100,
 ) -> ParseResult:
     """Parse one supported file without writing protocol output."""
     if not path.is_file():
@@ -383,29 +541,35 @@ def parse_path(
         raise ParserError("PARSER_OCR_ENGINE_INVALID", "不支持的 OCR 引擎")
     if ocr_engine == "api" and not api_base_url:
         raise ParserError("PARSER_OCR_CONFIG_MISSING", "未配置 OCR API 服务地址")
+    vlm_api_url = (vlm_api_url or "").strip()
+    vlm_api_model = (vlm_api_model or "").strip()
+    if bool(vlm_api_url) != bool(vlm_api_model):
+        raise ParserError("PARSER_VLM_CONFIG_MISSING", "视觉模型的地址与模型名必须同时提供")
 
     suffix = path.suffix.lower()
     result = ParseResult(metadata={"file_type": suffix})
+    vision = VisionRunner(vlm_api_url, vlm_api_key, vlm_api_model, vlm_timeout, max_vlm_calls, result)
     try:
         if suffix == ".docx":
             picture_recognizer = _build_picture_recognizer(
                 ocr_engine, api_base_url, api_key, api_model
             )
             result.markdown = _convert_with_docling(
-                path, result, picture_recognizer, work_dir
+                path, result, picture_recognizer, work_dir, vision
             )
             result.metadata["parser"] = "docling"
         elif suffix == ".pdf":
             result.markdown = _parse_pdf(
-                path, result, ocr_engine, api_base_url, api_key, api_model, max_ocr_pages
+                path, result, ocr_engine, api_base_url, api_key, api_model, max_ocr_pages, vision
             )
         elif suffix in IMAGE_EXTENSIONS:
             if ocr_engine == "api":
-                result.markdown = ocr_image_api(path, api_base_url, api_key, api_model)
+                text = ocr_image_api(path, api_base_url, api_key, api_model)
                 result.metadata["parser"] = "api_ocr"
             else:
-                result.markdown = ocr_image(path)
+                text = ocr_image(path)
                 result.metadata["parser"] = "rapidocr"
+            result.markdown = _vision_markdown(vision.describe(path), text)
         else:
             raise ParserError("PARSER_UNSUPPORTED_TYPE", f"不支持的文档类型: {suffix}")
     except ParserError:
@@ -413,6 +577,7 @@ def parse_path(
     except Exception as exc:
         print(f"parser failed: {exc}", file=sys.stderr)
         raise ParserError("PARSER_FAILED", "文档解析失败") from exc
+    vision.finalize()
     return result
 
 
@@ -444,6 +609,29 @@ def main() -> None:
         default=100,
         help="单次解析允许 OCR 的页数上限；超过则快速失败（0 表示不限）",
     )
+    parser.add_argument(
+        "--vlm-api-url",
+        default="",
+        help="视觉模型服务地址（OpenAI 兼容，不含 /chat/completions）；留空表示只走 OCR",
+    )
+    parser.add_argument(
+        "--vlm-api-key",
+        default=os.environ.get("NARRA_VLM_API_KEY", ""),
+        help="视觉模型 API Key；默认读环境变量 NARRA_VLM_API_KEY，避免密钥出现在进程命令行里",
+    )
+    parser.add_argument("--vlm-api-model", default="", help="视觉模型名称，如 Qwen/Qwen3.5-35B-A3B")
+    parser.add_argument(
+        "--vlm-timeout",
+        type=int,
+        default=120,
+        help="单张图片的视觉请求超时秒数（默认 120）",
+    )
+    parser.add_argument(
+        "--max-vlm-calls",
+        type=int,
+        default=100,
+        help="单次解析允许调用视觉模型的次数上限（扫描页 + 内嵌图 + 独立图片；0 表示不限）",
+    )
     args = parser.parse_args()
     try:
         result = parse_path(
@@ -454,6 +642,11 @@ def main() -> None:
             args.ocr_api_model,
             args.work_dir,
             args.max_ocr_pages,
+            args.vlm_api_url,
+            args.vlm_api_key,
+            args.vlm_api_model,
+            args.vlm_timeout,
+            args.max_vlm_calls,
         )
     except ParserError as exc:
         fail(exc.code, exc.message)
