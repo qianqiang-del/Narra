@@ -347,6 +347,7 @@ export default {
     saving: '保存中',
     save: '保存',
     rerank: '重排模型',
+    vlm: '视觉模型',
     mcpTools: 'MCP 工具',
   },
   mcp: {

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // 错误码。前 5 个与 python/parse_document.py 的 error_code 一一对应；后 3 个是 Go 侧新增的
@@ -26,11 +27,21 @@ const (
 	CodeTimeout            = "PARSER_TIMEOUT"
 	CodeEncodingInvalid    = "PARSER_ENCODING_INVALID"
 
+	// CodeVLMConfigMissing 由脚本报出：命令行给了视觉模型地址却没有模型名
+	// （或反之）。Go 侧只在"启用配置存在"时才下发参数，正常路径到不了这里，
+	// 它是脚本被直接调用或参数拼装出错时的兜底。
+	CodeVLMConfigMissing = "PARSER_VLM_CONFIG_MISSING"
+
 	// CodeTooManyOCRPages 由脚本报出：需要 OCR 的页数超过单次上限。
 	// 它是为"别让一份几百页的扫描件把 worker 占满整个解析预算"设的闸门：
 	// 超限时快速失败（这是用户可自己解决的——拆文件或调大上限），
 	// 而不是跑到超时才被杀、然后重试再来一遍。
 	CodeTooManyOCRPages = "PARSER_TOO_MANY_OCR_PAGES"
+
+	// CodeTooManyVLMCalls 由脚本报出：需要调用视觉模型的视觉单元（扫描页、
+	// 内嵌图、独立图片）数量超过单次上限。视觉调用按量计费，不设闸门时
+	// 一份图超多的文档能把预算直接烧穿；超限同样快速失败，提示调大配置。
+	CodeTooManyVLMCalls = "PARSER_TOO_MANY_VLM_CALLS"
 
 	// CodeOCRFailedPages 由 Go 侧在解析成功后按 pages 里的 failed 标记产出：
 	// 有页 OCR 失败意味着正文不完整，宁可整篇失败也不静默少页（见 rag.ocrCoverageError）。
@@ -109,6 +120,10 @@ func defaultUserMessage(code string) string {
 		return "文档解析环境准备超时"
 	case CodeTooManyOCRPages:
 		return "需要 OCR 的页数超过上限"
+	case CodeTooManyVLMCalls:
+		return "需要视觉理解的图片或页面数量超过上限"
+	case CodeVLMConfigMissing:
+		return "这份文件需要视觉模型理解，但配置不完整"
 	case CodeOCRFailedPages:
 		return "部分页面 OCR 失败，正文不完整"
 	case CodeTimeout:
@@ -255,6 +270,22 @@ func (r *Result) Cleanup() error {
 	return os.RemoveAll(r.WorkDir)
 }
 
+// VLMConfig 是运行时视觉模型（VLM）配置。
+//
+// 与 OCR 参数不同：OCR 引擎设置来自静态配置（config.yaml），而 VLM 由设置页维护在
+// 数据库里 —— 收录链路每次解析现取现传，所以它挂在 Request 上而不是 Config 里。
+// nil 表示未启用：解析只走 OCR，行为与没有这个功能时完全一致。
+type VLMConfig struct {
+	// APIBaseURL 服务根地址（不含 /chat/completions 路径），如 https://api.siliconflow.cn/v1。
+	APIBaseURL string
+	// APIKey 明文密钥；通过环境变量传给脚本，不会出现在进程命令行里。
+	APIKey string
+	// Model 视觉模型 ID，如 Qwen/Qwen3.5-35B-A3B。
+	Model string
+	// Timeout 单张图片的请求超时；<=0 时由脚本用默认值。
+	Timeout time.Duration
+}
+
 // Request 是一次解析请求，留空的字段回落到 Config 的同名配置。
 type Request struct {
 	// Path 待解析文件的路径。
@@ -266,6 +297,9 @@ type Request struct {
 	OCRAPIBaseURL string
 	OCRAPIKey     string
 	OCRAPIModel   string
+	// VLM 启用时，脚本会对每个视觉单元（扫描页、内嵌图、独立图片）额外调用一次
+	// 视觉模型生成描述；调用失败自动降级为纯 OCR，不中断解析。
+	VLM *VLMConfig
 }
 
 // Status 描述解析能力的就绪状态。
@@ -462,6 +496,19 @@ func (p *PythonParser) Parse(ctx context.Context, req Request) (result *Result, 
 	if model := firstNonEmpty(req.OCRAPIModel, p.cfg.OCRAPIModel); model != "" {
 		args = append(args, "--ocr-api-model", model)
 	}
+	if req.VLM != nil {
+		args = append(args,
+			"--vlm-api-url", strings.TrimSpace(req.VLM.APIBaseURL),
+			"--vlm-api-model", strings.TrimSpace(req.VLM.Model),
+		)
+		if req.VLM.Timeout > 0 {
+			args = append(args, "--vlm-timeout", strconv.Itoa(int(req.VLM.Timeout/time.Second)))
+		}
+		// 单文档视觉调用上限是解析护栏，来自静态配置（与 max_ocr_pages 同级）。
+		if p.cfg.MaxVLMCalls > 0 {
+			args = append(args, "--max-vlm-calls", strconv.Itoa(p.cfg.MaxVLMCalls))
+		}
+	}
 
 	stdout, stderr, err := p.runner.Run(parseCtx, "", p.pythonEnv(req), python, args...)
 	if err != nil {
@@ -547,7 +594,7 @@ func (p *PythonParser) snapshot() (*Runtime, bool, string) {
 
 // pythonEnv 传给脚本的环境变量。
 //
-// OCR 密钥走环境变量而不是命令行参数：命令行会出现在进程列表里，同一台机器上的
+// OCR / VLM 密钥走环境变量而不是命令行参数：命令行会出现在进程列表里，同一台机器上的
 // 其他用户可以直接看到，而设置页保存的密钥是加密存储的。
 func (p *PythonParser) pythonEnv(req Request) []string {
 	env := []string{
@@ -557,6 +604,9 @@ func (p *PythonParser) pythonEnv(req Request) []string {
 	}
 	if key := firstNonEmpty(req.OCRAPIKey, p.cfg.OCRAPIKey); key != "" {
 		env = append(env, "NARRA_OCR_API_KEY="+key)
+	}
+	if req.VLM != nil && req.VLM.APIKey != "" {
+		env = append(env, "NARRA_VLM_API_KEY="+req.VLM.APIKey)
 	}
 	return env
 }

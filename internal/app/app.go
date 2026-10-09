@@ -166,6 +166,7 @@ func (a *App) initDatabase() error {
 		&entity.MCPServer{},
 		&entity.LLMProvider{},
 		&entity.RerankSetting{},
+		&entity.VLMSetting{},
 	); err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
 	}
@@ -220,6 +221,7 @@ func (a *App) initDependencies() error {
 	mcpServerRepo := repository.NewMCPServerRepository(a.postgresDB)
 	llmProviderRepo := repository.NewLLMProviderRepository(a.postgresDB)
 	rerankSettingRepo := repository.NewRerankSettingRepository(a.postgresDB)
+	vlmSettingRepo := repository.NewVLMSettingRepository(a.postgresDB)
 	// 重排运行时：检索侧每次请求向它要"当前生效的精排客户端"，设置页保存/启停后
 	// 由服务层热更新（见 rerankSettingSvc 的 LoadActive 与 reload）；nil = 精排关闭。
 	rerankManager := rerank.NewManager()
@@ -273,6 +275,11 @@ func (a *App) initDependencies() error {
 		return fmt.Errorf("MCP 初始化失败: %w", err)
 	}
 
+	// 视觉模型（VLM）配置：设置页维护"多存一条、同时只启用一条"，收录解析时
+	// 按需读取启用中的那条下发给 Python 脚本（见 rag.IngestOptions.Vision）。
+	// 与重排/嵌入不同，这里没有常驻运行时需要推送：解析是按次读库的。
+	vlmSettingSvc := service.NewVLMSettingService(vlmSettingRepo, encryptionKey)
+
 	// ========== 创建 Router ==========
 	// 收录链路归 internal/rag，服务层只做 DTO 映射与文档查询。与 MCP 同一种装法：
 	// 运行时模块（rag.Ingester / mcp.Manager）在这里建好，再作为依赖注入服务层。
@@ -303,6 +310,7 @@ func (a *App) initDependencies() error {
 			QueueCapacity:        knowledgeIngest.QueueCapacity,
 			EmbeddingConcurrency: knowledgeIngest.EmbeddingConcurrency,
 			Images:               imageStore,
+			Vision:               vlmSettingSvc,
 			MaterialTTL:          knowledgeIngest.MaterialTTL,
 		})
 	uploadDir := a.cfg.Storage.UploadDir
@@ -511,7 +519,7 @@ func (a *App) initDependencies() error {
 
 	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo)
 	traceSvc := service.NewTraceService(runRepo, turnRepo, traceSpanRepo)
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, classroomSvc, folderSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, traceSvc, uploadDir, parser, knowledgeIngest)
+	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, vlmSettingSvc, classroomSvc, folderSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, traceSvc, uploadDir, parser, knowledgeIngest)
 	return nil
 }
 
@@ -539,6 +547,7 @@ func newDocumentParser(cfg *config.Config) documentparser.Parser {
 		ParseTimeout:   cfg.DocumentParser.Timeout,
 		PrepareTimeout: cfg.DocumentParser.PrepareTimeout,
 		MaxOCRPages:    cfg.DocumentParser.MaxOCRPages,
+		MaxVLMCalls:    cfg.DocumentParser.MaxVLMCalls,
 		OCREngine:      cfg.DocumentParser.OCREngine,
 		OCRAPIBaseURL:  cfg.DocumentParser.OCRAPIBaseURL,
 		OCRAPIKey:      cfg.DocumentParser.OCRAPIKey,

@@ -13,6 +13,7 @@ import (
 	"narra/internal/api/v1/role"
 	scenev1 "narra/internal/api/v1/scene"
 	tracev1 "narra/internal/api/v1/trace"
+	"narra/internal/api/v1/vlm"
 	"narra/internal/api/v1/voice"
 	"narra/internal/middleware"
 	"narra/internal/service"
@@ -30,6 +31,7 @@ type Router struct {
 	mcpCtrl          *mcpv1.Controller
 	llmCtrl          *llm.Controller
 	rerankCtrl       *rerank.Controller
+	vlmCtrl          *vlm.Controller
 	classroomCtrl    *classroomv1.Controller
 	folderCtrl       *folderv1.Controller
 	knowledgeCtrl    *knowledgev1.Controller
@@ -40,7 +42,7 @@ type Router struct {
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, rerankSvc service.RerankSettingService, classroomSvc service.ClassroomService, folderSvc service.FolderService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, traceSvc service.TraceService, uploadDir string, parser documentparser.Parser, knowledgeLimits config.KnowledgeIngestConfig) *Router {
+func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, rerankSvc service.RerankSettingService, vlmSvc service.VLMSettingService, classroomSvc service.ClassroomService, folderSvc service.FolderService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, traceSvc service.TraceService, uploadDir string, parser documentparser.Parser, knowledgeLimits config.KnowledgeIngestConfig) *Router {
 	return &Router{
 		roleCtrl:         role.NewController(roleSvc),
 		embeddingCtrl:    embedding.NewController(embeddingSvc),
@@ -48,6 +50,7 @@ func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettin
 		mcpCtrl:          mcpv1.NewController(mcpSvc),
 		llmCtrl:          llm.NewController(llmSvc),
 		rerankCtrl:       rerank.NewController(rerankSvc),
+		vlmCtrl:          vlm.NewController(vlmSvc),
 		classroomCtrl:    classroomv1.NewController(classroomSvc),
 		folderCtrl:       folderv1.NewController(folderSvc),
 		knowledgeCtrl:    knowledgev1.NewController(knowledgeSvc, uploadDir, parser, knowledgeLimits),
@@ -83,6 +86,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		mcpv1.RegisterRoutes(v1, r.mcpCtrl)
 		llm.RegisterRoutes(v1, r.llmCtrl)
 		rerank.RegisterRoutes(v1, r.rerankCtrl)
+		vlm.RegisterRoutes(v1, r.vlmCtrl)
 		classroomv1.RegisterRoutes(v1, r.classroomCtrl)
 		folderv1.RegisterRoutes(v1, r.folderCtrl)
 		knowledgev1.RegisterRoutes(v1, r.knowledgeCtrl)

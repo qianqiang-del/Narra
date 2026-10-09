@@ -42,6 +42,7 @@ func Load(configPath string) (*Config, error) {
 	// OCR 是逐页推理：页数不设限时，一份几百页的扫描件会把唯一的 worker 占满整个解析预算
 	// （期间上传入口 409），而且大概率撞超时、重试又从第 1 页重来。超限快速失败。
 	v.SetDefault("document_parser.max_ocr_pages", 100)
+	v.SetDefault("document_parser.max_vlm_calls", 100)
 	v.SetDefault("document_parser.python_version", "3.12")
 	v.SetDefault("document_parser.ocr_engine", "rapidocr")
 	v.SetDefault("storage.upload_dir", "data/uploads")

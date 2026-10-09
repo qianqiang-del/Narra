@@ -4,7 +4,7 @@
  * 使用左侧导航组织设置项，便于后续扩展更多配置页面。
  */
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
-import { ArrowUpDown, Bot, Database, Monitor, Moon, Palette, Plug, Plus, SlidersHorizontal, Sun, Timer, Trash2, Wifi, X } from 'lucide-vue-next'
+import { ArrowUpDown, Bot, Database, Monitor, Moon, Palette, Plug, Plus, ScanEye, SlidersHorizontal, Sun, Timer, Trash2, Wifi, X } from 'lucide-vue-next'
 import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'
@@ -14,18 +14,21 @@ import type { McpServer } from '@/api/mcp'
 import { useMcpStore } from '@/stores/mcp'
 import { useLlmStore } from '@/stores/llm'
 import { useRerankStore } from '@/stores/rerank'
+import { useVlmStore } from '@/stores/vlm'
 import LlmSettingsSection from '@/components/home/LlmSettingsSection.vue'
 import RerankSettingsSection from '@/components/home/RerankSettingsSection.vue'
+import VLMSettingsSection from '@/components/home/VLMSettingsSection.vue'
 import { detectNativeEmbeddingEndpoint, type NativeEmbeddingHint } from '@/lib/embeddingEndpoint'
 import { cn } from '@/lib/utils'
 
 const open = defineModel<boolean>('open', { default: false })
-const activeSection = defineModel<'theme' | 'llm' | 'embedding' | 'rerank' | 'mcp'>('section', { default: 'theme' })
+const activeSection = defineModel<'theme' | 'llm' | 'embedding' | 'rerank' | 'vlm' | 'mcp'>('section', { default: 'theme' })
 
 const { t } = useI18n()
 const { mode, setMode } = useTheme()
 const llmStore = useLlmStore()
 const rerankStore = useRerankStore()
+const vlmStore = useVlmStore()
 
 const mcpStore = useMcpStore()
 const { servers: mcpServers, loading: mcpLoading } = storeToRefs(mcpStore)
@@ -98,6 +101,11 @@ function openLlm() {
 function openRerank() {
   activeSection.value = 'rerank'
   void rerankStore.loadModels()
+}
+
+function openVlm() {
+  activeSection.value = 'vlm'
+  void vlmStore.loadModels()
 }
 
 let testTimer: ReturnType<typeof setTimeout> | null = null
@@ -467,6 +475,14 @@ function openEmbedding() {
             </button>
             <button
               type="button"
+              :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'vlm' ? 'bg-brand-100 text-brand-800 dark:bg-brand-600/15 dark:text-brand-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
+              @click="openVlm"
+            >
+              <ScanEye class="size-4" />
+              {{ t('settings.vlm') }}
+            </button>
+            <button
+              type="button"
               :class="cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors', activeSection === 'mcp' ? 'bg-brand-100 text-brand-800 dark:bg-brand-600/15 dark:text-brand-200' : 'text-muted-foreground hover:bg-muted hover:text-foreground')"
               @click="openMcp"
             >
@@ -603,6 +619,8 @@ function openEmbedding() {
           </section>
 
           <RerankSettingsSection v-else-if="activeSection === 'rerank'" />
+
+          <VLMSettingsSection v-else-if="activeSection === 'vlm'" />
 
           <section v-else-if="activeSection === 'mcp'" class="space-y-5">
             <div class="flex items-start justify-between gap-3 pr-8">
