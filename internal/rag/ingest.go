@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -64,12 +65,26 @@ type UploadRecordStore interface {
 // ImagePublisher 把解析产出的图片发布到持久存储，返回"临时路径 → 对外 URL"的映射。
 //
 // 解析脚本导出的图片放在临时目录里（见 documentparser.Result.WorkDir），收录链路
-// 必须在清理它之前完成发布与回填（见 Ingester.backfillImages）。生产装配注入的是
-// internal/rag/documentimage 的本地存储；将来换对象存储时换掉实现即可。
+// 必须在清理它之前完成发布与回填（见 Ingester.backfillImages）。生产装配注入本地
+// 存储（documentimage.Store）或对象存储（documentimage.OSSStore），两种实现同形。
 type ImagePublisher interface {
 	// Publish 发布一篇文档的图片。任何一张失败都返回错误，调用方据此整篇失败，
 	// 而不是把本地路径留在正文里变成死链。
 	Publish(documentID uint64, paths []string) (map[string]string, error)
+}
+
+// FileStore 是上传原件的对象存储面。
+//
+// 接入后原件以对象存储为唯一存储：SubmitFile 先把本地暂存文件传上去、把 key 写进
+// metadata（upload_key），解析成功即删本地；解析失败也不再把原件归档到磁盘，重试时
+// 由 Worker 按 key 重新下载（见 worker.go）。nil 表示未接入，原件只留本地（旧行为）。
+type FileStore interface {
+	// PutFile 把本地文件上传为 key；同 key 覆盖，重试幂等。
+	PutFile(key, filePath string) error
+	// GetToFile 把 key 下载到本地路径，供解析阶段使用。
+	GetToFile(key, filePath string) error
+	// Delete 删除一个 key；key 不存在不报错。
+	Delete(key string) error
 }
 
 // ModelRegistry 是收录与检索两条链路对向量模型登记的最小依赖面。
@@ -185,6 +200,11 @@ type IngestOptions struct {
 	// 明确失败，而不是等临时目录一删、正文里的引用全变成死链（见 backfillImages）。
 	Images ImagePublisher
 
+	// Files 是上传原件的对象存储；nil 表示原件只留本地（本地部署模式）。
+	// 接入后 SubmitFile 会把原件上传并记 upload_key，解析失败不再归档本地文件，
+	// 重试按 key 重新下载（见 worker.go 的 prepareParseInput）。
+	Files FileStore
+
 	// Vision 是视觉模型配置的提供者；nil 表示未接入（解析只走 OCR）。
 	Vision VisionProvider
 
@@ -213,6 +233,8 @@ type Ingester struct {
 	embedding *embedding.Manager
 	parser    documentparser.Parser
 	images    ImagePublisher
+	// files 是原件的对象存储；nil 表示本地模式（原件留在 upload 目录）。
+	files FileStore
 	// vision 是当前启用的视觉模型配置来源；nil 表示未接入（解析只走 OCR）。
 	vision VisionProvider
 
@@ -348,6 +370,7 @@ func NewIngester(
 		embedding:     embeddingManager,
 		parser:        parser,
 		images:        options.Images,
+		files:         options.Files,
 		vision:        options.Vision,
 		tx:            options.Tx,
 		queueCapacity: options.QueueCapacity,
@@ -411,11 +434,12 @@ func (i *Ingester) acquireEmbeddingSlot(ctx context.Context) (func(), error) {
 // SubmitFile 创建待处理文档并持久化任务路径，实际处理由 Worker 完成。
 //
 // 返回时文档是 pending，正文与切片都还是空的，调用方拿 id 去轮询即可。
-// metadata 里给 worker 留两个键：upload_path 是磁盘上的暂存文件，
-// explicit_title 记录调用方有没有指定过标题 —— 后者决定 worker 要不要
-// 用正文的一级标题替换掉这个暂时代替标题的文件名。
+// metadata 里给 worker 留三个键：upload_path 是磁盘上的暂存文件、upload_key 是
+// 对象存储里的原件（接入时才有，见 IngestOptions.Files）、explicit_title 记录调用方
+// 有没有指定过标题 —— 后者决定 worker 要不要用正文的一级标题替换文件名的暂时代替标题。
 //
-// 三件事在**一个事务**里完成：校验队列空位、建文档行、写 upload_path 与上传记录。
+// 三件事在**一个事务**里完成：校验队列空位、建文档行、写 metadata 与上传记录。
+// 接入对象存储时上传在事务之前完成，建行失败会补偿删除对象（没有行认领的孤儿）。
 // 批量上传时调用方逐文件调用它，每个文件独立成败：某个文件撞上队列满或写库失败只
 // 回滚它自己，此前已提交的文件不受影响。
 func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResult, error) {
@@ -442,6 +466,20 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 	metadata := map[string]any{
 		"upload_path":    path,
 		"explicit_title": strings.TrimSpace(input.Title) != "",
+	}
+
+	// 对象存储模式：先把原件传上去，再把 key 写进 metadata。
+	//
+	// 顺序是先传文件、后开事务建行：key 由时间戳+随机后缀生成，不依赖文档 ID。
+	// 上传失败直接拒绝这一份 —— 不建行、不占队列位；建行失败（队列满、写库失败）
+	// 则由下面的补偿删除把对象清掉。两步之间文档尚未存在，worker 看不到任何中间态。
+	uploadKey := ""
+	if i.files != nil {
+		uploadKey = newUploadObjectKey(path)
+		if err := i.files.PutFile(uploadKey, path); err != nil {
+			return IngestResult{}, fmt.Errorf("上传原件到对象存储失败: %w", err)
+		}
+		metadata["upload_key"] = uploadKey
 	}
 	payload, _ := json.Marshal(metadata)
 
@@ -480,18 +518,71 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 		return nil
 	})
 	if err != nil {
+		// 建行失败时清掉刚上传的对象：没有文档行认领它，留着就是一份永远没人回收的孤儿。
+		// 删除失败只留告警 —— 补偿动作失败不能盖住原始的提交错误。
+		if uploadKey != "" {
+			if deleteErr := i.files.Delete(uploadKey); deleteErr != nil {
+				logger.Warn("清理未入队原件对象失败，对象可能残留",
+					zap.String("key", uploadKey), zap.Error(deleteErr))
+			}
+		}
 		return IngestResult{}, err
 	}
 	return IngestResult{Document: document}, nil
+}
+
+// FetchOriginal 把一份原件从对象存储下载到本地路径，供 Worker 在解析阶段使用。
+//
+// 只在 metadata 里确实有 upload_key 时才会被调用；未接入对象存储时返回错误，
+// 由调用方转成明确的收录失败。
+func (i *Ingester) FetchOriginal(key, destPath string) error {
+	if i.files == nil {
+		return fmt.Errorf("原件的对象存储未接入")
+	}
+	return i.files.GetToFile(key, destPath)
+}
+
+// uploadObjectKeyPrefix 是上传原件在对象存储里的 key 空间。
+const uploadObjectKeyPrefix = "knowledge/uploads"
+
+// newUploadObjectKey 生成原件 key：knowledge/uploads/<日期>/<纳秒时间戳>-<随机后缀><文件后缀>。
+//
+// 日期目录让运维能按天对账与清理；时间戳+随机后缀保证批量上传不重名。
+// 后缀来自服务端落盘时的命名（upload.<ext>，见 controller.stageUpload），
+// 解析器按它选实现，所以必须保留；取值仍按不可信输入清洗（见 safeObjectExtension）。
+func newUploadObjectKey(path string) string {
+	var random [4]byte
+	_, _ = rand.Read(random[:])
+	now := time.Now()
+	return fmt.Sprintf("%s/%s/%d-%s%s",
+		uploadObjectKeyPrefix,
+		now.Format("20060102"),
+		now.UnixNano(),
+		hex.EncodeToString(random[:]),
+		safeObjectExtension(path))
+}
+
+// safeObjectExtension 提取文件后缀，只保留小写字母数字组成的短后缀；异常取值返回空串。
+func safeObjectExtension(path string) string {
+	extension := strings.ToLower(filepath.Ext(strings.TrimSpace(path)))
+	if len(extension) < 2 || len(extension) > 10 {
+		return ""
+	}
+	for _, char := range extension[1:] {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') {
+			return ""
+		}
+	}
+	return extension
 }
 
 // Retry 把一条收录失败的文档重新入队，由 Worker 再跑一遍。
 //
 // stage 是调用方（服务层）按现实材料算好的恢复点，见 ResolveRecoveryStage：
 // 有切片重向量化、没切片有正文重分块、都没了才重新解析原文件。
-// 它只改状态与阶段、不碰文件：原件在失败时就被 worker 归档到了 failed/<文档ID>/，
-// metadata 里的 upload_path 指着那里（见 worker.archiveStagedFile），
-// 下一轮轮询自然会照常把这一行捡起来。
+// 它只改状态与阶段、不碰文件：本地模式下原件在失败时被 worker 归档到 failed/<文档ID>/，
+// metadata 里的 upload_path 指着那里；对象存储模式下原件始终在 OSS，重试时由 worker
+// 按 upload_key 重新下载（见 worker.prepareParseInput）。下一轮轮询都会照常捡起这一行。
 //
 // 返回 false 表示这一行不满足重试条件 —— 不存在，或状态已经不是 failed
 // （另一个请求抢先重试了，或它已经被删掉）。这不是错误，调用方按"不需要重试"处理。

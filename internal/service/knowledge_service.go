@@ -17,7 +17,6 @@ import (
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
 	"narra/internal/rag"
-	"narra/internal/rag/documentimage"
 	"narra/pkg/logger"
 )
 
@@ -312,10 +311,12 @@ func (s *knowledgeService) resolveRecoveryStage(ctx context.Context, document *e
 		return "", fmt.Errorf("统计已落库的切片失败: %w", err)
 	}
 
-	hasOriginal := false
-	if path := metadataUploadPath(document.Metadata); path != "" && s.isUploadPath(path) {
-		if _, err := os.Stat(path); err == nil {
-			hasOriginal = true
+	hasOriginal := strings.TrimSpace(metadataUploadKey(document.Metadata)) != ""
+	if !hasOriginal {
+		if path := metadataUploadPath(document.Metadata); path != "" && s.isUploadPath(path) {
+			if _, err := os.Stat(path); err == nil {
+				hasOriginal = true
+			}
 		}
 	}
 
@@ -427,13 +428,29 @@ func (s *knowledgeService) Reembed(ctx context.Context) (responsedto.KnowledgeRe
 // 队列容量不再是这里的事：判定与建行必须原子，已经下沉到 rag.Ingester.SubmitFile /
 // Retry 的事务里（见那里的说明）。服务层因此没有"上传中"这个状态，也不需要进程内的锁。
 type knowledgeService struct {
-	documents    documentQuerier
-	records      uploadRecordStore
-	ingester     ingester
-	retriever    retriever
-	models       embeddingModels
-	uploadDir    string
-	knowledgeDir string
+	documents documentQuerier
+	records   uploadRecordStore
+	ingester  ingester
+	retriever retriever
+	models    embeddingModels
+	uploadDir string
+	// images 是文档图片的删除入口（本地目录或对象存储）；nil 表示未接入，跳过图片清理。
+	images documentImageStore
+	// files 是原件对象存储的删除入口（按 metadata.upload_key 删）；nil 表示本地模式。
+	files uploadObjectStore
+}
+
+// documentImageStore 是服务层删除文档时对图片存储的最小依赖面。
+// documentimage.Store（本地）与 documentimage.OSSStore（对象存储）同形。
+type documentImageStore interface {
+	// RemoveDocument 清理一篇文档发布出去的全部图片；不存在时幂等成功。
+	RemoveDocument(documentID uint64) error
+}
+
+// uploadObjectStore 是服务层删除文档时对原件对象存储的最小依赖面。
+type uploadObjectStore interface {
+	// Delete 删除一个 key；key 不存在不报错。
+	Delete(key string) error
 }
 
 var _ KnowledgeService = (*knowledgeService)(nil)
@@ -443,27 +460,29 @@ var _ KnowledgeService = (*knowledgeService)(nil)
 // retriever 可以传 nil（见 retriever 的说明），models 必须非 nil ——
 // EmbeddingStatus 与 Reembed 以当前默认模型为准，"缺哪个模型的向量"没有它算不出来。
 //
-// assetDirs 是可选参数（早期调用点只传四个依赖），按位置传：[0] 上传暂存目录，
-// 必须与 controller、worker 用同一个值 —— 删除文档时靠它判断一条记录的 upload_path
-// 是否可信；[1] 知识资产目录，删除文档时顺带清掉它发布出去的图片。
-// 不传（空串）时对应的清理动作整体跳过，删除功能不受影响。
-func NewKnowledgeService(documents documentQuerier, records uploadRecordStore, ingester ingester, retriever retriever, models embeddingModels, assetDirs ...string) KnowledgeService {
-	uploadDir := ""
-	if len(assetDirs) > 0 {
-		uploadDir = assetDirs[0]
-	}
-	knowledgeDir := ""
-	if len(assetDirs) > 1 {
-		knowledgeDir = assetDirs[1]
-	}
+// uploadDir 必须与 controller、worker 用同一个值 —— 删除文档时靠它判断一条记录的
+// upload_path 是否可信。images / files 是资产清理入口：本地部署传
+// documentimage.Store 与 nil；对象存储部署传 OSS 实现，nil 表示对应清理整体跳过，
+// 删除功能不受影响。
+func NewKnowledgeService(
+	documents documentQuerier,
+	records uploadRecordStore,
+	ingester ingester,
+	retriever retriever,
+	models embeddingModels,
+	uploadDir string,
+	images documentImageStore,
+	files uploadObjectStore,
+) KnowledgeService {
 	return &knowledgeService{
-		documents:    documents,
-		records:      records,
-		ingester:     ingester,
-		retriever:    retriever,
-		models:       models,
-		uploadDir:    uploadDir,
-		knowledgeDir: knowledgeDir,
+		documents: documents,
+		records:   records,
+		ingester:  ingester,
+		retriever: retriever,
+		models:    models,
+		uploadDir: uploadDir,
+		images:    images,
+		files:     files,
 	}
 }
 
@@ -680,8 +699,8 @@ func (s *knowledgeService) Preview(ctx context.Context, id uint64) (responsedto.
 // 暂存目录要额外判断"是否落在自己管的上传目录内"：upload_path 来自 metadata，
 // 没有任何东西约束它的取值，构造一条记录就能指向任意路径 ——
 // 少了这道判断，等于把"删除任意目录"的能力交给了能写这张表的人。
-// 图片目录没有这个问题：它按文档 ID 拼出（见 documentimage.RemoveDocument），
-// 不存在 metadata 那种"写什么就删什么"的风险。
+// 图片与原件对象没有这个问题：前者按文档 ID 拼出、后者按 metadata 里的 key 删，
+// 都不存在"把路径当删除目标"的风险（见 documentImageStore / uploadObjectStore）。
 //
 // ⚠️ 已知短板：存储的 Delete 目前靠类型断言取（见 documentQuerier 的注释），
 // 且目录清理失败会被静默忽略（内容已经进库，残留只是占磁盘，但排查时看不到痕迹）。
@@ -706,21 +725,38 @@ func (s *knowledgeService) Delete(ctx context.Context, id uint64) error {
 		s.discardStagingDir(path)
 	}
 	s.discardDocumentImages(id)
+	s.deleteUploadObject(metadataUploadKey(document.Metadata))
 	return nil
 }
 
-// discardDocumentImages 清理一篇文档发布出去的图片（见 documentimage）。
+// discardDocumentImages 清理一篇文档发布出去的图片（本地目录或对象存储，见 documentimage）。
 //
 // 与暂存目录一样，失败只留 warning：文档行已经删了，这里再报错也无法回滚，
-// 残留的只是磁盘占用。目录按文档 ID 拼出，不存在 upload_path 那种任意路径的风险；
-// 未配置知识目录时整体跳过（早期调用点）。
+// 残留的只是资产占用。图片按文档 ID 定位，不存在 upload_path 那种任意路径的风险；
+// 未接入图片存储时整体跳过（早期调用点）。
 func (s *knowledgeService) discardDocumentImages(documentID uint64) {
-	if strings.TrimSpace(s.knowledgeDir) == "" {
+	if s.images == nil {
 		return
 	}
-	if err := documentimage.RemoveDocument(s.knowledgeDir, documentID); err != nil {
-		logger.Warn("清理知识文档图片失败，目录可能残留",
+	if err := s.images.RemoveDocument(documentID); err != nil {
+		logger.Warn("清理知识文档图片失败，资产可能残留",
 			zap.Uint64("document_id", documentID),
+			zap.Error(err),
+		)
+	}
+}
+
+// deleteUploadObject 删除一篇文档在对象存储里的原件（metadata.upload_key）。
+//
+// 与暂存目录清理互补：本地模式的备注见 discardStagingDir；对象存储模式下原件不落
+// 失败归档目录，metadata 里的 key 是它唯一的定位。key 不存在时实现方静默成功。
+func (s *knowledgeService) deleteUploadObject(key string) {
+	if s.files == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	if err := s.files.Delete(key); err != nil {
+		logger.Warn("删除原件对象失败，对象可能残留",
+			zap.String("key", key),
 			zap.Error(err),
 		)
 	}
@@ -911,9 +947,11 @@ func (s *knowledgeService) DeleteUploadRecord(ctx context.Context, id uint64) er
 	}
 
 	stagedPath := ""
+	uploadObjectKey := ""
 	if record.DocumentID != nil {
 		if document, err := s.documents.GetByID(ctx, *record.DocumentID); err == nil {
 			stagedPath = metadataUploadPath(document.Metadata)
+			uploadObjectKey = metadataUploadKey(document.Metadata)
 		}
 	}
 
@@ -924,6 +962,7 @@ func (s *knowledgeService) DeleteUploadRecord(ctx context.Context, id uint64) er
 	if stagedPath != "" && s.removableStagingDir(stagedPath) {
 		s.discardStagingDir(stagedPath)
 	}
+	s.deleteUploadObject(uploadObjectKey)
 	return nil
 }
 
@@ -997,6 +1036,16 @@ func metadataUploadPath(raw json.RawMessage) string {
 	}
 	path, _ := metadata["upload_path"].(string)
 	return strings.TrimSpace(path)
+}
+
+// metadataUploadKey 从 metadata 里取原件的对象存储 key，读不到返回空串。
+func metadataUploadKey(raw json.RawMessage) string {
+	var metadata map[string]any
+	if json.Unmarshal(raw, &metadata) != nil {
+		return ""
+	}
+	key, _ := metadata["upload_key"].(string)
+	return strings.TrimSpace(key)
 }
 
 // isUploadPath 判断路径是否落在本服务配置的上传目录之内。

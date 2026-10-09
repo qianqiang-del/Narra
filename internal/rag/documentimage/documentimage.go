@@ -60,6 +60,14 @@ func NewStore(knowledgeDir string) (*Store, error) {
 // ImagesDir 返回图片根目录的绝对路径，供静态路由挂载。
 func (s *Store) ImagesDir() string { return s.imagesDir }
 
+// RemoveDocument 删掉一篇文档发布出去的全部图片（本地实现）。
+//
+// 与包级 RemoveDocument 是同一个动作，提供实例方法是为了让服务层按接口注入：
+// 本地实现与 OSS 实现同形，调用方不必关心资产存在哪儿。
+func (s *Store) RemoveDocument(documentID uint64) error {
+	return os.RemoveAll(filepath.Join(s.imagesDir, strconv.FormatUint(documentID, 10)))
+}
+
 // Publish 把 paths 里的图片复制进持久目录，返回"原路径 → 对外 URL"的映射。
 //
 // 任何一张图片发布失败都返回错误：调用方（收录链路）据此整篇失败，而不是把

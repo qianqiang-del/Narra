@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -474,4 +475,82 @@ func TestWorkerRunsTasksConcurrently(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("两条任务没有都收尾，实际状态 %v", store.queuedStatuses())
+}
+
+// fakeFileStore 是 FileStore 的内存替身：下载按 key 查表写文件，够测下载路径即可。
+type fakeFileStore struct {
+	objects map[string][]byte
+}
+
+func (f *fakeFileStore) PutFile(key, filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+	f.objects[key] = data
+	return nil
+}
+
+func (f *fakeFileStore) GetToFile(key, dest string) error {
+	data, ok := f.objects[key]
+	if !ok {
+		return fmt.Errorf("对象 %s 不存在", key)
+	}
+	return os.WriteFile(dest, data, 0o644)
+}
+
+func (f *fakeFileStore) Delete(key string) error {
+	delete(f.objects, key)
+	return nil
+}
+
+// 对象存储模式下解析前把原件下载到本地临时区：路径保留后缀（解析器按后缀选实现），
+// 用完清理函数会把整个临时目录删掉。
+func TestWorkerDownloadOriginalKeepsExtensionAndCleansUp(t *testing.T) {
+	root := t.TempDir()
+	files := &fakeFileStore{objects: map[string][]byte{
+		"knowledge/uploads/20261009/123.docx": []byte("doc-bytes"),
+	}}
+	ingester := NewIngester(nil, nil, nil, nil, nil, IngestOptions{Files: files})
+	worker := &Worker{ingester: ingester, uploadRoot: root}
+
+	dest, cleanup, err := worker.downloadOriginal(testDocumentID, 3, "knowledge/uploads/20261009/123.docx")
+	if err != nil {
+		t.Fatalf("下载原件失败: %v", err)
+	}
+	if filepath.Ext(dest) != ".docx" {
+		t.Fatalf("下载文件应保留原后缀，实际 %q", dest)
+	}
+	if !strings.HasPrefix(dest, filepath.Join(root, "work")) {
+		t.Fatalf("下载文件应落在 uploadRoot/work 下，实际 %q", dest)
+	}
+	data, err := os.ReadFile(dest)
+	if err != nil || string(data) != "doc-bytes" {
+		t.Fatalf("下载内容不对: %q, err=%v", data, err)
+	}
+
+	cleanup()
+	if _, err := os.Stat(filepath.Dir(dest)); !os.IsNotExist(err) {
+		t.Errorf("清理函数应当删掉临时目录，实际 stat: %v", err)
+	}
+}
+
+func TestWorkerDownloadOriginalFailsWhenObjectMissing(t *testing.T) {
+	root := t.TempDir()
+	files := &fakeFileStore{objects: map[string][]byte{}}
+	ingester := NewIngester(nil, nil, nil, nil, nil, IngestOptions{Files: files})
+	worker := &Worker{ingester: ingester, uploadRoot: root}
+
+	if _, _, err := worker.downloadOriginal(testDocumentID, 1, "knowledge/uploads/missing.pdf"); err == nil {
+		t.Fatal("对象不存在时应当报错")
+	}
+}
+
+func TestUploadKeyReadsMetadata(t *testing.T) {
+	if got := uploadKey(json.RawMessage(`{"upload_key":"knowledge/uploads/a/b.pdf"}`)); got != "knowledge/uploads/a/b.pdf" {
+		t.Fatalf("uploadKey = %q", got)
+	}
+	if got := uploadKey(json.RawMessage(`{"upload_path":"x"}`)); got != "" {
+		t.Fatalf("没有 upload_key 时应返回空串，实际 %q", got)
+	}
 }

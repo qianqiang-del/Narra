@@ -30,6 +30,7 @@ import (
 	"narra/pkg/documentparser"
 	"narra/pkg/embedding"
 	"narra/pkg/logger"
+	"narra/pkg/objectstorage"
 	"narra/pkg/rerank"
 	"narra/pkg/tts"
 
@@ -51,9 +52,39 @@ type App struct {
 	mcpManager      *internalmcp.Manager
 	worker          *bootstrap.WorkerRuntime
 	knowledgeWorker *rag.Worker
-	imageStore      *documentimage.Store
-	retention       *retention.Cleaner
-	langfuseFlush   func()
+	// imagesDir 是本地知识图片目录（<knowledge_dir>/images），静态路由挂它；
+	// OSS 模式下只用于继续服务历史图片，新图片不在其中。
+	imagesDir     string
+	retention     *retention.Cleaner
+	langfuseFlush func()
+}
+
+// knowledgeImageStore 是图片发布与清理的组合面：收录侧用它发布，服务侧用它清理。
+// documentimage.Store（本地）与 documentimage.OSSStore（对象存储）都满足它。
+type knowledgeImageStore interface {
+	rag.ImagePublisher
+	RemoveDocument(documentID uint64) error
+}
+
+// newObjectStorageClient 按配置构造对象存储客户端；未启用时返回 nil（接口零值）。
+//
+// 未启用返回 nil 而不是一个"空实现"：业务侧对 nil 的处理是"走本地模式"，
+// 与改造前的行为逐字节一致。
+func newObjectStorageClient(storage config.StorageConfig) (objectstorage.Client, error) {
+	if !storage.OSS.Enabled {
+		return nil, nil
+	}
+	client, err := objectstorage.NewOSSClient(objectstorage.OSSConfig{
+		Endpoint:        storage.OSS.Endpoint,
+		Bucket:          storage.OSS.Bucket,
+		AccessKeyID:     storage.OSS.AccessKeyID,
+		AccessKeySecret: storage.OSS.AccessKeySecret,
+		Timeout:         storage.OSS.Timeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("初始化对象存储失败: %w", err)
+	}
+	return client, nil
 }
 
 // NewApp 创建应用实例
@@ -286,8 +317,8 @@ func (a *App) initDependencies() error {
 	// 文档与上传记录是两个仓储：前者是资产，后者是投递历史，表也不同。
 	parser := newDocumentParser(a.cfg)
 	knowledgeIngest := a.cfg.KnowledgeIngest.WithDefaults()
-	// 知识库图片是持久资产，落在本地目录（第一版单机部署），由静态路由对外提供；
-	// 收录时发布图片、删除文档时清理，两处必须用同一个目录（见 documentimage）。
+	// 知识库图片是持久资产：未配置 OSS 时落本地目录，配置后改由对象存储保存并返回
+	// 完整 URL；本地目录仍挂静态路由，供历史图片继续显示（见 initServer）。
 	knowledgeDir := a.cfg.Storage.KnowledgeDir
 	if knowledgeDir == "" {
 		knowledgeDir = "data/knowledge"
@@ -298,11 +329,28 @@ func (a *App) initDependencies() error {
 	if err != nil {
 		return fmt.Errorf("解析知识图片目录的绝对路径失败: %w", err)
 	}
-	imageStore, err := documentimage.NewStore(knowledgeDir)
+
+	// 对象存储：启用后原件 / 图片 / 音频统一走 OSS；关闭时保持原有的本地行为。
+	objectClient, err := newObjectStorageClient(a.cfg.Storage)
 	if err != nil {
-		return fmt.Errorf("初始化知识图片存储失败: %w", err)
+		return err
 	}
-	a.imageStore = imageStore
+
+	var imageStore knowledgeImageStore
+	if objectClient != nil {
+		ossStore, ossErr := documentimage.NewOSSStore(objectClient)
+		if ossErr != nil {
+			return fmt.Errorf("初始化 OSS 图片存储失败: %w", ossErr)
+		}
+		imageStore = ossStore
+	} else {
+		localStore, localErr := documentimage.NewStore(knowledgeDir)
+		if localErr != nil {
+			return fmt.Errorf("初始化知识图片存储失败: %w", localErr)
+		}
+		imageStore = localStore
+	}
+	a.imagesDir = filepath.Join(knowledgeDir, "images")
 	knowledgeIngester := rag.NewIngester(
 		knowledgeDocumentRepo, knowledgeUploadRecordRepo, embeddingModelRepo, embeddingManager, parser,
 		rag.IngestOptions{
@@ -310,6 +358,7 @@ func (a *App) initDependencies() error {
 			QueueCapacity:        knowledgeIngest.QueueCapacity,
 			EmbeddingConcurrency: knowledgeIngest.EmbeddingConcurrency,
 			Images:               imageStore,
+			Files:                objectClient,
 			Vision:               vlmSettingSvc,
 			MaterialTTL:          knowledgeIngest.MaterialTTL,
 		})
@@ -368,7 +417,7 @@ func (a *App) initDependencies() error {
 		return fmt.Errorf("创建上下文装配层失败: %w", err)
 	}
 	knowledgeRetrieval = assembled
-	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetrieval, embeddingModelRepo, uploadDir, knowledgeDir)
+	knowledgeSvc := service.NewKnowledgeService(knowledgeDocumentRepo, knowledgeUploadRecordRepo, knowledgeIngester, knowledgeRetrieval, embeddingModelRepo, uploadDir, imageStore, objectClient)
 
 	// 内置工具 rag_retrieve：把知识库检索直接挂给 Eino agent（见 internal/mcp/knowledge_tool.go）。
 	// 注册点在这里而不是 NewManager 那边，是因为工具的实现依赖知识库服务 ——
@@ -414,6 +463,17 @@ func (a *App) initDependencies() error {
 	if err := os.MkdirAll(audioDir, 0o755); err != nil {
 		return fmt.Errorf("创建音频目录失败: %w", err)
 	}
+	// 音频存储：OSS 启用时写对象存储并返回完整 URL；否则保持本地目录 + /audio 静态路由。
+	var audioStore classroom.AudioStore
+	if objectClient != nil {
+		ossAudio, ossErr := classroom.NewOSSAudioStore(objectClient)
+		if ossErr != nil {
+			return fmt.Errorf("初始化 OSS 音频存储失败: %w", ossErr)
+		}
+		audioStore = ossAudio
+	} else {
+		audioStore = classroom.NewLocalAudioStore(audioDir)
+	}
 
 	// ========== 课堂受理 + 生成任务 ==========
 	// TTS 未启用时 ttsClient 是 nil 指针；直接塞进接口会让接口非 nil，
@@ -426,7 +486,7 @@ func (a *App) initDependencies() error {
 		Agents:          classroomAgentRepo,
 		Roles:           roleRepo,
 		Tx:              txManager,
-		AudioDir:        audioDir,
+		Audio:           audioStore,
 		Tools:           a.mcpManager,
 		Materials:       materialSource,
 		Outlines:        materialOutlines,
@@ -443,7 +503,7 @@ func (a *App) initDependencies() error {
 		return err
 	}
 	a.worker = workerRuntime
-	classroomSvc := service.NewClassroomService(classroomRepo, classroomAgentRepo, roleRepo, sceneRepo, llmProviderSvc, knowledgeDocumentRepo, queue, txManager, audioDir)
+	classroomSvc := service.NewClassroomService(classroomRepo, classroomAgentRepo, roleRepo, sceneRepo, llmProviderSvc, knowledgeDocumentRepo, queue, txManager, audioStore)
 	folderSvc := service.NewFolderService(folderRepo, txManager)
 
 	// 对话事件流（SSE）：执行过程与最终结果从 conversation_events 里增量读、推给前端。
@@ -580,11 +640,10 @@ func (a *App) initServer() {
 	}
 	engine.Static("/audio", audioDir)
 
-	// 知识库图片与音频同类：静态路由直接把它暴露出去（第一版单机部署，见 documentimage）。
-	// 目录在 initDependencies 里已统一成绝对路径并建好；imageStore 为空只可能是
-	// 装配顺序被绕过，此时不挂路由也不影响启动。
-	if a.imageStore != nil {
-		engine.Static(documentimage.URLPrefix, a.imageStore.ImagesDir())
+	// 知识库图片与音频同类：本地目录继续通过静态路由对外提供，OSS 模式下用于
+	// 兼容历史图片（新图片由对象存储直链返回，不经这里）。
+	if a.imagesDir != "" {
+		engine.Static(documentimage.URLPrefix, a.imagesDir)
 	}
 
 	// 注册路由

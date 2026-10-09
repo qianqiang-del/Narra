@@ -39,6 +39,7 @@ Narra 把「一次回答」变成「一堂课」：有课程结构、有讲解�
 
 - **后端**：Go 1.25 · Gin · CloudWeGo Eino · Asynq · GORM/PostgreSQL · Redis · Zap · JWT
 - **前端**：Vue 3.5 · Vite · Tailwind CSS v4 · Reka UI · Pinia · vue-i18n（中文 / English）
+- **对象存储（可选）**：上传原件 / 文档图片 / 课堂音频可切换阿里云 OSS（公共读 Bucket）；配置见 `configs/config.yaml` 的 `storage.oss`，凭证建议走环境变量 `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET`
 - **文档解析**：本地优先（RapidOCR，默认不外发文档内容），可切换外部 OCR；Office / PDF / 图片 → Markdown
 - **向量化**：OpenAI 兼容 Embedding 接口
 - **语音合成**：TTS（千问音色，支持语气控制）

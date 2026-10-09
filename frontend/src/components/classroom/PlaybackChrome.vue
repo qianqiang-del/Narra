@@ -38,7 +38,7 @@ import { applyDiscussionEvent, createDiscussionDisplay, type WhiteboardEntry } f
 import { applyTraceEvent, createDiscussionTrace, type DiscussionTrace } from '@/lib/discussionTrace'
 import { nextVisibleText } from '@/lib/typewriter'
 import { cn } from '@/lib/utils'
-import { getActiveAudio, pauseActiveAudio, registerAudio, setActiveRate, setActiveVolume, stopActiveAudio, unregisterAudio } from '@/lib/audioPlayback'
+import { getActiveAudio, pauseActiveAudio, registerAudio, resolveAudioSrc, setActiveRate, setActiveVolume, stopActiveAudio, unregisterAudio } from '@/lib/audioPlayback'
 
 const props = defineProps<{
   classroom: Classroom
@@ -458,7 +458,7 @@ function playNarrationSegment(): boolean {
       text: segment.text,
     }]
   }
-  audio.value.src = `/audio/${path.replace(/^\/+/, '')}`
+  audio.value.src = resolveAudioSrc(path)
   audio.value.load()
   audio.value.volume = volume.value
   audio.value.playbackRate = speed.value

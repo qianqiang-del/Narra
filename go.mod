@@ -22,7 +22,10 @@ require (
 	gorm.io/gorm v1.31.2
 )
 
-require gopkg.in/yaml.v2 v2.3.0 // indirect
+require (
+	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible // indirect
+	gopkg.in/yaml.v2 v2.3.0 // indirect
+)
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect

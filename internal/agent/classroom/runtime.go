@@ -49,8 +49,9 @@ type Deps struct {
 	Roles      repository.RoleRepository
 	Tx         repository.TransactionManager
 	TTS        Synthesizer
-	AudioDir   string
-	Tools      ToolSource
+	// Audio 是课堂音频的存放位置（本地目录或对象存储）；nil 表示未接入，合成阶段会明确报错。
+	Audio AudioStore
+	Tools ToolSource
 	// Materials 是课程材料的消费入口；为 nil 时生成侧忽略材料（测试或旧装配）。
 	Materials material.Source
 	// Outlines 是材料目录+摘要的构建器；为 nil 时规划退回代码目录（测试或旧装配）。

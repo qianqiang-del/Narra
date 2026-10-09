@@ -49,6 +49,10 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("storage.audio_dir", "data/audio")
 	// 知识库图片是持久资产：解析产出的图片发布在这里，收录成功也不能删（见 documentimage）。
 	v.SetDefault("storage.knowledge_dir", "data/knowledge")
+	// 对象存储默认关闭：关闭时行为与改造前完全一致（本地目录）。启用后原件/图片/音频
+	// 统一进 OSS，本地目录只保留解析所需的临时区；凭证建议用环境变量注入。
+	v.SetDefault("storage.oss.enabled", false)
+	v.SetDefault("storage.oss.timeout", "30s")
 	// 知识库批量导入：一批最多 10 份、单份 16MB、整批 100MB；后台最多同时解析 2 篇，
 	// 向量化全局串行（默认 1）。队列上限 100 同时是暂存盘的占用上限。
 	v.SetDefault("knowledge_ingest.max_files", DefaultKnowledgeMaxFiles)
@@ -108,6 +112,14 @@ func Load(configPath string) (*Config, error) {
 	if val := os.Getenv("LANGFUSE_SECRET_KEY"); val != "" {
 		config.Langfuse.SecretKey = val
 	}
+	// OSS 凭证走环境变量优先：AK/SK 不该随着 config.yaml 进版本库，生产环境
+	// 由部署侧注入即可。
+	if val := os.Getenv("OSS_ACCESS_KEY_ID"); val != "" {
+		config.Storage.OSS.AccessKeyID = val
+	}
+	if val := os.Getenv("OSS_ACCESS_KEY_SECRET"); val != "" {
+		config.Storage.OSS.AccessKeySecret = val
+	}
 
 	if err := config.Embedding.Validate(); err != nil {
 		return nil, fmt.Errorf("向量服务配置无效: %w", err)
@@ -126,6 +138,9 @@ func Load(configPath string) (*Config, error) {
 	}
 	if err := config.KnowledgeIngest.Validate(); err != nil {
 		return nil, fmt.Errorf("知识库收录配置无效: %w", err)
+	}
+	if err := config.Storage.Validate(); err != nil {
+		return nil, fmt.Errorf("存储配置无效: %w", err)
 	}
 	if err := config.Langfuse.Validate(); err != nil {
 		return nil, fmt.Errorf("langfuse 配置无效: %w", err)
