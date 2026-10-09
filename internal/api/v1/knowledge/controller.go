@@ -3,8 +3,6 @@ package knowledge
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +35,7 @@ const (
 	uploadFieldPlural   = "files"
 	uploadFieldSingular = "file"
 
-	// uploadDirAttempts 是随机暂存目录名碰撞后的重试次数。
+	// uploadDirAttempts 是暂存目录名碰撞后的重试次数。
 	// 16 字节随机数的碰撞概率可以忽略，重试只是给"随机源或文件系统异常"留一条明确失败路径。
 	uploadDirAttempts = 3
 
@@ -320,12 +318,13 @@ func summarizeIngestBatch(items []responsedto.KnowledgeIngestItem) responsedto.K
 	}
 }
 
-// stageUpload 把一个上传文件落到独立随机目录里，返回最终路径。
+// stageUpload 把一个上传文件落到独立暂存目录里，返回最终路径。
 //
-// 目录名用 crypto/rand 而不是时间戳：批量上传会在极短时间内连续落盘多个文件，
-// 时间戳可能落在同一系统时钟粒度内；而 os.MkdirAll 对已存在目录不报错 ——
-// 碰撞的后果是两个文件静默共用一个目录、后写的覆盖前者。os.Mkdir 的 EEXIST
-// 会把碰撞变成显式错误，这里重试几次仍失败才放弃。
+// 目录名用服务器本地时间的纳秒时间戳（如 20261009-214512.123456789）：按名字
+// 排序就是按上传时间排序，翻磁盘找陈旧目录不用查库，与日志也对得上同一条时间线。
+// 代价是"同一时钟粒度内可能重名"—— 由 os.Mkdir 的 EEXIST 兜住：重试时追加 -N
+// 后缀，时钟没走也能保证名字在变。（原先用 crypto/rand 的 16 字节随机数防的也是
+// 这套碰撞，只是名字对人不可读。）
 //
 // 文件名必须由服务端固定，不能沿用用户给的名字：那个名字可能带 ../ 或盘符，
 // 拼进路径等于把"往任意位置写文件"的能力交给调用方。但后缀要保留 ——
@@ -340,11 +339,7 @@ func (c *Controller) stageUpload(ctx *gin.Context, header *multipart.FileHeader)
 
 	var lastErr error
 	for attempt := 0; attempt < uploadDirAttempts; attempt++ {
-		name, err := randomUploadDirName()
-		if err != nil {
-			return "", err
-		}
-		directory := filepath.Join(c.pendingRoot(), name)
+		directory := filepath.Join(c.pendingRoot(), stagingDirName(attempt))
 		if err := os.Mkdir(directory, 0o755); err != nil {
 			if errors.Is(err, fs.ErrExist) {
 				lastErr = err
@@ -391,13 +386,16 @@ func (c *Controller) pendingRoot() string {
 	return filepath.Join(c.uploadDir, "pending")
 }
 
-// randomUploadDirName 生成 16 字节随机数的十六进制形式，用作暂存目录名。
-func randomUploadDirName() (string, error) {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("生成暂存目录名失败: %w", err)
+// stagingDirName 生成暂存目录名：服务器本地时间的纳秒时间戳，如 20261009-214512.123456789。
+//
+// attempt > 0 时追加 -N 后缀：重试通常正是因为同名目录已存在（时钟粒度粗于连续
+// 调用），而时钟未必已经走到下一个刻度 —— 后缀保证重试一定产生新名字，不打转。
+func stagingDirName(attempt int) string {
+	name := time.Now().Format("20060102-150405.000000000")
+	if attempt > 0 {
+		name = fmt.Sprintf("%s-%d", name, attempt)
 	}
-	return hex.EncodeToString(raw[:]), nil
+	return name
 }
 
 // UploadLimits 返回批量上传的限制值，供前端在选择文件时预检。
