@@ -43,7 +43,7 @@ type KnowledgeUploadRecord struct {
 	OriginalName string `gorm:"column:original_name;type:varchar(300);not null;comment:上传时的原始文件名，与 documents.title 同为 varchar(300)，超长会被截断" json:"original_name"` // 用户看到的原始文件名，与 documents.title 同为 varchar(300)；截断见 rag.truncateTitle
 
 	// 文件字节数。取值来自 HTTP 层的 header.Size，是**接收时**的大小，不做二次统计。
-	// 上传记录里最有用的一列：用户看到"这份 834 KB 的 pptx 失败了"，就能对上自己传的是哪个文件。
+	// 上传记录里最有用的一列：用户看到"这份 834 KB 的 docx 失败了"，就能对上自己传的是哪个文件。
 	SizeBytes int64 `gorm:"column:size_bytes;not null;default:0;comment:接收到的文件字节数，取自上传请求头；0 表示回填的历史数据没有这个值" json:"size_bytes"`
 
 	Status string `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_upload_records_status_check,status IN ('pending', 'processing', 'ready', 'failed');comment:投递状态，取值 pending（排队）/ processing（处理中）/ ready（收录成功）/ failed（失败），与关联文档的状态同源" json:"status"` // 收录状态：pending、processing、ready 或 failed

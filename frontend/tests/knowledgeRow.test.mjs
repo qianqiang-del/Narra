@@ -8,7 +8,7 @@ const { default: KnowledgeRow } = await import('../src/components/knowledge/Know
 
 function materialDocument(overrides = {}) {
   return {
-    id: 1, kind: 'material', title: 'GC垃圾回收.pptx', sourceUri: 'GC垃圾回收.pptx',
+    id: 1, kind: 'material', title: 'GC垃圾回收.docx', sourceUri: 'GC垃圾回收.docx',
     enabled: true, status: 'ready', stage: '', failedStage: '', error: '',
     parser: 'docling', chunks: 17, characters: 10234,
     expiresAt: null, updatedAt: '2026-10-03T12:11:58Z', sourceType: 'import',
