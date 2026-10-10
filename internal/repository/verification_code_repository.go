@@ -49,6 +49,11 @@ func (r *verificationCodeRepository) Issue(ctx context.Context, phone, purpose, 
 	return nil
 }
 
+func (r *verificationCodeRepository) Exists(ctx context.Context, phone, purpose string) (bool, error) {
+	count, err := r.redis.Exists(ctx, verificationCodeKey(phone, purpose)).Result()
+	return count > 0, err
+}
+
 const consumeVerificationCodeScript = `
 local expected = redis.call('GET', KEYS[1])
 if not expected then return 0 end

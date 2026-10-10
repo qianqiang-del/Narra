@@ -54,6 +54,11 @@ func (f *authCodesFake) Issue(_ context.Context, phone, purpose, _, digest strin
 	return nil
 }
 
+func (f *authCodesFake) Exists(_ context.Context, phone, purpose string) (bool, error) {
+	_, ok := f.issued[phone+purpose]
+	return ok, nil
+}
+
 func (f *authCodesFake) Consume(_ context.Context, phone, purpose, digest string) (bool, error) {
 	key := phone + purpose
 	if f.issued[key] != digest {
@@ -74,6 +79,17 @@ func (f *authCodesFake) Delete(_ context.Context, phone, purpose, digest string)
 type authSenderFake struct {
 	code string
 	err  error
+}
+
+type managedSenderFake struct {
+	authSenderFake
+	valid       bool
+	verifyCalls int
+}
+
+func (f *managedSenderFake) VerifyCode(_ context.Context, _, _ string) (bool, error) {
+	f.verifyCalls++
+	return f.valid, nil
 }
 
 func (f *authSenderFake) Send(_ context.Context, _, code string) error {
@@ -157,5 +173,50 @@ func TestFailedSMSInvalidatesIssuedCode(t *testing.T) {
 	sender.err = nil
 	if err := svc.SendCode(ctx, "13592209805", CodePurposeRegister, "127.0.0.1"); err != nil {
 		t.Fatalf("retry after failed delivery: %v", err)
+	}
+}
+
+func TestManagedSMSCodeUsesProviderAndRedisPurpose(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newAuthServiceFake()
+	sender := &managedSenderFake{valid: true}
+	svc.sender = sender
+	if err := svc.SendCode(ctx, "13592209805", CodePurposeRegister, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if sender.code != "" {
+		t.Fatal("managed provider must generate the SMS code")
+	}
+	if err := svc.verifyCode(ctx, "+8613592209805", CodePurposeLogin, "123456"); !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("registration code accepted for login: %v", err)
+	}
+	if sender.verifyCalls != 0 {
+		t.Fatal("provider called without a pending code for this purpose")
+	}
+	if err := svc.verifyCode(ctx, "+8613592209805", CodePurposeRegister, "123456"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.verifyCode(ctx, "+8613592209805", CodePurposeRegister, "123456"); !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("used code accepted again: %v", err)
+	}
+	if sender.verifyCalls != 1 {
+		t.Fatalf("provider verification calls = %d, want 1", sender.verifyCalls)
+	}
+}
+
+func TestManagedSMSRejectsWrongCodeWithoutConsumingPurpose(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := newAuthServiceFake()
+	sender := &managedSenderFake{}
+	svc.sender = sender
+	if err := svc.SendCode(ctx, "13592209805", CodePurposeRegister, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.verifyCode(ctx, "+8613592209805", CodePurposeRegister, "000000"); !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("wrong code accepted: %v", err)
+	}
+	sender.valid = true
+	if err := svc.verifyCode(ctx, "+8613592209805", CodePurposeRegister, "123456"); err != nil {
+		t.Fatal(err)
 	}
 }

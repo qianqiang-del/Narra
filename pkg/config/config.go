@@ -455,9 +455,19 @@ type JWTConfig struct {
 // SMSConfig configures Alibaba Cloud SMS. Credentials are loaded from environment variables.
 type SMSConfig struct {
 	Enabled         bool   `mapstructure:"enabled"`
+	API             string `mapstructure:"api"`
 	RegionID        string `mapstructure:"region_id"`
 	SignName        string `mapstructure:"sign_name"`
 	TemplateCode    string `mapstructure:"template_code"`
+	TemplateParam   string `mapstructure:"template_param"`
+	SchemeName      string `mapstructure:"scheme_name"`
+	CountryCode     string `mapstructure:"country_code"`
+	CodeLength      int    `mapstructure:"code_length"`
+	ValidTime       int    `mapstructure:"valid_time"`
+	DuplicatePolicy int    `mapstructure:"duplicate_policy"`
+	Interval        int    `mapstructure:"interval"`
+	CodeType        int    `mapstructure:"code_type"`
+	CaseAuthPolicy  int    `mapstructure:"case_auth_policy"`
 	AccessKeyID     string `mapstructure:"access_key_id"`
 	AccessKeySecret string `mapstructure:"access_key_secret"`
 }
