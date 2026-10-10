@@ -13,6 +13,24 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/dysmsapi"
 )
 
+type Sender interface {
+	Send(ctx context.Context, phone, code string) error
+}
+
+func NewSender(cfg config.SMSConfig) (Sender, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	switch cfg.API {
+	case "", "dysmsapi":
+		return NewAliyunSender(cfg)
+	case "dypnsapi":
+		return NewDypnsSender(cfg)
+	default:
+		return nil, fmt.Errorf("不支持的阿里云短信接口: %s", cfg.API)
+	}
+}
+
 type AliyunSender struct {
 	client   *dysmsapi.Client
 	sign     string
@@ -51,7 +69,7 @@ func (s *AliyunSender) Send(ctx context.Context, phone, code string) error {
 		return fmt.Errorf("发送短信失败: %w", err)
 	}
 	if response.Code != "OK" {
-		return fmt.Errorf("短信服务拒绝发送: %s", response.Code)
+		return fmt.Errorf("短信服务拒绝发送: code=%s, message=%s, request_id=%s", response.Code, response.Message, response.RequestId)
 	}
 	return nil
 }

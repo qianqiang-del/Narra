@@ -288,7 +288,7 @@ func (a *App) initDependencies() error {
 	sharedMemoryRepo := repository.NewSharedMemoryRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
-	aliSender, smsErr := sms.NewAliyunSender(a.cfg.SMS)
+	aliSender, smsErr := sms.NewSender(a.cfg.SMS)
 	if smsErr != nil {
 		return smsErr
 	}

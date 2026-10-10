@@ -19,6 +19,7 @@ import LlmSettingsSection from '@/components/home/LlmSettingsSection.vue'
 import RerankSettingsSection from '@/components/home/RerankSettingsSection.vue'
 import VLMSettingsSection from '@/components/home/VLMSettingsSection.vue'
 import { detectNativeEmbeddingEndpoint, type NativeEmbeddingHint } from '@/lib/embeddingEndpoint'
+import { request } from '@/api/client'
 import { cn } from '@/lib/utils'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -290,7 +291,6 @@ type EmbeddingForm = {
   api_key: string
 }
 
-const apiBaseURL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 const embeddingForm = ref<EmbeddingForm>({
   base_url: '',
   model: '',
@@ -309,19 +309,16 @@ const savingEmbedding = ref(false)
 /** Base URL 命中已知原生协议时的提示；null 表示放行（交给真实请求验证）。 */
 const embeddingBaseUrlHint = computed(() => detectNativeEmbeddingEndpoint(embeddingForm.value.base_url))
 
+interface EmbeddingSettingDTO {
+  base_url: string
+  model: string
+  timeout: string
+  dimensions: number
+  api_key_configured: boolean
+}
+
 async function embeddingRequest(path: string, options: RequestInit = {}) {
-  const response = await fetch(`${apiBaseURL}/settings/embedding${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  })
-  const payload = await response.json()
-  if (!response.ok || payload.code !== 0) {
-    throw new Error(payload.message || t('settings.embeddingRequestFailed'))
-  }
-  return payload.data
+  return request<EmbeddingSettingDTO>(`/settings/embedding${path}`, options)
 }
 
 function showEmbeddingMessage(message: string, isError = false) {

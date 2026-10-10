@@ -17,8 +17,10 @@ import (
 	"narra/internal/model/entity"
 	"narra/internal/repository"
 	"narra/pkg/jwt"
+	"narra/pkg/logger"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -43,6 +45,10 @@ var mainlandPhone = regexp.MustCompile(`^1[3-9][0-9]{9}$`)
 
 type SMSSender interface {
 	Send(ctx context.Context, phone, code string) error
+}
+
+type managedCodeSender interface {
+	VerifyCode(ctx context.Context, phone, code string) (bool, error)
 }
 
 type authService struct {
@@ -88,11 +94,14 @@ func (s *authService) SendCode(ctx context.Context, phoneInput, purpose, ip stri
 	if purpose == CodePurposeLogin && errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrAccountNotFound
 	}
-	n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
-	if err != nil {
-		return err
+	code := ""
+	if _, managed := s.sender.(managedCodeSender); !managed {
+		n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
+		if err != nil {
+			return err
+		}
+		code = fmt.Sprintf("%06d", n.Int64())
 	}
-	code := fmt.Sprintf("%06d", n.Int64())
 	digest := s.codeDigest(phone, purpose, code)
 	if err := s.codes.Issue(ctx, phone, purpose, ip, digest); err != nil {
 		if errors.Is(err, repository.ErrVerificationCodeRateLimited) {
@@ -102,6 +111,7 @@ func (s *authService) SendCode(ctx context.Context, phoneInput, purpose, ip stri
 	}
 	if err := s.sender.Send(ctx, phone, code); err != nil {
 		_ = s.codes.Delete(ctx, phone, purpose, digest)
+		logger.Error("短信验证码发送失败", zap.Error(err))
 		return ErrSMSUnavailable
 	}
 	return nil
@@ -183,6 +193,24 @@ func (s *authService) verifyCode(ctx context.Context, phone, purpose, code strin
 	}
 	if len(code) != 6 || strings.Trim(code, "0123456789") != "" {
 		return ErrInvalidCode
+	}
+	if managed, ok := s.sender.(managedCodeSender); ok {
+		pending, err := s.codes.Exists(ctx, phone, purpose)
+		if err != nil {
+			return err
+		}
+		if !pending {
+			return ErrInvalidCode
+		}
+		valid, err := managed.VerifyCode(ctx, phone, code)
+		if err != nil {
+			logger.Error("短信验证码校验失败", zap.Error(err))
+			return ErrSMSUnavailable
+		}
+		if !valid {
+			return ErrInvalidCode
+		}
+		code = ""
 	}
 	ok, err := s.codes.Consume(ctx, phone, purpose, s.codeDigest(phone, purpose, code))
 	if err != nil {

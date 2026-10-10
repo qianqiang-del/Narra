@@ -38,13 +38,24 @@ export class ApiError extends Error {
 /** 开发期走 vite 代理（vite.config.ts 里 /api → localhost:8080） */
 const BASE = '/api/v1'
 
+function redirectToLogin(): void {
+  clearSession()
+  if (window.location.pathname === '/login') return
+  const redirect = window.location.pathname + window.location.search + window.location.hash
+  window.location.assign(`/login?redirect=${encodeURIComponent(redirect)}`)
+}
+
+function isPublicAuthPath(path: string): boolean {
+  return path === '/auth/codes' || path === '/auth/register' || path.startsWith('/auth/login/')
+}
+
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken()
   let res: Response
   try {
     // FormData 的 Content-Type 必须由浏览器自己生成（它要往里塞 boundary），
     // 这里写死 application/json 会让后端把 multipart 体整个解析不出来。
     const isFormData = init?.body instanceof FormData
-    const token = getToken()
     res = await fetch(`${BASE}${path}`, {
       ...init,
       headers: {
@@ -66,7 +77,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (body.code !== CODE_SUCCESS) {
-    if (body.code === 401 && !path.startsWith('/auth/')) clearSession()
+    if (body.code === 401 && !isPublicAuthPath(path)) redirectToLogin()
     throw new ApiError(body.code, body.message || `请求失败（code ${body.code}）`)
   }
 
@@ -110,7 +121,7 @@ export async function* streamEvents(path: string, signal?: AbortSignal): AsyncGe
       throw new ApiError(res.status, `响应不是事件流（HTTP ${res.status}）`)
     }
     if (body.code !== CODE_SUCCESS) {
-      if (body.code === 401) clearSession()
+      if (body.code === 401) redirectToLogin()
       throw new ApiError(body.code, body.message || `请求失败（code ${body.code}）`)
     }
     throw new ApiError(res.status, '响应不是事件流')
