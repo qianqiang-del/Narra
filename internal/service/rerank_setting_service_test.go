@@ -28,6 +28,51 @@ func (f *fakeRerankRepo) List(context.Context) ([]entity.RerankSetting, error) {
 	return append([]entity.RerankSetting{}, f.items...), nil
 }
 
+func (f *fakeRerankRepo) ListByOwner(_ context.Context, ownerID uint64) ([]entity.RerankSetting, error) {
+	var out []entity.RerankSetting
+	for _, item := range f.items {
+		if item.OwnerID == ownerID {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeRerankRepo) FindByIDAndOwner(ctx context.Context, id, ownerID uint64) (*entity.RerankSetting, error) {
+	item, err := f.FindByID(ctx, id)
+	if err != nil || item.OwnerID != ownerID {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return item, nil
+}
+
+func (f *fakeRerankRepo) DeleteByOwner(ctx context.Context, id, ownerID uint64) error {
+	if _, err := f.FindByIDAndOwner(ctx, id, ownerID); err != nil {
+		return err
+	}
+	return f.Delete(ctx, id)
+}
+
+func (f *fakeRerankRepo) SetEnabledForOwner(ctx context.Context, id, ownerID uint64, enabled bool) (bool, error) {
+	if _, err := f.FindByIDAndOwner(ctx, id, ownerID); err != nil {
+		return false, nil
+	}
+	if enabled {
+		for i := range f.items {
+			if f.items[i].OwnerID == ownerID {
+				f.items[i].IsEnabled = false
+			}
+		}
+	}
+	for i := range f.items {
+		if f.items[i].ID == id {
+			f.items[i].IsEnabled = enabled
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (f *fakeRerankRepo) GetEnabled(context.Context) (*entity.RerankSetting, error) {
 	for index := range f.items {
 		if f.items[index].IsEnabled {
@@ -145,6 +190,27 @@ func seedRerankSetting(t *testing.T, repo *fakeRerankRepo, status string, enable
 		t.Fatalf("写入种子配置失败: %v", err)
 	}
 	return item
+}
+
+func TestRerankSettingsIsolateOwners(t *testing.T) {
+	svc, _, repo := newRerankTestService(t)
+	item := seedRerankSetting(t, repo, entity.RerankTestStatusSuccess, true)
+	repo.items[0].OwnerID = 11
+	ctx := context.Background()
+	items, err := svc.List(ctx, 22)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("other user's list: %v, %v", items, err)
+	}
+	if _, err := svc.SetEnabled(ctx, item.ID, false, 22); err == nil {
+		t.Fatal("other user changed setting")
+	}
+	if err := svc.Delete(ctx, item.ID, 22); err == nil {
+		t.Fatal("other user deleted setting")
+	}
+	items, err = svc.List(ctx, 11)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("owner's list: %v, %v", items, err)
+	}
 }
 
 // 新建：字段归一化、Key 加密落库（不是明文）、默认未测试未启用。

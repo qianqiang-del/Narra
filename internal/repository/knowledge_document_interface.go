@@ -38,6 +38,7 @@ type KnowledgeDocumentRepository interface {
 
 	// GetByID 按主键取文档。查不到返回 gorm.ErrRecordNotFound。
 	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error)
+	GetByIDAndOwner(ctx context.Context, id, ownerID uint64) (*entity.KnowledgeDocument, error)
 
 	// SetEnabled 单独切换一篇文档的检索开关，返回是否命中一行（false = 文档不存在）。
 	//
@@ -217,10 +218,12 @@ type KnowledgeDocumentRepository interface {
 	// 条件（kind = material、expires_at 非空、ready 且启用）是"材料不共享"的原子闸门：
 	// 并发建课或校验后材料失效的竞态在这里影响 0 行，调用方核对行数后回滚整个建课事务。
 	AssociateMaterials(ctx context.Context, ids []uint64) (int64, error)
+	AssociateMaterialsForOwner(ctx context.Context, ownerID uint64, ids []uint64) (int64, error)
 
 	// ExpireMaterials 给一批课程材料重设清理时间（删课堂时回收）。
 	// 只处理 kind = material 的行，不存在的行静默跳过；命中行数少于入参数量不是错误。
 	ExpireMaterials(ctx context.Context, ids []uint64, expiresAt time.Time) (int64, error)
+	ExpireMaterialsForOwner(ctx context.Context, ownerID uint64, ids []uint64, expiresAt time.Time) (int64, error)
 
 	// ListExpiredMaterials 取到期且未关联课堂的课程材料 ID（升序），供后台清理逐个删除。
 	// 只返回 ID：删除要走服务层 Delete，连带清理归档原件与文档图片。

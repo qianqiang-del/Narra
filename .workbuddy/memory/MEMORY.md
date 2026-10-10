@@ -114,3 +114,17 @@ Narra —— 基于 **Go + CloudWeGo Eino** 的多智能体智能讲解平台，
 - 记忆分两类（不合并）：工作台上下文/记忆归 A；课堂对话上下文/跨成员记忆归 C。
 - 状态：已定稿。
 
+## 本机会话环境（2026-10-10，重要）
+- 实际工作目录是 **`D:\Narra`**（不是上面迁移记录里的 `C:\Users\23107\...`，那条已过时）。本机用户 `LHK`。
+- **Bash 工具不可用**（PortableGit 缺 coreutils，`ls/cat/grep/head` 全部 command not found）→ 一律用 PowerShell 工具；
+  且 PowerShell 工具的 stdout 不回显，**要把结果写文件再用 Read 看**。
+- **pip 无网络**（PyPI 不可达），本机没有任何 PDF 库。读 PDF 用纯标准库抽取器：
+  `C:\Users\LHK\.workbuddy\tmp\pdf_text_extract.py`（处理子集字体 + ToUnicode，按 Tm 坐标重排）。
+
+## 课堂生成模块：设计稿与代码不一致的数字（面试/复述时必须用代码值）
+`docs/superpowers/plans/2026-09-25-classroom-pipeline-walkthrough.md` 是**设计稿**，几处与落地代码不同：
+- 修订轮次：设计稿 2 → 代码 **1**（`internal/agent/classroom/retry.go:22` `maxRevisionRounds`）。
+- 场景类型：设计稿写 4 种（含 `pbl`）→ 代码只有 **slide / quiz / interactive** 三种（`parse.go:44-48`）。
+- 页面并发：设计稿 3 → 代码缺省 `defaultPageConcurrency = 3`（`orchestrator.go:10`），但 `configs/config.yaml` 里配的是 **10**。
+- 完整数字核对表见 `D:\Narra\.workbuddy\课堂生成面试题库与答案.md` 附录 B。
+

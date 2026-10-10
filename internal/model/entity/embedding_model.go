@@ -29,10 +29,12 @@ const EmbeddingProviderOpenAICompatible = "openai-compatible"
 // 所以部分唯一可以安全地留在实体上。
 type EmbeddingModel struct {
 	BaseModel
+	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_embedding_models_owner_id;uniqueIndex:embedding_models_owner_name_key,priority:1;uniqueIndex:embedding_models_one_default_idx,priority:1,where:is_default" json:"-"`
+	Owner   *User  `gorm:"foreignKey:OwnerID;constraint:embedding_models_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 
-	Name       string `gorm:"column:name;type:varchar(160);not null;unique;comment:模型名称或服务端模型 ID，如 text-embedding-3-small；全局唯一" json:"name"`                                          // 模型名称或服务端模型 ID，如 text-embedding-3-small
-	Dimensions int32  `gorm:"column:dimensions;not null;check:embedding_models_dimensions_check,dimensions > 0;comment:模型固定输出的向量维度，必须与模型真实维度一致" json:"dimensions"`                    // 模型固定输出的向量维度
-	IsDefault  bool   `gorm:"column:is_default;not null;uniqueIndex:embedding_models_one_default_idx,where:is_default;comment:是否为线上检索默认使用的模型；全表最多一条为 true（部分唯一索引）" json:"is_default"` // 是否为线上 RAG 检索默认使用的模型
+	Name       string `gorm:"column:name;type:varchar(160);not null;uniqueIndex:embedding_models_owner_name_key,priority:2;comment:用户内唯一的向量模型名称" json:"name"`      // 模型名称或服务端模型 ID，如 text-embedding-3-small
+	Dimensions int32  `gorm:"column:dimensions;not null;check:embedding_models_dimensions_check,dimensions > 0;comment:模型固定输出的向量维度，必须与模型真实维度一致" json:"dimensions"` // 模型固定输出的向量维度
+	IsDefault  bool   `gorm:"column:is_default;not null;comment:是否为该用户知识检索默认使用的模型" json:"is_default"`                                                              // 是否为线上 RAG 检索默认使用的模型
 }
 
 func (EmbeddingModel) TableName() string { return "embedding_models" }

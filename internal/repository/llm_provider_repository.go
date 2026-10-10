@@ -19,6 +19,12 @@ func (r *llmProviderRepository) List(ctx context.Context) ([]entity.LLMProvider,
 	return providers, err
 }
 
+func (r *llmProviderRepository) ListByOwner(ctx context.Context, ownerID uint64) ([]entity.LLMProvider, error) {
+	var providers []entity.LLMProvider
+	err := conn(ctx, r.db).Where("owner_id = ?", ownerID).Order("id ASC").Find(&providers).Error
+	return providers, err
+}
+
 func (r *llmProviderRepository) ListAvailable(ctx context.Context) ([]entity.LLMProvider, error) {
 	var providers []entity.LLMProvider
 	err := r.db.WithContext(ctx).
@@ -28,9 +34,25 @@ func (r *llmProviderRepository) ListAvailable(ctx context.Context) ([]entity.LLM
 	return providers, err
 }
 
+func (r *llmProviderRepository) ListAvailableByOwner(ctx context.Context, ownerID uint64) ([]entity.LLMProvider, error) {
+	var providers []entity.LLMProvider
+	err := conn(ctx, r.db).
+		Where("owner_id = ? AND is_enabled = ? AND test_status = ?", ownerID, true, entity.LLMTestStatusSuccess).
+		Order("id ASC").Find(&providers).Error
+	return providers, err
+}
+
 func (r *llmProviderRepository) FindByID(ctx context.Context, id uint64) (*entity.LLMProvider, error) {
 	var provider entity.LLMProvider
 	if err := r.db.WithContext(ctx).First(&provider, id).Error; err != nil {
+		return nil, err
+	}
+	return &provider, nil
+}
+
+func (r *llmProviderRepository) FindByIDAndOwner(ctx context.Context, id, ownerID uint64) (*entity.LLMProvider, error) {
+	var provider entity.LLMProvider
+	if err := conn(ctx, r.db).Where("id = ? AND owner_id = ?", id, ownerID).First(&provider).Error; err != nil {
 		return nil, err
 	}
 	return &provider, nil
@@ -46,4 +68,8 @@ func (r *llmProviderRepository) Update(ctx context.Context, provider *entity.LLM
 
 func (r *llmProviderRepository) Delete(ctx context.Context, id uint64) error {
 	return r.db.WithContext(ctx).Delete(&entity.LLMProvider{}, id).Error
+}
+
+func (r *llmProviderRepository) DeleteByIDAndOwner(ctx context.Context, id, ownerID uint64) error {
+	return conn(ctx, r.db).Where("id = ? AND owner_id = ?", id, ownerID).Delete(&entity.LLMProvider{}).Error
 }

@@ -6,6 +6,7 @@ import (
 	"gorm.io/gorm"
 
 	"narra/internal/model/entity"
+	"narra/internal/ownership"
 )
 
 // knowledgeUploadRecordRepository 基于 GORM 的上传记录仓储。
@@ -37,6 +38,9 @@ func (r *knowledgeUploadRecordRepository) CreateUploadRecord(ctx context.Context
 // 不会让计数翻倍，但计数本身用不到标题，就留在 JOIN 之前。
 func (r *knowledgeUploadRecordRepository) List(ctx context.Context, offset, limit int) ([]entity.KnowledgeUploadRecordView, int64, error) {
 	base := conn(ctx, r.db).Model(&entity.KnowledgeUploadRecord{})
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		base = base.Where("knowledge_upload_records.owner_id = ?", ownerID)
+	}
 
 	var total int64
 	if err := base.Count(&total).Error; err != nil {
@@ -62,7 +66,11 @@ func (r *knowledgeUploadRecordRepository) List(ctx context.Context, offset, limi
 // 由服务层翻成"记录不存在"——与文档仓储同一种分工。
 func (r *knowledgeUploadRecordRepository) GetByID(ctx context.Context, id uint64) (*entity.KnowledgeUploadRecord, error) {
 	var record entity.KnowledgeUploadRecord
-	if err := conn(ctx, r.db).Where("id = ?", id).First(&record).Error; err != nil {
+	query := conn(ctx, r.db).Where("id = ?", id)
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		query = query.Where("owner_id = ?", ownerID)
+	}
+	if err := query.First(&record).Error; err != nil {
 		return nil, err
 	}
 	return &record, nil
@@ -79,17 +87,21 @@ func (r *knowledgeUploadRecordRepository) GetByID(ctx context.Context, id uint64
 func (r *knowledgeUploadRecordRepository) DeleteRecord(ctx context.Context, id uint64) error {
 	return conn(ctx, r.db).Transaction(func(tx *gorm.DB) error {
 		var record entity.KnowledgeUploadRecord
-		if err := tx.Where("id = ?", id).First(&record).Error; err != nil {
+		query := tx.Where("id = ?", id)
+		if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+			query = query.Where("owner_id = ?", ownerID)
+		}
+		if err := query.First(&record).Error; err != nil {
 			return err
 		}
 
 		if record.DocumentID != nil {
-			if err := tx.Where("id = ? AND status <> ?", *record.DocumentID, entity.KnowledgeDocumentStatusReady).
+			if err := tx.Where("id = ? AND owner_id = ? AND status <> ?", *record.DocumentID, record.OwnerID, entity.KnowledgeDocumentStatusReady).
 				Delete(&entity.KnowledgeDocument{}).Error; err != nil {
 				return err
 			}
 		}
 
-		return tx.Where("id = ?", id).Delete(&entity.KnowledgeUploadRecord{}).Error
+		return tx.Where("id = ? AND owner_id = ?", id, record.OwnerID).Delete(&entity.KnowledgeUploadRecord{}).Error
 	})
 }

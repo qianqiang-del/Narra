@@ -14,6 +14,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.uber.org/zap"
 
+	"narra/internal/ownership"
 	"narra/internal/toolcall"
 	"narra/pkg/logger"
 )
@@ -36,14 +37,17 @@ const callRetryBackoff = time.Second
 // 内置工具排在前面并已排序（见 localToolList）：它们是本服务的核心能力，
 // 而远端工具取决于用户配了哪些 server，顺序不该随配置变化。
 func (m *Manager) EinoTools(ctx context.Context, webSearch bool) ([]tool.BaseTool, error) {
-	_ = ctx
 	result := m.localToolList()
+	result = bindKnowledgeOwner(result, ownership.FromContext(ctx))
 	if !webSearch {
 		return result, nil
 	}
 
 	descriptors := m.ListTools()
 	for _, descriptor := range descriptors {
+		if !visibleToOwner(ctx, descriptor.ServerID) {
+			continue
+		}
 		inputSchema := new(jsonschema.Schema)
 		if err := json.Unmarshal(descriptor.InputSchema, inputSchema); err != nil {
 			return nil, fmt.Errorf("解析 MCP tool %q schema: %w", descriptor.ID, err)
@@ -70,10 +74,14 @@ type einoTool struct {
 // writable tools are not exposed to discussion agents.
 func (m *Manager) DiscussionTools(ctx context.Context, webSearch bool) ([]tool.BaseTool, error) {
 	result := m.localToolList()
+	result = bindKnowledgeOwner(result, ownership.FromContext(ctx))
 	if !webSearch {
 		return result, nil
 	}
 	for _, descriptor := range m.ListTools() {
+		if !visibleToOwner(ctx, descriptor.ServerID) {
+			continue
+		}
 		if !descriptor.ReadOnly {
 			continue
 		}
@@ -84,6 +92,27 @@ func (m *Manager) DiscussionTools(ctx context.Context, webSearch bool) ([]tool.B
 		result = append(result, &einoTool{manager: m, info: &schema.ToolInfo{Name: descriptor.ID, Desc: descriptor.Description, ParamsOneOf: schema.NewParamsOneOfByJSONSchema(params)}})
 	}
 	return result, nil
+}
+
+type ownedKnowledgeTool struct {
+	*knowledgeRetrieveTool
+	ownerID uint64
+}
+
+func (t *ownedKnowledgeTool) InvokableRun(ctx context.Context, arguments string, opts ...tool.Option) (string, error) {
+	return t.knowledgeRetrieveTool.InvokableRun(ownership.WithOwner(ctx, t.ownerID), arguments, opts...)
+}
+
+func bindKnowledgeOwner(tools []tool.BaseTool, ownerID uint64) []tool.BaseTool {
+	if ownerID == 0 {
+		return tools
+	}
+	for index, candidate := range tools {
+		if knowledge, ok := candidate.(*knowledgeRetrieveTool); ok {
+			tools[index] = &ownedKnowledgeTool{knowledgeRetrieveTool: knowledge, ownerID: ownerID}
+		}
+	}
+	return tools
 }
 
 // Info 返回工具的元信息供 Eino agent 使用。

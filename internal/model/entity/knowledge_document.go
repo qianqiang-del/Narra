@@ -53,6 +53,8 @@ const (
 // 处理完就退出索引，索引一直很小。它的 WHERE 谓词含逗号，写法见 CreatedAt 字段上的注释。
 type KnowledgeDocument struct {
 	BaseModel
+	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_knowledge_documents_owner_id;comment:所属用户 ID" json:"-"`
+	Owner   *User  `gorm:"foreignKey:OwnerID;constraint:knowledge_documents_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 
 	Title           string  `gorm:"column:title;type:varchar(300);not null;comment:文章展示名，上限 300 字；留空时由正文首个一级标题、再退到原始文件名顶替" json:"title"`                                                                                                                                                  // 文章展示标题
 	Content         string  `gorm:"column:content;type:text;not null;check:knowledge_documents_ready_has_content_check,status <> 'ready' OR length(content) > 0;comment:未切分的完整原文，不参与检索，只作为重建切片的唯一来源" json:"content"`                                                                      // 未切分的完整原文，是重建切片的唯一来源；CHECK 跨 status 与 content 两列，挂在本字段（每字段限一条 check tag）

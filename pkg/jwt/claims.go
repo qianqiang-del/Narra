@@ -4,13 +4,13 @@ import "github.com/golang-jwt/jwt/v5"
 
 // CustomClaims 自定义 JWT Claims
 type CustomClaims struct {
-	UserID   uint   `json:"user_id"`
+	UserID   uint64 `json:"user_id"`
 	Username string `json:"username"`
 	jwt.RegisteredClaims
 }
 
 // GetUserID 获取用户 ID
-func (c *CustomClaims) GetUserID() uint {
+func (c *CustomClaims) GetUserID() uint64 {
 	return c.UserID
 }
 

@@ -51,8 +51,14 @@ func NewVLMSettingService(repo repository.VLMSettingRepository, encryptionKey []
 // CurrentVision 返回当前启用的视觉模型配置（含解密后的 API Key），供收录链路在
 // 解析时下发给 Python 脚本。没有启用项时 ok = false —— 那是"视觉理解关闭"，不是错误；
 // 查库或解密失败才返回 error（调用方应降级为纯 OCR 并留日志，而不是让文档失败）。
-func (s *vlmSettingService) CurrentVision(ctx context.Context) (documentparser.VLMConfig, bool, error) {
-	item, err := s.repo.GetEnabled(ctx)
+func (s *vlmSettingService) CurrentVision(ctx context.Context, ownerIDs ...uint64) (documentparser.VLMConfig, bool, error) {
+	var item *entity.VLMSetting
+	var err error
+	if len(ownerIDs) > 0 {
+		item, err = s.repo.GetEnabledByOwner(ctx, ownerIDs[0])
+	} else {
+		item, err = s.repo.GetEnabled(ctx)
+	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return documentparser.VLMConfig{}, false, nil
 	}
@@ -72,8 +78,14 @@ func (s *vlmSettingService) CurrentVision(ctx context.Context) (documentparser.V
 }
 
 // List 返回全部配置，含未测试和已停用的，供设置页展示。
-func (s *vlmSettingService) List(ctx context.Context) ([]responsedto.VLMSetting, error) {
-	items, err := s.repo.List(ctx)
+func (s *vlmSettingService) List(ctx context.Context, ownerIDs ...uint64) ([]responsedto.VLMSetting, error) {
+	var items []entity.VLMSetting
+	var err error
+	if len(ownerIDs) > 0 {
+		items, err = s.repo.ListByOwner(ctx, ownerIDs[0])
+	} else {
+		items, err = s.repo.List(ctx)
+	}
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询视觉模型配置失败", err)
 	}
@@ -85,7 +97,7 @@ func (s *vlmSettingService) List(ctx context.Context) ([]responsedto.VLMSetting,
 }
 
 // Create 新建配置：测通了才能手动启用，所以入库时固定是未测试 + 未启用。
-func (s *vlmSettingService) Create(ctx context.Context, input requestdto.VLMSetting) (*responsedto.VLMSetting, error) {
+func (s *vlmSettingService) Create(ctx context.Context, input requestdto.VLMSetting, ownerIDs ...uint64) (*responsedto.VLMSetting, error) {
 	name, baseURL, timeout, model, err := validateVLMInput(input)
 	if err != nil {
 		return nil, err
@@ -103,6 +115,9 @@ func (s *vlmSettingService) Create(ctx context.Context, input requestdto.VLMSett
 		APIKeyEncrypted: encrypted, TimeoutSeconds: int32(timeout / time.Second),
 		TestStatus: entity.VLMTestStatusUntested, IsEnabled: false,
 	}
+	if len(ownerIDs) > 0 {
+		item.OwnerID = ownerIDs[0]
+	}
 	if err := s.repo.Create(ctx, item); err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeConflict, "配置名称已存在或保存失败", err)
 	}
@@ -112,8 +127,8 @@ func (s *vlmSettingService) Create(ctx context.Context, input requestdto.VLMSett
 
 // Update 全量更新。地址、超时、模型、密钥任一变动，都把配置打回未测试并停用：
 // 旧配置测通过不代表新配置能用，继续挂着"测试成功"的徽章是骗人的。
-func (s *vlmSettingService) Update(ctx context.Context, id uint64, input requestdto.VLMSetting) (*responsedto.VLMSetting, error) {
-	item, err := s.find(ctx, id)
+func (s *vlmSettingService) Update(ctx context.Context, id uint64, input requestdto.VLMSetting, ownerIDs ...uint64) (*responsedto.VLMSetting, error) {
+	item, err := s.find(ctx, id, ownerIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -153,11 +168,17 @@ func (s *vlmSettingService) Update(ctx context.Context, id uint64, input request
 
 // Delete 删除配置；不检查是否正在被引用 —— 解析侧读取的是"当前启用"这一行，
 // 删掉启用中的配置等于视觉理解关闭（不会自动切换到其它配置）。
-func (s *vlmSettingService) Delete(ctx context.Context, id uint64) error {
-	if _, err := s.find(ctx, id); err != nil {
+func (s *vlmSettingService) Delete(ctx context.Context, id uint64, ownerIDs ...uint64) error {
+	if _, err := s.find(ctx, id, ownerIDs...); err != nil {
 		return err
 	}
-	if err := s.repo.Delete(ctx, id); err != nil {
+	var err error
+	if len(ownerIDs) > 0 {
+		err = s.repo.DeleteByOwner(ctx, id, ownerIDs[0])
+	} else {
+		err = s.repo.Delete(ctx, id)
+	}
+	if err != nil {
 		return apperrors.NewWithErr(apperrors.CodeInternalError, "删除视觉模型配置失败", err)
 	}
 	return nil
@@ -165,8 +186,8 @@ func (s *vlmSettingService) Delete(ctx context.Context, id uint64) error {
 
 // Test 发一次真实视觉探测。失败要写回状态并停用该配置——测不通的配置不该继续
 // 被解析使用；成功时保持原启用状态不动（测试不是启用动作）。
-func (s *vlmSettingService) Test(ctx context.Context, id uint64) (*responsedto.VLMSettingTestResult, error) {
-	item, err := s.find(ctx, id)
+func (s *vlmSettingService) Test(ctx context.Context, id uint64, ownerIDs ...uint64) (*responsedto.VLMSettingTestResult, error) {
+	item, err := s.find(ctx, id, ownerIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -206,15 +227,20 @@ func (s *vlmSettingService) Test(ctx context.Context, id uint64) (*responsedto.V
 }
 
 // SetEnabled 切换启用状态；未测试通过的配置不许启用，否则每份含图文档都会白等一次超时。
-func (s *vlmSettingService) SetEnabled(ctx context.Context, id uint64, enabled bool) (*responsedto.VLMSetting, error) {
-	item, err := s.find(ctx, id)
+func (s *vlmSettingService) SetEnabled(ctx context.Context, id uint64, enabled bool, ownerIDs ...uint64) (*responsedto.VLMSetting, error) {
+	item, err := s.find(ctx, id, ownerIDs...)
 	if err != nil {
 		return nil, err
 	}
 	if enabled && item.TestStatus != entity.VLMTestStatusSuccess {
 		return nil, apperrors.New(apperrors.CodeBadRequest, "请先测试连接，成功后才能启用")
 	}
-	applied, err := s.repo.SetEnabled(ctx, id, enabled)
+	var applied bool
+	if len(ownerIDs) > 0 {
+		applied, err = s.repo.SetEnabledForOwner(ctx, id, ownerIDs[0], enabled)
+	} else {
+		applied, err = s.repo.SetEnabled(ctx, id, enabled)
+	}
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "更新启用状态失败", err)
 	}
@@ -228,7 +254,7 @@ func (s *vlmSettingService) SetEnabled(ctx context.Context, id uint64, enabled b
 
 // TestConnection 用未保存的表单值发一次探测，不写任何状态 —— 与 Test 的分工：
 // Test 是"已保存配置的体检"（失败会停用并写回），这里是"保存前的试跑"。
-func (s *vlmSettingService) TestConnection(ctx context.Context, input requestdto.VLMSettingProbe) (*responsedto.VLMSettingTestResult, error) {
+func (s *vlmSettingService) TestConnection(ctx context.Context, input requestdto.VLMSettingProbe, ownerIDs ...uint64) (*responsedto.VLMSettingTestResult, error) {
 	baseURL, timeout, model, err := validateVLMTarget(input.BaseURL, input.Timeout, input.Model)
 	if err != nil {
 		return nil, err
@@ -236,7 +262,14 @@ func (s *vlmSettingService) TestConnection(ctx context.Context, input requestdto
 	apiKey := strings.TrimSpace(input.APIKey)
 	if apiKey == "" && !input.ClearAPIKey && input.ID != 0 {
 		// 编辑既有配置且没重新输入密钥：沿用库里那把，避免"只想测一下还得重填 Key"。
-		if item, err := s.repo.FindByID(ctx, input.ID); err == nil {
+		var item *entity.VLMSetting
+		var err error
+		if len(ownerIDs) > 0 {
+			item, err = s.repo.FindByIDAndOwner(ctx, input.ID, ownerIDs[0])
+		} else {
+			item, err = s.repo.FindByID(ctx, input.ID)
+		}
+		if err == nil {
 			apiKey, err = s.decrypt(item.APIKeyEncrypted)
 			if err != nil {
 				return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "解密 API Key 失败", err)
@@ -268,8 +301,14 @@ func (s *vlmSettingService) TestConnection(ctx context.Context, input requestdto
 }
 
 // find 按 ID 取配置，取不到就是 404 语义。
-func (s *vlmSettingService) find(ctx context.Context, id uint64) (*entity.VLMSetting, error) {
-	item, err := s.repo.FindByID(ctx, id)
+func (s *vlmSettingService) find(ctx context.Context, id uint64, ownerIDs ...uint64) (*entity.VLMSetting, error) {
+	var item *entity.VLMSetting
+	var err error
+	if len(ownerIDs) > 0 {
+		item, err = s.repo.FindByIDAndOwner(ctx, id, ownerIDs[0])
+	} else {
+		item, err = s.repo.FindByID(ctx, id)
+	}
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "视觉模型配置不存在", err)
 	}

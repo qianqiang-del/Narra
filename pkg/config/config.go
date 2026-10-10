@@ -16,6 +16,7 @@ type Config struct {
 	DocumentParser  DocumentParserConfig  `mapstructure:"document_parser"`
 	Storage         StorageConfig         `mapstructure:"storage"`
 	JWT             JWTConfig             `mapstructure:"jwt"`
+	SMS             SMSConfig             `mapstructure:"sms"`
 	Log             LogConfig             `mapstructure:"log"`
 	Langfuse        LangfuseConfig        `mapstructure:"langfuse"`
 	CORS            CORSConfig            `mapstructure:"cors"`
@@ -434,6 +435,16 @@ func (c DocumentParserConfig) Validate() error {
 type JWTConfig struct {
 	Secret      string        `mapstructure:"secret"`
 	ExpireHours time.Duration `mapstructure:"expire_hours"`
+}
+
+// SMSConfig configures Alibaba Cloud SMS. Credentials are loaded from environment variables.
+type SMSConfig struct {
+	Enabled         bool   `mapstructure:"enabled"`
+	RegionID        string `mapstructure:"region_id"`
+	SignName        string `mapstructure:"sign_name"`
+	TemplateCode    string `mapstructure:"template_code"`
+	AccessKeyID     string `mapstructure:"access_key_id"`
+	AccessKeySecret string `mapstructure:"access_key_secret"`
 }
 
 // LogConfig 日志配置

@@ -43,6 +43,33 @@ func (r *embeddingSettingRepository) GetActive(ctx context.Context) (*entity.Emb
 	return &setting, nil
 }
 
+func (r *embeddingSettingRepository) GetActiveByOwner(ctx context.Context, ownerID uint64) (*entity.EmbeddingSetting, error) {
+	var setting entity.EmbeddingSetting
+	if err := r.db.WithContext(ctx).Where("owner_id = ? AND is_active = ?", ownerID, true).First(&setting).Error; err != nil {
+		return nil, err
+	}
+	return &setting, nil
+}
+
+func (r *embeddingSettingRepository) SaveActiveForOwner(ctx context.Context, ownerID uint64, setting *entity.EmbeddingSetting) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current entity.EmbeddingSetting
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("owner_id = ? AND is_active = ?", ownerID, true).First(&current).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err := tx.Model(&entity.EmbeddingSetting{}).Where("owner_id = ? AND is_active = ?", ownerID, true).Update("is_active", false).Error; err != nil {
+			return err
+		}
+		setting.OwnerID, setting.IsActive = ownerID, true
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return tx.Create(setting).Error
+		}
+		setting.ID = current.ID
+		return tx.Save(setting).Error
+	})
+}
+
 // SaveActive 把 setting 置为唯一生效配置。
 // "生效"是个全局唯一状态，而这里要先让旧记录失效、再让新记录生效，是两次写，
 // 所以三步都放进一个事务：中间任何一步失败都整体回滚，

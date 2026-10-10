@@ -17,8 +17,10 @@ const (
 // 四条 CHECK 由字段上的 check tag 声明，AutoMigrate 建；改取值时改这里即可。
 type LLMProvider struct {
 	BaseModel
+	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_llm_providers_owner_id;uniqueIndex:llm_providers_owner_name_key,priority:1;comment:所属用户 ID" json:"-"`
+	Owner   *User  `gorm:"foreignKey:OwnerID;constraint:llm_providers_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 
-	Name            string          `gorm:"column:name;type:varchar(120);not null;uniqueIndex;comment:配置名称，全局唯一" json:"name"`
+	Name            string          `gorm:"column:name;type:varchar(120);not null;uniqueIndex:llm_providers_owner_name_key,priority:2;comment:用户内唯一的配置名称" json:"name"`
 	Protocol        string          `gorm:"column:protocol;type:varchar(32);not null;default:openai-compatible;check:llm_providers_protocol_check,protocol = 'openai-compatible';comment:服务方协议类型，目前只允许 openai-compatible" json:"protocol"`
 	BaseURL         string          `gorm:"column:base_url;type:text;not null;comment:服务根地址，如 https://api.deepseek.com/v1" json:"base_url"`
 	APIKeyEncrypted string          `gorm:"column:api_key_encrypted;type:text;not null;default:'';comment:加密后的 API Key；明文不落库，接口也不返回" json:"-"`

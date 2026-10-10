@@ -1,9 +1,13 @@
 package llm
 
-import "github.com/gin-gonic/gin"
+import (
+	"narra/internal/middleware"
+
+	"github.com/gin-gonic/gin"
+)
 
 func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
-	settings := g.Group("/settings/llm/providers")
+	settings := g.Group("/settings/llm/providers", middleware.Auth())
 	settings.GET("", c.List)
 	settings.POST("", c.Create)
 	settings.PUT("/:id", c.Update)
@@ -12,5 +16,5 @@ func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	settings.POST("/:id/pricing/suggestions", c.SuggestPricing)
 	settings.PATCH("/:id/enabled", c.SetEnabled)
 
-	g.GET("/llm/models/available", c.AvailableModels)
+	g.GET("/llm/models/available", middleware.Auth(), c.AvailableModels)
 }

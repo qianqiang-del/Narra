@@ -29,6 +29,12 @@ func (r *vlmSettingRepository) List(ctx context.Context) ([]entity.VLMSetting, e
 	return settings, nil
 }
 
+func (r *vlmSettingRepository) ListByOwner(ctx context.Context, ownerID uint64) ([]entity.VLMSetting, error) {
+	var settings []entity.VLMSetting
+	err := r.db.WithContext(ctx).Where("owner_id = ?", ownerID).Order("is_enabled DESC, id ASC").Find(&settings).Error
+	return settings, err
+}
+
 // GetEnabled 查当前启用的配置。查不到时不吞错，把 gorm.ErrRecordNotFound 透传给上层：
 // "还没启用过任何配置"（视觉理解关闭）和"查库失败"是两回事。
 func (r *vlmSettingRepository) GetEnabled(ctx context.Context) (*entity.VLMSetting, error) {
@@ -39,10 +45,26 @@ func (r *vlmSettingRepository) GetEnabled(ctx context.Context) (*entity.VLMSetti
 	return &setting, nil
 }
 
+func (r *vlmSettingRepository) GetEnabledByOwner(ctx context.Context, ownerID uint64) (*entity.VLMSetting, error) {
+	var setting entity.VLMSetting
+	if err := r.db.WithContext(ctx).Where("owner_id = ? AND is_enabled = ?", ownerID, true).First(&setting).Error; err != nil {
+		return nil, err
+	}
+	return &setting, nil
+}
+
 // FindByID 按主键取配置。
 func (r *vlmSettingRepository) FindByID(ctx context.Context, id uint64) (*entity.VLMSetting, error) {
 	var setting entity.VLMSetting
 	if err := r.db.WithContext(ctx).First(&setting, id).Error; err != nil {
+		return nil, err
+	}
+	return &setting, nil
+}
+
+func (r *vlmSettingRepository) FindByIDAndOwner(ctx context.Context, id, ownerID uint64) (*entity.VLMSetting, error) {
+	var setting entity.VLMSetting
+	if err := r.db.WithContext(ctx).Where("id = ? AND owner_id = ?", id, ownerID).First(&setting).Error; err != nil {
 		return nil, err
 	}
 	return &setting, nil
@@ -62,6 +84,32 @@ func (r *vlmSettingRepository) Update(ctx context.Context, setting *entity.VLMSe
 // 部分唯一索引只约束"最多一条 true"，没有启用项是合法状态（视觉理解关闭）。
 func (r *vlmSettingRepository) Delete(ctx context.Context, id uint64) error {
 	return r.db.WithContext(ctx).Delete(&entity.VLMSetting{}, id).Error
+}
+
+func (r *vlmSettingRepository) DeleteByOwner(ctx context.Context, id, ownerID uint64) error {
+	return r.db.WithContext(ctx).Where("id = ? AND owner_id = ?", id, ownerID).Delete(&entity.VLMSetting{}).Error
+}
+
+func (r *vlmSettingRepository) SetEnabledForOwner(ctx context.Context, id, ownerID uint64, enabled bool) (bool, error) {
+	var applied bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var target entity.VLMSetting
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ?", id, ownerID).First(&target).Error; err != nil {
+			return err
+		}
+		if enabled {
+			if err := tx.Model(&entity.VLMSetting{}).Where("owner_id = ? AND is_enabled = ?", ownerID, true).Update("is_enabled", false).Error; err != nil {
+				return err
+			}
+		}
+		result := tx.Model(&entity.VLMSetting{}).Where("id = ? AND owner_id = ?", id, ownerID).Update("is_enabled", enabled)
+		applied = result.RowsAffected > 0
+		return result.Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return applied, err
 }
 
 // SetEnabled 切换启用状态。

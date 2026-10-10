@@ -17,7 +17,9 @@ type EmbeddingSettingRepository interface {
 	// GetActive 返回当前生效的配置；没有任何生效记录时，
 	// 原样返回 gorm.ErrRecordNotFound，由上层决定是回退默认配置还是报错。
 	GetActive(ctx context.Context) (*entity.EmbeddingSetting, error)
+	GetActiveByOwner(ctx context.Context, ownerID uint64) (*entity.EmbeddingSetting, error)
 
 	// SaveActive 把 setting 落库并置为唯一生效项，旧配置在同一次事务里取消生效。
 	SaveActive(ctx context.Context, setting *entity.EmbeddingSetting) error
+	SaveActiveForOwner(ctx context.Context, ownerID uint64, setting *entity.EmbeddingSetting) error
 }

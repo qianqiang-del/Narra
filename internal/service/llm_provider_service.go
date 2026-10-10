@@ -30,8 +30,8 @@ func NewLLMProviderService(repo repository.LLMProviderRepository, encryptionKey 
 }
 
 // List 返回全部配置，含未测试和已停用的，供设置页展示。
-func (s *llmProviderService) List(ctx context.Context) ([]responsedto.LLMProvider, error) {
-	items, err := s.repo.List(ctx)
+func (s *llmProviderService) List(ctx context.Context, ownerID uint64) ([]responsedto.LLMProvider, error) {
+	items, err := s.repo.ListByOwner(ctx, ownerID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询大模型配置失败", err)
 	}
@@ -67,8 +67,26 @@ func (s *llmProviderService) AvailableModels(ctx context.Context) ([]responsedto
 	return out, nil
 }
 
+func (s *llmProviderService) AvailableModelsForOwner(ctx context.Context, ownerID uint64) ([]responsedto.AvailableLLMModel, error) {
+	items, err := s.repo.ListAvailableByOwner(ctx, ownerID)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询可用大模型失败", err)
+	}
+	out := make([]responsedto.AvailableLLMModel, 0, len(items))
+	for _, item := range items {
+		models, err := decodeModels(item.Models)
+		if err != nil {
+			return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "大模型配置数据无效", err)
+		}
+		for _, model := range models {
+			out = append(out, responsedto.AvailableLLMModel{ProviderID: item.ID, ProviderName: item.Name, ModelID: model})
+		}
+	}
+	return out, nil
+}
+
 // Create 新建配置，一律全部入库：测通了才能手动启用。
-func (s *llmProviderService) Create(ctx context.Context, input requestdto.LLMProvider) (*responsedto.LLMProvider, error) {
+func (s *llmProviderService) Create(ctx context.Context, ownerID uint64, input requestdto.LLMProvider) (*responsedto.LLMProvider, error) {
 	name, baseURL, timeout, models, err := validateLLMInput(input)
 	if err != nil {
 		return nil, err
@@ -87,7 +105,8 @@ func (s *llmProviderService) Create(ctx context.Context, input requestdto.LLMPro
 		return nil, apperrors.NewWithErr(apperrors.CodeBadRequest, "模型价格配置无效", err)
 	}
 	item := &entity.LLMProvider{
-		Name: name, Protocol: "openai-compatible", BaseURL: baseURL,
+		OwnerID: ownerID,
+		Name:    name, Protocol: "openai-compatible", BaseURL: baseURL,
 		APIKeyEncrypted: encrypted, TimeoutSeconds: int32(timeout / time.Second),
 		Models: modelJSON, Pricing: pricingJSON, TestStatus: entity.LLMTestStatusUntested, IsEnabled: false,
 	}
@@ -99,8 +118,8 @@ func (s *llmProviderService) Create(ctx context.Context, input requestdto.LLMPro
 }
 
 // Update 全量更新。地址、超时、模型、密钥任一变动，都把配置打回未测试并停用。
-func (s *llmProviderService) Update(ctx context.Context, id uint64, input requestdto.LLMProvider) (*responsedto.LLMProvider, error) {
-	item, err := s.find(ctx, id)
+func (s *llmProviderService) Update(ctx context.Context, ownerID, id uint64, input requestdto.LLMProvider) (*responsedto.LLMProvider, error) {
+	item, err := s.find(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -145,11 +164,11 @@ func (s *llmProviderService) Update(ctx context.Context, id uint64, input reques
 }
 
 // Delete 删除配置；不检查是否正在被引用，因为目前没有别的表指向它。
-func (s *llmProviderService) Delete(ctx context.Context, id uint64) error {
-	if _, err := s.find(ctx, id); err != nil {
+func (s *llmProviderService) Delete(ctx context.Context, ownerID, id uint64) error {
+	if _, err := s.find(ctx, ownerID, id); err != nil {
 		return err
 	}
-	if err := s.repo.Delete(ctx, id); err != nil {
+	if err := s.repo.DeleteByIDAndOwner(ctx, id, ownerID); err != nil {
 		return apperrors.NewWithErr(apperrors.CodeInternalError, "删除大模型配置失败", err)
 	}
 	return nil
@@ -157,8 +176,8 @@ func (s *llmProviderService) Delete(ctx context.Context, id uint64) error {
 
 // Test 逐个测模型列表里的每个模型，全部通过才算这条配置可用。
 // 只测第一个的话，第二个模型名写错要等到真正生成时才暴露，而那时候报错已经离「配置」很远了。
-func (s *llmProviderService) Test(ctx context.Context, id uint64) (*responsedto.LLMProviderTestResult, error) {
-	item, err := s.find(ctx, id)
+func (s *llmProviderService) Test(ctx context.Context, ownerID, id uint64) (*responsedto.LLMProviderTestResult, error) {
+	item, err := s.find(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -218,8 +237,8 @@ func (s *llmProviderService) Test(ctx context.Context, id uint64) (*responsedto.
 }
 
 // SetEnabled 切换启用状态；没测通过的配置不许启用，否则首页会拿到必然失败的模型。
-func (s *llmProviderService) SetEnabled(ctx context.Context, id uint64, enabled bool) (*responsedto.LLMProvider, error) {
-	item, err := s.find(ctx, id)
+func (s *llmProviderService) SetEnabled(ctx context.Context, ownerID, id uint64, enabled bool) (*responsedto.LLMProvider, error) {
+	item, err := s.find(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -235,8 +254,8 @@ func (s *llmProviderService) SetEnabled(ctx context.Context, id uint64, enabled 
 }
 
 // find 按 ID 取配置，取不到就是 404 语义。
-func (s *llmProviderService) find(ctx context.Context, id uint64) (*entity.LLMProvider, error) {
-	item, err := s.repo.FindByID(ctx, id)
+func (s *llmProviderService) find(ctx context.Context, ownerID, id uint64) (*entity.LLMProvider, error) {
+	item, err := s.repo.FindByIDAndOwner(ctx, id, ownerID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "大模型配置不存在", err)
 	}

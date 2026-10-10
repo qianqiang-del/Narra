@@ -29,6 +29,12 @@ func (r *rerankSettingRepository) List(ctx context.Context) ([]entity.RerankSett
 	return settings, nil
 }
 
+func (r *rerankSettingRepository) ListByOwner(ctx context.Context, ownerID uint64) ([]entity.RerankSetting, error) {
+	var settings []entity.RerankSetting
+	err := r.db.WithContext(ctx).Where("owner_id = ?", ownerID).Order("is_enabled DESC, id ASC").Find(&settings).Error
+	return settings, err
+}
+
 // GetEnabled 查当前启用的配置。查不到时不吞错，把 gorm.ErrRecordNotFound 透传给上层：
 // "还没启用过任何配置"（精排关闭）和"查库失败"是两回事，在这里替上层做决定会把两者混成一种。
 func (r *rerankSettingRepository) GetEnabled(ctx context.Context) (*entity.RerankSetting, error) {
@@ -48,6 +54,14 @@ func (r *rerankSettingRepository) FindByID(ctx context.Context, id uint64) (*ent
 	return &setting, nil
 }
 
+func (r *rerankSettingRepository) FindByIDAndOwner(ctx context.Context, id, ownerID uint64) (*entity.RerankSetting, error) {
+	var setting entity.RerankSetting
+	if err := r.db.WithContext(ctx).Where("id = ? AND owner_id = ?", id, ownerID).First(&setting).Error; err != nil {
+		return nil, err
+	}
+	return &setting, nil
+}
+
 // Create 写入一条新配置。
 func (r *rerankSettingRepository) Create(ctx context.Context, setting *entity.RerankSetting) error {
 	return r.db.WithContext(ctx).Create(setting).Error
@@ -62,6 +76,32 @@ func (r *rerankSettingRepository) Update(ctx context.Context, setting *entity.Re
 // 部分唯一索引只约束"最多一条 true"，没有启用项是合法状态（精排关闭）。
 func (r *rerankSettingRepository) Delete(ctx context.Context, id uint64) error {
 	return r.db.WithContext(ctx).Delete(&entity.RerankSetting{}, id).Error
+}
+
+func (r *rerankSettingRepository) DeleteByOwner(ctx context.Context, id, ownerID uint64) error {
+	return r.db.WithContext(ctx).Where("id = ? AND owner_id = ?", id, ownerID).Delete(&entity.RerankSetting{}).Error
+}
+
+func (r *rerankSettingRepository) SetEnabledForOwner(ctx context.Context, id, ownerID uint64, enabled bool) (bool, error) {
+	var applied bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var target entity.RerankSetting
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_id = ?", id, ownerID).First(&target).Error; err != nil {
+			return err
+		}
+		if enabled {
+			if err := tx.Model(&entity.RerankSetting{}).Where("owner_id = ? AND is_enabled = ?", ownerID, true).Update("is_enabled", false).Error; err != nil {
+				return err
+			}
+		}
+		result := tx.Model(&entity.RerankSetting{}).Where("id = ? AND owner_id = ?", id, ownerID).Update("is_enabled", enabled)
+		applied = result.RowsAffected > 0
+		return result.Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return applied, err
 }
 
 // SetEnabled 切换启用状态。

@@ -1,3 +1,5 @@
+import { clearSession, getToken } from '@/lib/authSession'
+
 /**
  * 后端 HTTP 客户端。
  *
@@ -42,10 +44,12 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // FormData 的 Content-Type 必须由浏览器自己生成（它要往里塞 boundary），
     // 这里写死 application/json 会让后端把 multipart 体整个解析不出来。
     const isFormData = init?.body instanceof FormData
+    const token = getToken()
     res = await fetch(`${BASE}${path}`, {
       ...init,
       headers: {
         ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...init?.headers,
       },
     })
@@ -62,6 +66,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (body.code !== CODE_SUCCESS) {
+    if (body.code === 401 && !path.startsWith('/auth/')) clearSession()
     throw new ApiError(body.code, body.message || `请求失败（code ${body.code}）`)
   }
 
@@ -91,8 +96,9 @@ export interface SseEvent {
  * 拿到的是 JSON 而不是流，这里按信封翻成 ApiError，与 request() 的读法一致。
  */
 export async function* streamEvents(path: string, signal?: AbortSignal): AsyncGenerator<SseEvent> {
+  const token = getToken()
   const res = await fetch(`${BASE}${path}`, {
-    headers: { Accept: 'text/event-stream' },
+    headers: { Accept: 'text/event-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     signal,
   })
 
@@ -104,6 +110,7 @@ export async function* streamEvents(path: string, signal?: AbortSignal): AsyncGe
       throw new ApiError(res.status, `响应不是事件流（HTTP ${res.status}）`)
     }
     if (body.code !== CODE_SUCCESS) {
+      if (body.code === 401) clearSession()
       throw new ApiError(body.code, body.message || `请求失败（code ${body.code}）`)
     }
     throw new ApiError(res.status, '响应不是事件流')

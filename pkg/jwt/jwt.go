@@ -15,7 +15,7 @@ var (
 )
 
 // GenerateToken 生成 JWT Token
-func GenerateToken(userID uint, username string) (string, error) {
+func GenerateToken(userID uint64, username string) (string, error) {
 	cfg := config.Get().JWT
 
 	claims := CustomClaims{
@@ -39,7 +39,7 @@ func ParseToken(tokenString string) (*CustomClaims, error) {
 
 	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
 		return []byte(cfg.Secret), nil
-	})
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithIssuer("narra"))
 
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {
@@ -48,7 +48,7 @@ func ParseToken(tokenString string) (*CustomClaims, error) {
 		return nil, ErrTokenInvalid
 	}
 
-	if claims, ok := token.Claims.(*CustomClaims); ok && token.Valid {
+	if claims, ok := token.Claims.(*CustomClaims); ok && token.Valid && claims.UserID != 0 {
 		return claims, nil
 	}
 

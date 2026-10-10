@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm"
 
 	"narra/internal/model/entity"
+	"narra/internal/ownership"
 	"narra/pkg/documentparser"
 	"narra/pkg/embedding"
 	"narra/pkg/logger"
@@ -174,7 +175,7 @@ type TxRunner interface {
 // 视觉配置只在这一个点用到，没有需要热推送的理由（实现方是 vlm 设置服务）。
 // 返回 ok = false 表示"未启用视觉理解"，不是错误。
 type VisionProvider interface {
-	CurrentVision(ctx context.Context) (documentparser.VLMConfig, bool, error)
+	CurrentVision(ctx context.Context, ownerID ...uint64) (documentparser.VLMConfig, bool, error)
 }
 
 // IngestOptions 是收录器的运行约束，由配置与装配点注入。
@@ -503,6 +504,7 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 		// 改成硬失败：一次批量里几十条文件各自提交，若允许半截成功，会出现"文档在转圈、
 		// 抽屉里没有这条记录"的条目 —— 用户在界面上既看不到进度也没有重试入口。
 		record := &entity.KnowledgeUploadRecord{
+			OwnerID:      created.OwnerID,
 			DocumentID:   &created.ID,
 			OriginalName: truncateTitle(sourceURI),
 			SizeBytes:    input.SizeBytes,
@@ -721,7 +723,7 @@ func (i *Ingester) processExistingFile(
 		// 取配置失败降级为纯 OCR（告警），不让整个收录失败 —— 视觉描述是增量，
 		// 本地 OCR 的正文仍然完整可用。
 		if i.vision != nil {
-			vision, ok, err := i.vision.CurrentVision(ctx)
+			vision, ok, err := i.vision.CurrentVision(ctx, document.OwnerID)
 			if err != nil {
 				logger.Warn("读取视觉模型配置失败，本次解析只走 OCR",
 					zap.Uint64("document_id", document.ID), zap.Error(err))
@@ -1013,6 +1015,7 @@ func (i *Ingester) cleanupUnusedModels(ctx context.Context) {
 // 课堂时到期由 retention 清理）；普通知识库文档 kind = knowledge、expires_at 为空。
 func (i *Ingester) createDocument(ctx context.Context, title, sourceType, sourceURI, purpose string) (*entity.KnowledgeDocument, error) {
 	document := &entity.KnowledgeDocument{
+		OwnerID:    ownership.FromContext(ctx),
 		Title:      truncateTitle(title),
 		SourceType: sourceType,
 		Enabled:    true,

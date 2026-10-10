@@ -20,6 +20,8 @@ import (
 	"go.uber.org/zap"
 
 	"narra/internal/material"
+	"narra/internal/mcp"
+	"narra/internal/ownership"
 	"narra/internal/rag/einoretriever"
 	"narra/internal/repository"
 	appcrypto "narra/pkg/crypto"
@@ -68,6 +70,7 @@ type Deps struct {
 type runtime struct {
 	chatModel model.ToolCallingChatModel
 	tools     []tool.BaseTool
+	ownerID   uint64
 
 	mutex sync.Mutex
 	// forcedUnsupported 记录本 Provider 拒绝过强制工具调用，之后不再重试那条路。
@@ -116,14 +119,14 @@ func newRuntime(ctx context.Context, deps Deps, providerID uint64, modelID strin
 
 	var tools []tool.BaseTool
 	if deps.Tools != nil {
-		if tools, err = deps.Tools.EinoTools(ctx, allowSearch); err != nil {
+		if tools, err = deps.Tools.EinoTools(mcp.WithOwner(ctx, provider.OwnerID), allowSearch); err != nil {
 			return nil, fmt.Errorf("建运行时：获取 MCP 工具失败: %w", err)
 		}
 	} else if allowSearch {
 		return nil, fmt.Errorf("建运行时：需要联网但没有工具来源")
 	}
 
-	return &runtime{chatModel: chatModel, tools: tools}, nil
+	return &runtime{chatModel: chatModel, tools: tools, ownerID: provider.OwnerID}, nil
 }
 
 // hasTools 报告本次运行时有没有挂到工具；没有工具时调研节点无从下手，图上也会跳过它。
@@ -155,7 +158,7 @@ func (r *runtime) plannerAgent(ctx context.Context) (*react.Agent, error) {
 //
 // 规划与调研两个 Agent 都会调用带检索工具的生成入口，各自调用前包一层即可。
 func (r *runtime) retrievalContext(ctx context.Context) context.Context {
-	return einoretriever.WithRewriteModel(ctx, r.chatModel)
+	return einoretriever.WithRewriteModel(ownership.WithOwner(ctx, r.ownerID), r.chatModel)
 }
 
 // generateToolCall 调一次模型，返回指定工具调用的参数。

@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 
+	"narra/internal/middleware"
 	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
@@ -24,7 +25,7 @@ func (c *Controller) Create(ctx *gin.Context) {
 		response.BadRequest(ctx, "请求参数错误")
 		return
 	}
-	item, err := c.svc.Create(ctx.Request.Context(), input)
+	item, err := c.svc.Create(ctx.Request.Context(), middleware.GetUserID(ctx), input)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -33,7 +34,7 @@ func (c *Controller) Create(ctx *gin.Context) {
 }
 
 func (c *Controller) List(ctx *gin.Context) {
-	items, err := c.svc.List(ctx.Request.Context())
+	items, err := c.svc.List(ctx.Request.Context(), middleware.GetUserID(ctx))
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -46,7 +47,7 @@ func (c *Controller) Delete(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := c.svc.Delete(ctx.Request.Context(), id); err != nil {
+	if err := c.svc.Delete(ctx.Request.Context(), middleware.GetUserID(ctx), id); err != nil {
 		response.BizError(ctx, err)
 		return
 	}
@@ -58,7 +59,7 @@ func (c *Controller) Get(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	item, err := c.svc.Get(ctx.Request.Context(), id)
+	item, err := c.svc.Get(ctx.Request.Context(), middleware.GetUserID(ctx), id)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -71,7 +72,7 @@ func (c *Controller) GetOutline(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	item, err := c.svc.GetOutline(ctx.Request.Context(), id)
+	item, err := c.svc.GetOutline(ctx.Request.Context(), middleware.GetUserID(ctx), id)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -84,7 +85,7 @@ func (c *Controller) GetAgents(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	items, err := c.svc.GetAgents(ctx.Request.Context(), id)
+	items, err := c.svc.GetAgents(ctx.Request.Context(), middleware.GetUserID(ctx), id)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -97,7 +98,7 @@ func (c *Controller) ListScenes(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	items, err := c.svc.ListScenes(ctx.Request.Context(), id)
+	items, err := c.svc.ListScenes(ctx.Request.Context(), middleware.GetUserID(ctx), id)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -110,7 +111,7 @@ func (c *Controller) RetryScene(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	item, err := c.svc.RetryScene(ctx.Request.Context(), id)
+	item, err := c.svc.RetryScene(ctx.Request.Context(), middleware.GetUserID(ctx), id)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -171,12 +172,13 @@ func (c *Controller) Events(ctx *gin.Context) {
 		return
 	}
 	requestCtx := ctx.Request.Context()
-	item, err := c.svc.Get(requestCtx, id)
+	ownerID := middleware.GetUserID(ctx)
+	item, err := c.svc.Get(requestCtx, ownerID, id)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
 	}
-	scenes, err := c.svc.ListScenes(requestCtx, id)
+	scenes, err := c.svc.ListScenes(requestCtx, ownerID, id)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -205,12 +207,12 @@ func (c *Controller) Events(ctx *gin.Context) {
 				return
 			}
 		case <-ticker.C:
-			item, err := c.svc.Get(requestCtx, id)
+			item, err := c.svc.Get(requestCtx, ownerID, id)
 			if err != nil {
 				_ = sse.Event(ctx, "error", gin.H{"message": err.Error()})
 				return
 			}
-			scenes, err := c.svc.ListScenes(requestCtx, id)
+			scenes, err := c.svc.ListScenes(requestCtx, ownerID, id)
 			if err != nil {
 				_ = sse.Event(ctx, "error", gin.H{"message": err.Error()})
 				return

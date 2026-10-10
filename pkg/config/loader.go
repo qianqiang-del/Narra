@@ -35,6 +35,7 @@ func Load(configPath string) (*Config, error) {
 	v.AutomaticEnv()
 	// Embedding 默认不启用。模型与向量维度因服务商而异，启用时必须显式配置。
 	v.SetDefault("embedding.timeout", "120s")
+	v.SetDefault("sms.region_id", "cn-hangzhou")
 	// TTS 同理。provider 故意不给默认值：它决定客户端走哪种协议，写错了要到合成那一步才炸。
 	v.SetDefault("tts.model", "qwen3-tts-flash")
 	v.SetDefault("tts.timeout", "60s")
@@ -101,6 +102,24 @@ func Load(configPath string) (*Config, error) {
 	}
 	if val := os.Getenv("JWT_SECRET"); val != "" {
 		config.JWT.Secret = val
+	}
+	if val := os.Getenv("SMS_ENABLED"); val == "true" {
+		config.SMS.Enabled = true
+	}
+	if val := os.Getenv("SMS_REGION_ID"); val != "" {
+		config.SMS.RegionID = val
+	}
+	if val := os.Getenv("SMS_SIGN_NAME"); val != "" {
+		config.SMS.SignName = val
+	}
+	if val := os.Getenv("SMS_TEMPLATE_CODE"); val != "" {
+		config.SMS.TemplateCode = val
+	}
+	if val := os.Getenv("SMS_ACCESS_KEY_ID"); val != "" {
+		config.SMS.AccessKeyID = val
+	}
+	if val := os.Getenv("SMS_ACCESS_KEY_SECRET"); val != "" {
+		config.SMS.AccessKeySecret = val
 	}
 	if val := os.Getenv("EMBEDDING_API_KEY"); val != "" {
 		config.Embedding.APIKey = val

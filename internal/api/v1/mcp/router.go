@@ -1,10 +1,13 @@
 package mcp
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/gin-gonic/gin"
+	"narra/internal/middleware"
+)
 
 // RegisterRoutes 把 MCP 服务配置的路由挂到给定的路由组上。
 func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
-	servers := g.Group("/mcp/servers")
+	servers := g.Group("/mcp/servers", middleware.Auth())
 	{
 		servers.GET("", c.List)
 		servers.POST("", c.Create)

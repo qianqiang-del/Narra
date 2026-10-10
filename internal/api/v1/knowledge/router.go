@@ -1,6 +1,9 @@
 package knowledge
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/gin-gonic/gin"
+	"narra/internal/middleware"
+)
 
 // RegisterRoutes 挂载知识库文档接口。
 // /knowledge/upload-records 是**另一组资源**，不是文档的子资源：它记的是"投递"这个动作
@@ -11,6 +14,7 @@ import "github.com/gin-gonic/gin"
 // 所以 "parser" 不会被当成一个文档 ID，两个接口可以共存，注册顺序也不影响。
 // /upload-limits 同理，它是上传契约而不是某一篇文档的子资源。
 func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
+	g = g.Group("", middleware.Auth())
 	documents := g.Group("/knowledge/documents")
 	documents.POST("", c.Upload)
 	documents.POST("/text", c.IngestText)

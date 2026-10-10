@@ -1,6 +1,7 @@
 package api
 
 import (
+	authv1 "narra/internal/api/v1/auth"
 	classroomv1 "narra/internal/api/v1/classroom"
 	conversationv1 "narra/internal/api/v1/conversation"
 	discussionv1 "narra/internal/api/v1/discussion"
@@ -25,6 +26,7 @@ import (
 
 // Router 路由
 type Router struct {
+	authCtrl         *authv1.Controller
 	roleCtrl         *role.Controller
 	embeddingCtrl    *embedding.Controller
 	voiceCtrl        *voice.Controller
@@ -42,8 +44,9 @@ type Router struct {
 }
 
 // NewRouter 创建路由
-func NewRouter(roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, rerankSvc service.RerankSettingService, vlmSvc service.VLMSettingService, classroomSvc service.ClassroomService, folderSvc service.FolderService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, traceSvc service.TraceService, uploadDir string, parser documentparser.Parser, knowledgeLimits config.KnowledgeIngestConfig) *Router {
+func NewRouter(authSvc service.AuthService, roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, rerankSvc service.RerankSettingService, vlmSvc service.VLMSettingService, classroomSvc service.ClassroomService, folderSvc service.FolderService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, traceSvc service.TraceService, uploadDir string, parser documentparser.Parser, knowledgeLimits config.KnowledgeIngestConfig) *Router {
 	return &Router{
+		authCtrl:         authv1.NewController(authSvc),
 		roleCtrl:         role.NewController(roleSvc),
 		embeddingCtrl:    embedding.NewController(embeddingSvc),
 		voiceCtrl:        voice.NewController(voiceSvc),
@@ -80,6 +83,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 			})
 		})
 		// API 路由组
+		authv1.RegisterRoutes(v1, r.authCtrl)
 		role.RegisterRoutes(v1, r.roleCtrl)
 		voice.RegisterRoutes(v1, r.voiceCtrl)
 		embedding.RegisterRoutes(v1, r.embeddingCtrl)

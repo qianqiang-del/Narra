@@ -12,13 +12,13 @@ type MCPServerService interface {
 	// LoadRuntime loads enabled database configurations into the runtime manager.
 	LoadRuntime(ctx context.Context) error
 	// List 返回所有 MCP 服务配置。
-	List(ctx context.Context) ([]dto.MCPServerItem, error)
+	List(ctx context.Context, ownerID ...uint64) ([]dto.MCPServerItem, error)
 	// Create 新增一条 MCP 服务配置。
-	Create(ctx context.Context, input request.MCPServer) (*dto.MCPServerItem, error)
+	Create(ctx context.Context, input request.MCPServer, ownerID ...uint64) (*dto.MCPServerItem, error)
 	// Update 部分更新 MCP 服务配置。
-	Update(ctx context.Context, id uint64, input request.MCPServerUpdate) (*dto.MCPServerItem, error)
+	Update(ctx context.Context, id uint64, input request.MCPServerUpdate, ownerID ...uint64) (*dto.MCPServerItem, error)
 	// Delete 删除一条 MCP 服务配置。
-	Delete(ctx context.Context, id uint64) error
+	Delete(ctx context.Context, id uint64, ownerID ...uint64) error
 	// Test 测试与 MCP server 的连接，返回工具列表。
-	Test(ctx context.Context, id uint64) (*dto.MCPServerTestResult, error)
+	Test(ctx context.Context, id uint64, ownerID ...uint64) (*dto.MCPServerTestResult, error)
 }

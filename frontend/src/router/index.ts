@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { getToken } from '@/lib/authSession'
 
 /**
  * 路由结构对应旧 Next.js 项目的 App Router 目录（见 docs/UI-还原文档.md §1）：
@@ -16,6 +17,12 @@ import { createRouter, createWebHistory } from 'vue-router'
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('@/views/LoginView.vue'),
+      meta: { title: '登录' },
+    },
     {
       path: '/',
       name: 'home',
@@ -64,6 +71,12 @@ const router = createRouter({
   scrollBehavior(_to, _from, savedPosition) {
     return savedPosition ?? { top: 0 }
   },
+})
+
+router.beforeEach((to) => {
+  if (to.name === 'login') return getToken() ? { name: 'home' } : true
+  if (!getToken()) return { name: 'login', query: { redirect: to.fullPath } }
+  return true
 })
 
 router.afterEach((to) => {

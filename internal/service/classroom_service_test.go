@@ -27,7 +27,7 @@ type fakeMaterialReader struct {
 
 var _ materialDocumentReader = (*fakeMaterialReader)(nil)
 
-func (r *fakeMaterialReader) GetByID(_ context.Context, id uint64) (*entity.KnowledgeDocument, error) {
+func (r *fakeMaterialReader) GetByIDAndOwner(_ context.Context, id, _ uint64) (*entity.KnowledgeDocument, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -39,7 +39,7 @@ func (r *fakeMaterialReader) GetByID(_ context.Context, id uint64) (*entity.Know
 }
 
 // AssociateMaterials 模拟"转正"：只命中待用材料，命中后清空 expires_at。
-func (r *fakeMaterialReader) AssociateMaterials(_ context.Context, ids []uint64) (int64, error) {
+func (r *fakeMaterialReader) AssociateMaterialsForOwner(_ context.Context, _ uint64, ids []uint64) (int64, error) {
 	if r.err != nil {
 		return 0, r.err
 	}
@@ -56,7 +56,7 @@ func (r *fakeMaterialReader) AssociateMaterials(_ context.Context, ids []uint64)
 }
 
 // ExpireMaterials 模拟删课回收：只命中材料，重设清理时间。
-func (r *fakeMaterialReader) ExpireMaterials(_ context.Context, ids []uint64, expiresAt time.Time) (int64, error) {
+func (r *fakeMaterialReader) ExpireMaterialsForOwner(_ context.Context, _ uint64, ids []uint64, expiresAt time.Time) (int64, error) {
 	if r.err != nil {
 		return 0, r.err
 	}
@@ -191,7 +191,7 @@ func TestNormalizeMaterials(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := &classroomService{materials: tt.reader}
-			got, err := svc.normalizeMaterials(context.Background(), tt.input)
+			got, err := svc.normalizeMaterials(context.Background(), 1, tt.input)
 			if tt.wantErr != 0 {
 				var biz *apperrors.BizError
 				if !errors.As(err, &biz) || biz.Code != tt.wantErr {

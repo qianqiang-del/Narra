@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"narra/internal/model/entity"
+	"narra/internal/ownership"
 )
 
 // knowledgeSearchRepository 基于 GORM（含少量手写 SQL）的检索仓储。
@@ -88,6 +89,10 @@ func (r *knowledgeSearchRepository) SearchVector(
 	// 老 pgvector 上退成全精度 vector，用不上索引，但检索照常正确（见 useHalfvec）。
 	cast := vectorSearchCastType(query.Dimensions, r.useHalfvec(ctx, query.Dimensions))
 	filterClause, filterArgs := chunkFilterClause(query.Filter)
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		filterClause += " AND d.owner_id = ?"
+		filterArgs = append(filterArgs, ownerID)
+	}
 	statement := vectorSearchStatement(query.Dimensions, query.ModelID, query.Limit, cast, filterClause)
 
 	// 参数必须按 SQL 文本里占位符出现的顺序排：
@@ -206,6 +211,10 @@ func (r *knowledgeSearchRepository) SearchLexical(
 	}
 
 	filterClause, filterArgs := chunkFilterClause(query.Filter)
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		filterClause += " AND d.owner_id = ?"
+		filterArgs = append(filterArgs, ownerID)
+	}
 	contentRows, err := r.runLexicalCandidate(ctx, chunkTextHaystack, pairs, match, query.Limit, filterClause, filterArgs)
 	if err != nil {
 		return nil, err
@@ -420,6 +429,10 @@ func sqlPlaceholders(n int) string {
 // 条件由本包的三个包装方法拼好（都是固定字符串，没有外部输入），参数跟在状态值后面。
 // 只取序号与正文：装配不需要标题、来源、得分那些召回字段，也就不 JOIN 文档表的其它列。
 func (r *knowledgeSearchRepository) listChunkTexts(ctx context.Context, condition string, args ...any) ([]entity.KnowledgeChunkText, error) {
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		condition = "d.owner_id = ? AND " + condition
+		args = append([]any{ownerID}, args...)
+	}
 	statement := `
 SELECT c.chunk_index, c.content
 FROM knowledge_chunks c

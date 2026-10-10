@@ -32,6 +32,7 @@ import (
 	"narra/pkg/logger"
 	"narra/pkg/objectstorage"
 	"narra/pkg/rerank"
+	"narra/pkg/sms"
 	"narra/pkg/tts"
 
 	"github.com/cloudwego/eino-ext/callbacks/langfuse"
@@ -173,7 +174,11 @@ func (a *App) initDatabase() error {
 	// 下面的顺序保持被引用表在前（GORM 的 ReorderModels 也会再排一次，双保险）：
 	// 例如 PresetAgent 必须排在 ClassroomAgent 之前，前者的表先存在，后者的外键才建得出。
 	logger.Info("开始数据库迁移...")
+	if a.postgresDB.Migrator().HasTable(&entity.Classroom{}) && !a.postgresDB.Migrator().HasColumn(&entity.Classroom{}, "owner_id") {
+		return fmt.Errorf("现有数据库尚未迁移用户归属：先执行 migrations/0012_private_ownership.sql，再启动新版服务")
+	}
 	if err := a.postgresDB.AutoMigrate(
+		&entity.User{},
 		&entity.Folder{},
 		&entity.Classroom{},
 		&entity.PresetAgent{},
@@ -246,6 +251,8 @@ func (a *App) initDependencies() error {
 	}
 
 	// ========== 创建 Repository ==========
+	userRepo := repository.NewUserRepository(a.postgresDB)
+	codeRepo := repository.NewVerificationCodeRepository(a.redis)
 	roleRepo := repository.NewRoleRepository(a.postgresDB)
 	embeddingSettingRepo := repository.NewEmbeddingSettingRepository(a.postgresDB)
 	embeddingModelRepo := repository.NewEmbeddingModelRepository(a.postgresDB)
@@ -253,8 +260,7 @@ func (a *App) initDependencies() error {
 	llmProviderRepo := repository.NewLLMProviderRepository(a.postgresDB)
 	rerankSettingRepo := repository.NewRerankSettingRepository(a.postgresDB)
 	vlmSettingRepo := repository.NewVLMSettingRepository(a.postgresDB)
-	// 重排运行时：检索侧每次请求向它要"当前生效的精排客户端"，设置页保存/启停后
-	// 由服务层热更新（见 rerankSettingSvc 的 LoadActive 与 reload）；nil = 精排关闭。
+	// 私人重排配置不能加载到进程级 manager；检索侧接入用户上下文后按用户选用。
 	rerankManager := rerank.NewManager()
 	classroomRepo := repository.NewClassroomRepository(a.postgresDB)
 	folderRepo := repository.NewFolderRepository(a.postgresDB)
@@ -280,12 +286,19 @@ func (a *App) initDependencies() error {
 	sharedMemoryRepo := repository.NewSharedMemoryRepository(a.postgresDB)
 
 	// ========== 创建 Service ==========
+	aliSender, smsErr := sms.NewAliyunSender(a.cfg.SMS)
+	if smsErr != nil {
+		return smsErr
+	}
+	var smsSender service.SMSSender
+	if aliSender != nil {
+		smsSender = aliSender
+	}
+	authSvc := service.NewAuthService(userRepo, codeRepo, smsSender, a.cfg.JWT.Secret, a.cfg.JWT.ExpireHours)
 	roleSvc := service.NewRoleService(roleRepo)
+	// 配置文件中的 Embedding 保持共享，数据库里的私人配置不加载到全局 manager。
 	embeddingManager := embedding.NewManager(a.cfg.Embedding)
 	embeddingSettingSvc := service.NewEmbeddingSettingService(embeddingSettingRepo, embeddingModelRepo, embeddingManager, a.cfg.JWT.Secret)
-	if err := embeddingSettingSvc.LoadActive(context.Background()); err != nil {
-		return err
-	}
 
 	// TTS 没启用或配置不全时客户端留 nil：音色列表照常可用，只有试听会返回一句明确的
 	// 错误。这里不 fail-fast，是因为试听是附加能力，不该拦住整个服务启动。
@@ -446,12 +459,8 @@ func (a *App) initDependencies() error {
 	}
 
 	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey, a.mcpManager)
-	// 重排配置是「多存一条、同时只启用一条」：设置页增删改测，检索侧只读启用中的那条。
-	// 先做启动对齐（没有启用记录时关闭精排），之后的变动由服务层的 reload 热更新。
+	// 设置页保存的重排配置按用户存储，不在启动时覆盖共享运行时。
 	rerankSettingSvc := service.NewRerankSettingService(rerankSettingRepo, encryptionKey, rerankManager)
-	if err := rerankSettingSvc.LoadActive(context.Background()); err != nil {
-		return fmt.Errorf("加载重排配置失败: %w", err)
-	}
 	audioDir := a.cfg.Storage.AudioDir
 	if audioDir == "" {
 		audioDir = "data/audio"
@@ -579,7 +588,7 @@ func (a *App) initDependencies() error {
 
 	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo)
 	traceSvc := service.NewTraceService(runRepo, turnRepo, traceSpanRepo)
-	a.router = api.NewRouter(roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, vlmSettingSvc, classroomSvc, folderSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, traceSvc, uploadDir, parser, knowledgeIngest)
+	a.router = api.NewRouter(authSvc, roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, vlmSettingSvc, classroomSvc, folderSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, traceSvc, uploadDir, parser, knowledgeIngest)
 	return nil
 }
 
