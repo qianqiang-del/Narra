@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -13,9 +15,11 @@ var globalConfig *Config
 
 // Load 加载配置文件
 func Load(configPath string) (*Config, error) {
-	// 本地开发便利：仓库根目录存在 .env 时自动加载。godotenv 不覆盖已存在的环境变量，
-	// 所以 CI / Docker Compose 显式注入的变量优先；文件不存在时静默跳过，线上不受影响。
-	_ = godotenv.Load()
+	// 本地开发便利：存在 .env 时自动加载（当前目录找不到就向上找，最多 8 层——
+	// go test / IDE 的工作目录常是子目录，也要能找到仓库根的那份）。
+	// godotenv 不覆盖已存在的环境变量，CI / Docker Compose 显式注入的变量优先；
+	// 找不到文件时静默跳过，线上不受影响。
+	loadDotEnv()
 
 	v := viper.New()
 
@@ -55,9 +59,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("storage.audio_dir", "data/audio")
 	// 知识库图片是持久资产：解析产出的图片发布在这里，收录成功也不能删（见 documentimage）。
 	v.SetDefault("storage.knowledge_dir", "data/knowledge")
-	// 对象存储默认关闭：关闭时行为与改造前完全一致（本地目录）。启用后原件/图片/音频
-	// 统一进 OSS，本地目录只保留解析所需的临时区；凭证建议用环境变量注入。
-	v.SetDefault("storage.oss.enabled", false)
+	// 对象存储默认启用：storage.oss 四项填齐走 OSS，全部留空退回本地目录兜底
+	// （装配层按 Configured 选择实现，启动日志会打印当前模式）；凭证建议用环境变量注入。
 	v.SetDefault("storage.oss.timeout", "30s")
 	// 知识库批量导入：一批最多 10 份、单份 16MB、整批 100MB；后台最多同时解析 2 篇，
 	// 向量化全局串行（默认 1）。队列上限 100 同时是暂存盘的占用上限。
@@ -145,6 +148,11 @@ func Load(configPath string) (*Config, error) {
 		config.Storage.OSS.AccessKeySecret = val
 	}
 
+	// 连接与运行参数同样支持环境变量（容器里用服务名连库、按环境调级别，不必改 yaml）。
+	if err := applyEnvOverrides(config); err != nil {
+		return nil, err
+	}
+
 	if err := config.Embedding.Validate(); err != nil {
 		return nil, fmt.Errorf("向量服务配置无效: %w", err)
 	}
@@ -172,6 +180,78 @@ func Load(configPath string) (*Config, error) {
 
 	globalConfig = config
 	return config, nil
+}
+
+// loadDotEnv 在当前目录及最多 8 层父目录中查找 .env 并加载，供本地开发使用。
+// 从仓库根运行时第一层就命中；go test / IDE 的工作目录是子目录时会向上找到仓库根那份。
+func loadDotEnv() {
+	dir, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	for depth := 0; depth < 8; depth++ {
+		candidate := filepath.Join(dir, ".env")
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			_ = godotenv.Load(candidate)
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return
+		}
+		dir = parent
+	}
+}
+
+// applyEnvOverrides 用环境变量覆盖部署相关的连接与运行参数。
+// 只认显式设置且非空的变量；数值解析失败直接报错，避免"填错了却静默退回默认值"。
+func applyEnvOverrides(cfg *Config) error {
+	stringsToOverride := []struct {
+		envKey string
+		target *string
+	}{
+		{"POSTGRES_HOST", &cfg.Database.Postgres.Host},
+		{"POSTGRES_USERNAME", &cfg.Database.Postgres.Username},
+		{"POSTGRES_DATABASE", &cfg.Database.Postgres.Database},
+		{"POSTGRES_SSLMODE", &cfg.Database.Postgres.SSLMode},
+		{"REDIS_HOST", &cfg.Database.Redis.Host},
+		{"APP_MODE", &cfg.App.Mode},
+		{"LOG_LEVEL", &cfg.Log.Level},
+	}
+	for _, item := range stringsToOverride {
+		if val := os.Getenv(item.envKey); val != "" {
+			*item.target = val
+		}
+	}
+
+	intsToOverride := []struct {
+		envKey string
+		target *int
+	}{
+		{"POSTGRES_PORT", &cfg.Database.Postgres.Port},
+		{"REDIS_PORT", &cfg.Database.Redis.Port},
+		{"REDIS_DB", &cfg.Database.Redis.DB},
+		{"APP_PORT", &cfg.App.Port},
+	}
+	for _, item := range intsToOverride {
+		val := strings.TrimSpace(os.Getenv(item.envKey))
+		if val == "" {
+			continue
+		}
+		n, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("环境变量 %s 需要是数字，当前值 %q", item.envKey, val)
+		}
+		*item.target = n
+	}
+
+	// app.mode 直接决定 gin 的模式（非法值会让 gin 在启动时 panic），提前拦住并给出明确报错。
+	switch cfg.App.Mode {
+	case "debug", "release", "test":
+	default:
+		return fmt.Errorf("app.mode 只能是 debug / release / test，当前值 %q", cfg.App.Mode)
+	}
+	return nil
 }
 
 // Get 获取全局配置

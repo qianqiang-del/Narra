@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"narra/pkg/config"
@@ -17,13 +18,19 @@ var postgresDB *gorm.DB
 
 // InitPostgres 初始化 PostgreSQL 连接。
 func InitPostgres(cfg *config.PostgresConfig) (*gorm.DB, error) {
+	sslMode := strings.TrimSpace(cfg.SSLMode)
+	if sslMode == "" {
+		// 保持历史默认（本地直连不加密）；云数据库（RDS 等）实际部署时配置 require / verify-full。
+		sslMode = "disable"
+	}
 	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable TimeZone=UTC",
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s TimeZone=UTC",
 		cfg.Host,
 		cfg.Port,
 		cfg.Username,
 		cfg.Password,
 		cfg.Database,
+		sslMode,
 	)
 
 	gormConfig := &gorm.Config{

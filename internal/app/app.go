@@ -67,12 +67,13 @@ type knowledgeImageStore interface {
 	RemoveDocument(documentID uint64) error
 }
 
-// newObjectStorageClient 按配置构造对象存储客户端；未启用时返回 nil（接口零值）。
+// newObjectStorageClient 按配置构造对象存储客户端。
 //
-// 未启用返回 nil 而不是一个"空实现"：业务侧对 nil 的处理是"走本地模式"，
-// 与改造前的行为逐字节一致。
+// 默认使用 OSS；四项接入信息全空时返回 nil —— 业务侧对 nil 的处理是"走本地模式"，
+// 作为单机 / 开发环境的兜底（启动日志会明确打印当前模式）。半配置在配置校验阶段
+// 就会被拦下，这里不用猜。
 func newObjectStorageClient(storage config.StorageConfig) (objectstorage.Client, error) {
-	if !storage.OSS.Enabled {
+	if !storage.OSS.Configured() {
 		return nil, nil
 	}
 	client, err := objectstorage.NewOSSClient(objectstorage.OSSConfig{
@@ -222,10 +223,11 @@ func (a *App) initDatabase() error {
 		logger.Info("词法检索索引就绪", zap.String("extension", string(kind)))
 	}
 
-	// 初始化 Redis（可选，失败不影响核心功能）
+	// 初始化 Redis。它是硬依赖：生成任务队列（asynq）必须连上，装配 worker 时会强校验，
+	// 连不上最终就是启动失败；这里如实告警，不要再写成"可选"误导部署。
 	rs, err := database.InitRedis(&a.cfg.Database.Redis)
 	if err != nil {
-		logger.Warn("Redis 初始化失败，将不影响核心功能", zap.Error(err))
+		logger.Warn("Redis 初始化失败，生成任务队列（asynq）将无法工作", zap.Error(err))
 	}
 	a.redis = rs
 
@@ -343,10 +345,17 @@ func (a *App) initDependencies() error {
 		return fmt.Errorf("解析知识图片目录的绝对路径失败: %w", err)
 	}
 
-	// 对象存储：启用后原件 / 图片 / 音频统一走 OSS；关闭时保持原有的本地行为。
+	// 对象存储：默认走 OSS；四项接入信息全空时退回本地目录兜底，启动日志明确当前模式。
 	objectClient, err := newObjectStorageClient(a.cfg.Storage)
 	if err != nil {
 		return err
+	}
+	if objectClient == nil {
+		logger.Warn("对象存储未配置，使用本地目录兜底：原件 / 图片 / 音频只写本机磁盘（多实例部署请配置 storage.oss）")
+	} else {
+		logger.Info("对象存储已启用：原件 / 图片 / 音频统一写入阿里云 OSS",
+			zap.String("endpoint", a.cfg.Storage.OSS.Endpoint),
+			zap.String("bucket", a.cfg.Storage.OSS.Bucket))
 	}
 
 	var imageStore knowledgeImageStore
