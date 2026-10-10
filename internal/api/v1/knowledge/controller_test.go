@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -16,9 +18,12 @@ import (
 	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
+	"narra/internal/ownership"
 	"narra/internal/service"
 	"narra/pkg/config"
 	"narra/pkg/documentparser"
+	apperrors "narra/pkg/errors"
+	"narra/pkg/jwt"
 )
 
 // stubDocumentService 只实现 Get：进度流只走这一条查询路径。
@@ -271,13 +276,15 @@ func TestEventsRejectsMissingDocumentWithJSON(t *testing.T) {
 // 其余方法由嵌入的 nil 接口兜底 —— 一旦 handler 用了别的方法，测试会以 panic 当场暴露。
 type stubSlowIngestService struct {
 	service.KnowledgeService
-	delay time.Duration
+	delay   time.Duration
+	ownerID uint64
 }
 
 func (s *stubSlowIngestService) IngestText(
 	ctx context.Context,
 	input requestdto.KnowledgeIngestText,
 ) (responsedto.KnowledgeDocument, error) {
+	s.ownerID = ownership.FromContext(ctx)
 	select {
 	case <-time.After(s.delay):
 	case <-ctx.Done():
@@ -295,8 +302,16 @@ func (s *stubSlowIngestService) IngestText(
 // 客户端只能拿到被断开的连接 —— 这正是"实际成功、界面报网络错误"的根因。
 func TestIngestTextSurvivesServerWriteTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("jwt:\n  secret: test-secret\n  expire_hours: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(configPath); err != nil {
+		t.Fatal(err)
+	}
+	svc := &stubSlowIngestService{delay: 150 * time.Millisecond}
 	controller := NewController(
-		&stubSlowIngestService{delay: 150 * time.Millisecond},
+		svc,
 		t.TempDir(),
 		nil,
 		config.KnowledgeIngestConfig{},
@@ -309,13 +324,33 @@ func TestIngestTextSurvivesServerWriteTimeout(t *testing.T) {
 	server.Config.WriteTimeout = 50 * time.Millisecond
 	server.Start()
 	defer server.Close()
+	unauthenticated, err := http.Get(server.URL + "/api/v1/knowledge/documents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unauthenticatedEnvelope struct {
+		Code int `json:"code"`
+	}
+	if err := json.NewDecoder(unauthenticated.Body).Decode(&unauthenticatedEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	unauthenticated.Body.Close()
+	if unauthenticatedEnvelope.Code != apperrors.CodeUnauthorized {
+		t.Fatalf("未登录业务码 = %d，期望 401", unauthenticatedEnvelope.Code)
+	}
 
 	payload := strings.NewReader(`{"title":"慢速正文","content":"hello"}`)
-	response, err := http.Post(
-		server.URL+"/api/v1/knowledge/documents/text",
-		"application/json",
-		payload,
-	)
+	token, err := jwt.GenerateToken(1, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/knowledge/documents/text", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("请求失败，写死线可能把响应掐断了: %v", err)
 	}
@@ -333,5 +368,8 @@ func TestIngestTextSurvivesServerWriteTimeout(t *testing.T) {
 	}
 	if envelope.Data.Title != "慢速正文" {
 		t.Fatalf("data.title = %q，期望 慢速正文", envelope.Data.Title)
+	}
+	if svc.ownerID != 1 {
+		t.Fatalf("收录用户 ID = %d，期望 1", svc.ownerID)
 	}
 }

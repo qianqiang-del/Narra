@@ -13,6 +13,7 @@ import (
 // commentGuardModels 是要护栏守住的全部表实体，与 internal/app/app.go 里的
 // AutoMigrate 清单是同一批（顺序无所谓，这里只关心集合）。
 var commentGuardModels = []any{
+	&User{},
 	&Folder{},
 	&Classroom{},
 	&PresetAgent{},

@@ -24,6 +24,8 @@ const (
 
 type Classroom struct {
 	BaseModel
+	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_classrooms_owner_id;comment:所属用户 ID" json:"-"`
+	Owner   *User  `gorm:"foreignKey:OwnerID;constraint:classrooms_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 
 	FolderID *uint64 `gorm:"column:folder_id;index:idx_classrooms_folder_id;comment:所属文件夹 ID，指向 folders.id；可为空表示未归档，文件夹被删除时置空" json:"folder_id"` // 所属文件夹，可空；删除文件夹时置 NULL
 

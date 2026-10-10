@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"narra/internal/middleware"
 	requestdto "narra/internal/model/dto/request"
 	"narra/internal/service"
 	"narra/pkg/response"
@@ -14,7 +15,7 @@ type Controller struct{ svc service.LLMProviderService }
 func NewController(svc service.LLMProviderService) *Controller { return &Controller{svc: svc} }
 
 func (c *Controller) List(ctx *gin.Context) {
-	items, err := c.svc.List(ctx.Request.Context())
+	items, err := c.svc.List(ctx.Request.Context(), middleware.GetUserID(ctx))
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -23,7 +24,7 @@ func (c *Controller) List(ctx *gin.Context) {
 }
 
 func (c *Controller) AvailableModels(ctx *gin.Context) {
-	items, err := c.svc.AvailableModels(ctx.Request.Context())
+	items, err := c.svc.AvailableModelsForOwner(ctx.Request.Context(), middleware.GetUserID(ctx))
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -37,7 +38,7 @@ func (c *Controller) Create(ctx *gin.Context) {
 		response.BadRequest(ctx, "请求参数错误")
 		return
 	}
-	item, err := c.svc.Create(ctx.Request.Context(), input)
+	item, err := c.svc.Create(ctx.Request.Context(), middleware.GetUserID(ctx), input)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -55,7 +56,7 @@ func (c *Controller) Update(ctx *gin.Context) {
 		response.BadRequest(ctx, "请求参数错误")
 		return
 	}
-	item, err := c.svc.Update(ctx.Request.Context(), id, input)
+	item, err := c.svc.Update(ctx.Request.Context(), middleware.GetUserID(ctx), id, input)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -68,7 +69,7 @@ func (c *Controller) Delete(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := c.svc.Delete(ctx.Request.Context(), id); err != nil {
+	if err := c.svc.Delete(ctx.Request.Context(), middleware.GetUserID(ctx), id); err != nil {
 		response.BizError(ctx, err)
 		return
 	}
@@ -80,7 +81,7 @@ func (c *Controller) Test(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	result, err := c.svc.Test(ctx.Request.Context(), id)
+	result, err := c.svc.Test(ctx.Request.Context(), middleware.GetUserID(ctx), id)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -98,7 +99,7 @@ func (c *Controller) SuggestPricing(ctx *gin.Context) {
 		response.BadRequest(ctx, "请求参数错误")
 		return
 	}
-	item, err := c.svc.SuggestPricing(ctx.Request.Context(), id, input.ModelID)
+	item, err := c.svc.SuggestPricing(ctx.Request.Context(), middleware.GetUserID(ctx), id, input.ModelID)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -116,7 +117,7 @@ func (c *Controller) SetEnabled(ctx *gin.Context) {
 		response.BadRequest(ctx, "请求参数错误")
 		return
 	}
-	item, err := c.svc.SetEnabled(ctx.Request.Context(), id, input.Enabled)
+	item, err := c.svc.SetEnabled(ctx.Request.Context(), middleware.GetUserID(ctx), id, input.Enabled)
 	if err != nil {
 		response.BizError(ctx, err)
 		return

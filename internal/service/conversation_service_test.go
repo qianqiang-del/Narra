@@ -25,10 +25,16 @@ func (r conversationTestClassrooms) Create(context.Context, *entity.Classroom) e
 func (r conversationTestClassrooms) FindByID(context.Context, uint64) (*entity.Classroom, error) {
 	return r.item, r.err
 }
-func (r conversationTestClassrooms) List(context.Context) ([]entity.Classroom, error) {
+func (r conversationTestClassrooms) FindByIDAndOwner(context.Context, uint64, uint64) (*entity.Classroom, error) {
+	return r.item, r.err
+}
+func (r conversationTestClassrooms) List(context.Context, uint64) ([]entity.Classroom, error) {
 	return nil, nil
 }
-func (r conversationTestClassrooms) Delete(context.Context, uint64) error              { return nil }
+func (r conversationTestClassrooms) Delete(context.Context, uint64) error { return nil }
+func (r conversationTestClassrooms) DeleteByIDAndOwner(context.Context, uint64, uint64) error {
+	return nil
+}
 func (r conversationTestClassrooms) UpdateTitle(context.Context, uint64, string) error { return nil }
 func (r conversationTestClassrooms) UpdateStatus(context.Context, uint64, string, *string) error {
 	return nil

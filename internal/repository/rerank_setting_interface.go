@@ -14,6 +14,7 @@ type RerankSettingRepository interface {
 	// List 返回全部配置，启用中的排在最前，其余按 id 升序。
 	// 顺序就是设置页的展示顺序，放在 SQL 里由数据库保证。
 	List(ctx context.Context) ([]entity.RerankSetting, error)
+	ListByOwner(ctx context.Context, ownerID uint64) ([]entity.RerankSetting, error)
 
 	// GetEnabled 返回当前启用的配置；没有启用项时原样透传 gorm.ErrRecordNotFound，
 	// 由上层决定是"精排关闭"还是"查库失败"。
@@ -21,6 +22,7 @@ type RerankSettingRepository interface {
 
 	// FindByID 按主键取配置，查不到返回 gorm.ErrRecordNotFound。
 	FindByID(ctx context.Context, id uint64) (*entity.RerankSetting, error)
+	FindByIDAndOwner(ctx context.Context, id, ownerID uint64) (*entity.RerankSetting, error)
 
 	// Create 写入一条新配置（默认不启用）。
 	Create(ctx context.Context, setting *entity.RerankSetting) error
@@ -30,8 +32,10 @@ type RerankSettingRepository interface {
 
 	// Delete 删除一条配置；删的正好是启用中的那条时，精排随之为"无生效配置"。
 	Delete(ctx context.Context, id uint64) error
+	DeleteByOwner(ctx context.Context, id, ownerID uint64) error
 
 	// SetEnabled 切换启用状态：启用时在同一事务里把其它配置置为失效，保证最多一条生效。
 	// 目标不存在时返回 applied = false，且**不改动任何现有启用状态**（事务整体回滚）。
 	SetEnabled(ctx context.Context, id uint64, enabled bool) (applied bool, err error)
+	SetEnabledForOwner(ctx context.Context, id, ownerID uint64, enabled bool) (applied bool, err error)
 }

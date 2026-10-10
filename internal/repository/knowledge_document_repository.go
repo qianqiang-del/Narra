@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"narra/internal/model/entity"
+	"narra/internal/ownership"
 	"narra/pkg/utils"
 )
 
@@ -172,7 +173,11 @@ func (r *knowledgeDocumentRepository) Touch(ctx context.Context, id uint64, atte
 // 走硬删除（实体没有 DeletedAt）而不是软删除，原因和 ReplaceChunks 里删旧切片一样：
 // 留着旧行会让 UNIQUE (document_id, chunk_index) 挡住同一篇文章的重新导入。
 func (r *knowledgeDocumentRepository) Delete(ctx context.Context, id uint64) error {
-	return conn(ctx, r.db).Where("id = ?", id).Delete(&entity.KnowledgeDocument{}).Error
+	query := conn(ctx, r.db).Where("id = ?", id)
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		query = query.Where("owner_id = ?", ownerID)
+	}
+	return query.Delete(&entity.KnowledgeDocument{}).Error
 }
 
 // NewKnowledgeDocumentRepository 创建知识库仓储。
@@ -190,7 +195,19 @@ func (r *knowledgeDocumentRepository) Create(ctx context.Context, document *enti
 // 收录链路（判断默认向量模型是否已登记）和 HTTP 面（404 语义）里的含义并不相同。
 func (r *knowledgeDocumentRepository) GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error) {
 	var document entity.KnowledgeDocument
-	if err := conn(ctx, r.db).Where("id = ?", id).First(&document).Error; err != nil {
+	query := conn(ctx, r.db).Where("id = ?", id)
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		query = query.Where("owner_id = ?", ownerID)
+	}
+	if err := query.First(&document).Error; err != nil {
+		return nil, err
+	}
+	return &document, nil
+}
+
+func (r *knowledgeDocumentRepository) GetByIDAndOwner(ctx context.Context, id, ownerID uint64) (*entity.KnowledgeDocument, error) {
+	var document entity.KnowledgeDocument
+	if err := conn(ctx, r.db).Where("id = ? AND owner_id = ?", id, ownerID).First(&document).Error; err != nil {
 		return nil, err
 	}
 	return &document, nil
@@ -204,10 +221,13 @@ func (r *knowledgeDocumentRepository) GetByID(ctx context.Context, id uint64) (*
 // 用 GORM 的 Update 而不是 UpdateColumn：updated_at 由 autoUpdateTime 维护
 // （见 migrations/README.md 的对照表），这里必须跟着刷新。
 func (r *knowledgeDocumentRepository) SetEnabled(ctx context.Context, id uint64, enabled bool) (bool, error) {
-	result := conn(ctx, r.db).
+	query := conn(ctx, r.db).
 		Model(&entity.KnowledgeDocument{}).
-		Where("id = ?", id).
-		Update("enabled", enabled)
+		Where("id = ?", id)
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		query = query.Where("owner_id = ?", ownerID)
+	}
+	result := query.Update("enabled", enabled)
 	return result.RowsAffected > 0, result.Error
 }
 
@@ -228,6 +248,17 @@ func (r *knowledgeDocumentRepository) AssociateMaterials(ctx context.Context, id
 	return result.RowsAffected, result.Error
 }
 
+func (r *knowledgeDocumentRepository) AssociateMaterialsForOwner(ctx context.Context, ownerID uint64, ids []uint64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := conn(ctx, r.db).Model(&entity.KnowledgeDocument{}).
+		Where("owner_id = ? AND id IN ? AND kind = ? AND expires_at IS NOT NULL AND status = ? AND enabled",
+			ownerID, ids, entity.KnowledgeDocumentKindMaterial, entity.KnowledgeDocumentStatusReady).
+		Update("expires_at", nil)
+	return result.RowsAffected, result.Error
+}
+
 // ExpireMaterials 给一批课程材料重设清理时间（删课堂时回收）。
 //
 // 只处理 kind = material 的行；不存在的行静默跳过（用户可能已手动删掉），
@@ -239,6 +270,16 @@ func (r *knowledgeDocumentRepository) ExpireMaterials(ctx context.Context, ids [
 	result := conn(ctx, r.db).
 		Model(&entity.KnowledgeDocument{}).
 		Where("id IN ? AND kind = ?", ids, entity.KnowledgeDocumentKindMaterial).
+		Update("expires_at", expiresAt)
+	return result.RowsAffected, result.Error
+}
+
+func (r *knowledgeDocumentRepository) ExpireMaterialsForOwner(ctx context.Context, ownerID uint64, ids []uint64, expiresAt time.Time) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := conn(ctx, r.db).Model(&entity.KnowledgeDocument{}).
+		Where("owner_id = ? AND id IN ? AND kind = ?", ownerID, ids, entity.KnowledgeDocumentKindMaterial).
 		Update("expires_at", expiresAt)
 	return result.RowsAffected, result.Error
 }
@@ -278,6 +319,9 @@ func (r *knowledgeDocumentRepository) SaveMaterialOutline(ctx context.Context, i
 // 自相矛盾的响应，而它正是靠 total 算"已显示 X / Y"和判断还有没有下一页的。
 func (r *knowledgeDocumentRepository) List(ctx context.Context, query entity.KnowledgeDocumentQuery) ([]entity.KnowledgeDocument, int64, error) {
 	scope := conn(ctx, r.db).Model(&entity.KnowledgeDocument{}).Scopes(documentConditions(query))
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		scope = scope.Where("owner_id = ?", ownerID)
+	}
 
 	var total int64
 	if err := scope.Count(&total).Error; err != nil {
@@ -585,10 +629,13 @@ func (r *knowledgeDocumentRepository) CountDocumentsMissingModelVectors(ctx cont
 	}
 
 	var count int64
-	err := conn(ctx, r.db).Raw(
-		`SELECT count(*) FROM knowledge_documents d WHERE `+missingModelVectorsPredicate,
-		statuses, modelID,
-	).Scan(&count).Error
+	statement := `SELECT count(*) FROM knowledge_documents d WHERE ` + missingModelVectorsPredicate
+	args := []any{statuses, modelID}
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		statement += ` AND d.owner_id = ?`
+		args = append(args, ownerID)
+	}
+	err := conn(ctx, r.db).Raw(statement, args...).Scan(&count).Error
 	if err != nil {
 		return 0, fmt.Errorf("统计缺少模型向量的文档失败: %w", err)
 	}
@@ -601,10 +648,13 @@ func (r *knowledgeDocumentRepository) CountDocumentsMissingModelVectors(ctx cont
 // 与 ListPending 的先进先出同一个考量。
 func (r *knowledgeDocumentRepository) ListDocumentIDsMissingModelVectors(ctx context.Context, modelID uint64) ([]uint64, error) {
 	var ids []uint64
-	err := conn(ctx, r.db).Raw(
-		`SELECT d.id FROM knowledge_documents d WHERE `+missingModelVectorsPredicate+` ORDER BY d.id`,
-		[]string{entity.KnowledgeDocumentStatusReady}, modelID,
-	).Scan(&ids).Error
+	statement := `SELECT d.id FROM knowledge_documents d WHERE ` + missingModelVectorsPredicate
+	args := []any{[]string{entity.KnowledgeDocumentStatusReady}, modelID}
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		statement += ` AND d.owner_id = ?`
+		args = append(args, ownerID)
+	}
+	err := conn(ctx, r.db).Raw(statement+` ORDER BY d.id`, args...).Scan(&ids).Error
 	if err != nil {
 		return nil, fmt.Errorf("查询缺少模型向量的文档失败: %w", err)
 	}

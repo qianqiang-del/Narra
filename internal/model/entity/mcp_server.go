@@ -5,7 +5,9 @@ import "time"
 // MCPServer MCP 服务配置实体。
 type MCPServer struct {
 	BaseModel
-	ServerID         string        `gorm:"column:server_id;type:varchar(64);not null;unique;comment:服务稳定标识，全局唯一，前后端契约" json:"server_id"`
+	OwnerID          uint64        `gorm:"column:owner_id;not null;index:idx_mcp_servers_owner_id;uniqueIndex:mcp_servers_owner_server_id_key,priority:1" json:"-"`
+	Owner            *User         `gorm:"foreignKey:OwnerID;constraint:mcp_servers_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
+	ServerID         string        `gorm:"column:server_id;type:varchar(64);not null;uniqueIndex:mcp_servers_owner_server_id_key,priority:2;comment:用户内唯一的服务稳定标识" json:"server_id"`
 	Name             string        `gorm:"column:name;type:varchar(128);not null;comment:服务展示名" json:"name"`
 	Enabled          bool          `gorm:"column:enabled;not null;default:true;comment:是否启用该服务" json:"enabled"`
 	Required         bool          `gorm:"column:required;not null;default:false;comment:是否为必装服务；必装项不允许在界面上禁用" json:"required"`

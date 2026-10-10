@@ -8,11 +8,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { Check, ChevronDown, Database, Monitor, Moon, Settings, Sun } from 'lucide-vue-next'
+import { Check, ChevronDown, Database, LogOut, Monitor, Moon, Settings, Sun } from 'lucide-vue-next'
 
 import { useTheme, type ThemeMode } from '@/composables/useTheme'
 import { SUPPORTED_LOCALES, setLocale, type LocaleCode } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { clearSession } from '@/lib/authSession'
 
 const emit = defineEmits<{ (e: 'open-settings'): void }>()
 
@@ -45,6 +46,11 @@ function pickTheme(next: ThemeMode) {
 function pickLocale(code: LocaleCode) {
   setLocale(code)
   langOpen.value = false
+}
+
+function logout() {
+  clearSession()
+  router.replace({ name: 'login' })
 }
 
 function onDocMouseDown(e: MouseEvent) {
@@ -152,6 +158,11 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
       @click="emit('open-settings')"
     >
       <Settings class="size-4 transition-transform duration-500 group-hover:rotate-90" />
+    </button>
+
+    <div class="h-4 w-[1px] bg-gray-200 dark:bg-gray-700" />
+    <button type="button" title="退出登录" aria-label="退出登录" class="rounded-full p-2 text-gray-400 transition-colors hover:bg-muted hover:text-gray-800 dark:text-gray-500 dark:hover:bg-gray-700" @click="logout">
+      <LogOut class="size-4" />
     </button>
   </div>
 </template>

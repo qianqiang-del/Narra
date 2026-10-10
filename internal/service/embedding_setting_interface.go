@@ -17,12 +17,12 @@ type EmbeddingSettingService interface {
 	LoadActive(ctx context.Context) error
 
 	// Current 返回当前生效配置的对外结构，密钥只暴露"是否已配置"。
-	Current(ctx context.Context) (responsedto.EmbeddingSetting, error)
+	Current(ctx context.Context, ownerID ...uint64) (responsedto.EmbeddingSetting, error)
 
 	// Save 保存配置并让它立即生效，不需要重启进程。
-	Save(ctx context.Context, input requestdto.EmbeddingSetting) (responsedto.EmbeddingSetting, error)
+	Save(ctx context.Context, input requestdto.EmbeddingSetting, ownerID ...uint64) (responsedto.EmbeddingSetting, error)
 
 	// Test 用入参里的配置真实请求一次 embedding 服务做连通性校验，
 	// 不写库、不影响当前生效配置，成功时返回配置中的向量维度。
-	Test(ctx context.Context, input requestdto.EmbeddingSetting) (int, error)
+	Test(ctx context.Context, input requestdto.EmbeddingSetting, ownerID ...uint64) (int, error)
 }

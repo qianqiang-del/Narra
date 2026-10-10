@@ -25,6 +25,10 @@ func (r pricingProviderRepo) FindByID(context.Context, uint64) (*entity.LLMProvi
 	return r.provider, nil
 }
 
+func (r pricingProviderRepo) FindByIDAndOwner(context.Context, uint64, uint64) (*entity.LLMProvider, error) {
+	return r.provider, nil
+}
+
 type pricingSearchTools struct {
 	descriptors []internalmcp.ToolDescriptor
 	expectedID  string
@@ -84,7 +88,7 @@ func TestSuggestPricingUsesSearchToolAndReturnsSourcedPrice(t *testing.T) {
 			}}}
 			provider := &entity.LLMProvider{BaseURL: server.URL, Models: json.RawMessage(`["deepseek-flash"]`), TimeoutSeconds: 5}
 			svc := NewLLMProviderService(pricingProviderRepo{provider: provider}, nil, tools)
-			result, err := svc.SuggestPricing(context.Background(), 1, "deepseek-flash")
+			result, err := svc.SuggestPricing(context.Background(), 1, 1, "deepseek-flash")
 			if err != nil {
 				t.Fatalf("查价失败: %v", err)
 			}
@@ -126,7 +130,7 @@ func TestFindPricingSearchTool(t *testing.T) {
 func TestSuggestPricingRequiresConfiguredWebSearch(t *testing.T) {
 	tools := &pricingSearchTools{}
 	svc := NewLLMProviderService(pricingProviderRepo{}, nil, tools)
-	_, err := svc.SuggestPricing(context.Background(), 1, "deepseek-flash")
+	_, err := svc.SuggestPricing(context.Background(), 1, 1, "deepseek-flash")
 	if err == nil || !strings.Contains(err.Error(), "联网搜索") {
 		t.Fatalf("未配置搜索工具时应明确报错，实际 %v", err)
 	}

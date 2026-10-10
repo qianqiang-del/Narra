@@ -1,5 +1,7 @@
 # 数据库迁移
 
+手机号账号和私有数据归属的存量库迁移见 [0012_private_ownership.md](0012_private_ownership.md)。运行新版服务前，旧库必须先完成这一步。
+
 V1 六张表：`folders`、`classrooms`、`preset_agents`、`classroom_agents`、`scenes`、
 `scene_segments`。
 

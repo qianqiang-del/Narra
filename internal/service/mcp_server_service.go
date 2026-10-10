@@ -62,8 +62,14 @@ func (s *mcpServerService) LoadRuntime(ctx context.Context) error {
 }
 
 // List 查所有 MCP 服务配置，转成对外结构。
-func (s *mcpServerService) List(ctx context.Context) ([]dto.MCPServerItem, error) {
-	servers, err := s.repo.List(ctx)
+func (s *mcpServerService) List(ctx context.Context, ownerIDs ...uint64) ([]dto.MCPServerItem, error) {
+	var servers []entity.MCPServer
+	var err error
+	if len(ownerIDs) > 0 {
+		servers, err = s.repo.ListByOwner(ctx, ownerIDs[0])
+	} else {
+		servers, err = s.repo.List(ctx)
+	}
 	if err != nil {
 		return nil, errors.NewWithErr(errors.CodeInternalError, "查询 MCP 服务列表失败", err)
 	}
@@ -77,7 +83,7 @@ func (s *mcpServerService) List(ctx context.Context) ([]dto.MCPServerItem, error
 }
 
 // Create 新增一条 MCP 服务配置。
-func (s *mcpServerService) Create(ctx context.Context, input request.MCPServer) (*dto.MCPServerItem, error) {
+func (s *mcpServerService) Create(ctx context.Context, input request.MCPServer, ownerIDs ...uint64) (*dto.MCPServerItem, error) {
 	timeout, err := s.parseTimeouts(input)
 	if err != nil {
 		return nil, errors.NewWithErr(errors.CodeInvalidParam, err.Error(), nil)
@@ -95,6 +101,9 @@ func (s *mcpServerService) Create(ctx context.Context, input request.MCPServer) 
 		CallTimeout:      timeout[2],
 		EnabledTools:     input.EnabledTools,
 		SortOrder:        input.SortOrder,
+	}
+	if len(ownerIDs) > 0 {
+		srv.OwnerID = ownerIDs[0]
 	}
 	if input.APIKey != "" {
 		encrypted, err := crypto.Encrypt(input.APIKey, s.encryptionKey)
@@ -116,8 +125,8 @@ func (s *mcpServerService) Create(ctx context.Context, input request.MCPServer) 
 // Update 部分更新 MCP 服务配置。只有非 nil 的字段会被更新。
 //
 // 改超时也走这里：syncRuntime 会按新配置重连并刷新工具表，所以改完不用重启服务。
-func (s *mcpServerService) Update(ctx context.Context, id uint64, input request.MCPServerUpdate) (*dto.MCPServerItem, error) {
-	srv, err := s.repo.FindByID(ctx, id)
+func (s *mcpServerService) Update(ctx context.Context, id uint64, input request.MCPServerUpdate, ownerIDs ...uint64) (*dto.MCPServerItem, error) {
+	srv, err := s.find(ctx, id, ownerIDs...)
 	if err != nil {
 		return nil, errors.NewWithErr(errors.CodeResourceNotFound, "MCP 服务不存在", err)
 	}
@@ -157,15 +166,20 @@ func (s *mcpServerService) Update(ctx context.Context, id uint64, input request.
 }
 
 // Delete 删除一条 MCP 服务配置。
-func (s *mcpServerService) Delete(ctx context.Context, id uint64) error {
-	srv, err := s.repo.FindByID(ctx, id)
+func (s *mcpServerService) Delete(ctx context.Context, id uint64, ownerIDs ...uint64) error {
+	srv, err := s.find(ctx, id, ownerIDs...)
 	if err != nil {
 		return errors.NewWithErr(errors.CodeResourceNotFound, "MCP 服务不存在", err)
 	}
-	if err := s.repo.Delete(ctx, id); err != nil {
+	if len(ownerIDs) > 0 {
+		err = s.repo.DeleteByOwner(ctx, id, ownerIDs[0])
+	} else {
+		err = s.repo.Delete(ctx, id)
+	}
+	if err != nil {
 		return errors.NewWithErr(errors.CodeInternalError, "删除 MCP 服务失败", err)
 	}
-	if err := s.runtime.Remove(ctx, srv.ServerID); err != nil {
+	if err := s.runtime.Remove(ctx, runtimeServerID(srv)); err != nil {
 		return errors.NewWithErr(errors.CodeInternalError, "移除 MCP 运行时配置失败", err)
 	}
 	return nil
@@ -183,8 +197,8 @@ func (s *mcpServerService) syncRuntime(ctx context.Context, srv *entity.MCPServe
 }
 
 // Test 测试与 MCP server 的连接。
-func (s *mcpServerService) Test(ctx context.Context, id uint64) (*dto.MCPServerTestResult, error) {
-	srv, err := s.repo.FindByID(ctx, id)
+func (s *mcpServerService) Test(ctx context.Context, id uint64, ownerIDs ...uint64) (*dto.MCPServerTestResult, error) {
+	srv, err := s.find(ctx, id, ownerIDs...)
 	if err != nil {
 		return nil, errors.NewWithErr(errors.CodeResourceNotFound, "MCP 服务不存在", err)
 	}
@@ -208,6 +222,13 @@ func (s *mcpServerService) Test(ctx context.Context, id uint64) (*dto.MCPServerT
 	return &dto.MCPServerTestResult{Success: true, Message: fmt.Sprintf("连接成功，发现 %d 个工具", len(tools)), Tools: names}, nil
 }
 
+func (s *mcpServerService) find(ctx context.Context, id uint64, ownerIDs ...uint64) (*entity.MCPServer, error) {
+	if len(ownerIDs) > 0 {
+		return s.repo.FindByIDAndOwner(ctx, id, ownerIDs[0])
+	}
+	return s.repo.FindByID(ctx, id)
+}
+
 func (s *mcpServerService) toServerConfig(srv *entity.MCPServer) (config.MCPServerConfig, error) {
 	apiKey := srv.APIKey
 	if apiKey != "" {
@@ -218,7 +239,7 @@ func (s *mcpServerService) toServerConfig(srv *entity.MCPServer) (config.MCPServ
 		apiKey = decrypted
 	}
 	return config.MCPServerConfig{
-		ID:               srv.ServerID,
+		ID:               runtimeServerID(srv),
 		Enabled:          srv.Enabled,
 		Required:         srv.Required,
 		Transport:        srv.Transport,
@@ -230,6 +251,13 @@ func (s *mcpServerService) toServerConfig(srv *entity.MCPServer) (config.MCPServ
 		CallTimeout:      srv.CallTimeout,
 		EnabledTools:     srv.EnabledTools,
 	}, nil
+}
+
+func runtimeServerID(srv *entity.MCPServer) string {
+	if srv.OwnerID == 0 {
+		return srv.ServerID
+	}
+	return fmt.Sprintf("user_%d_%d_%s", srv.OwnerID, srv.ID, srv.ServerID)
 }
 
 func (s *mcpServerService) parseTimeouts(input request.MCPServer) ([3]time.Duration, error) {

@@ -61,10 +61,14 @@ var priceNumberPattern = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
 
 // SuggestPricing searches with the configured provider model and returns a reviewable suggestion.
 // It never updates the saved provider configuration.
-func (s *llmProviderService) SuggestPricing(ctx context.Context, id uint64, modelID string) (*responsedto.LLMPriceSuggestion, error) {
+func (s *llmProviderService) SuggestPricing(ctx context.Context, ownerID, id uint64, modelID string) (*responsedto.LLMPriceSuggestion, error) {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" || len([]rune(modelID)) > 160 {
 		return nil, apperrors.New(apperrors.CodeBadRequest, "模型 ID 无效")
+	}
+	provider, err := s.find(ctx, ownerID, id)
+	if err != nil {
+		return nil, err
 	}
 	var searchTool *internalmcp.ToolDescriptor
 	if s.searchTools != nil {
@@ -74,10 +78,6 @@ func (s *llmProviderService) SuggestPricing(ctx context.Context, id uint64, mode
 		return nil, apperrors.New(apperrors.CodeServiceUnavailable, "请先配置并启用提供网页搜索工具的联网搜索 MCP 服务")
 	}
 
-	provider, err := s.find(ctx, id)
-	if err != nil {
-		return nil, err
-	}
 	models, err := decodeModels(provider.Models)
 	if err != nil || !slices.Contains(models, modelID) {
 		return nil, apperrors.New(apperrors.CodeBadRequest, "请先保存模型列表，再查询该模型价格")

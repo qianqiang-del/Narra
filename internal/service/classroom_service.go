@@ -22,17 +22,17 @@ import (
 
 // modelLister 提供可用模型清单，受理时校验所选模型是否可用。
 type modelLister interface {
-	AvailableModels(ctx context.Context) ([]responsedto.AvailableLLMModel, error)
+	AvailableModelsForOwner(ctx context.Context, ownerID uint64) ([]responsedto.AvailableLLMModel, error)
 }
 
 // materialDocumentReader 是课程材料校验与生命周期对知识库的最小依赖面。
 type materialDocumentReader interface {
-	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error)
+	GetByIDAndOwner(ctx context.Context, id, ownerID uint64) (*entity.KnowledgeDocument, error)
 	// AssociateMaterials 把待用材料关联到课堂（expires_at 置空）；返回实际关联行数，
 	// 调用方核对是否等于材料数，不等就回滚（材料已被别的课堂用掉或已失效）。
-	AssociateMaterials(ctx context.Context, ids []uint64) (int64, error)
+	AssociateMaterialsForOwner(ctx context.Context, ownerID uint64, ids []uint64) (int64, error)
 	// ExpireMaterials 给材料重设清理时间（删课堂时回收）。
-	ExpireMaterials(ctx context.Context, ids []uint64, expiresAt time.Time) (int64, error)
+	ExpireMaterialsForOwner(ctx context.Context, ownerID uint64, ids []uint64, expiresAt time.Time) (int64, error)
 }
 
 // JobQueue 受理成功后投递生成任务，删除课堂时撤掉它。
@@ -102,8 +102,8 @@ func NewClassroomService(
 	}
 }
 
-func (s *classroomService) GetOutline(ctx context.Context, id uint64) (*responsedto.ClassroomOutline, error) {
-	classroom, err := s.classrooms.FindByID(ctx, id)
+func (s *classroomService) GetOutline(ctx context.Context, ownerID, id uint64) (*responsedto.ClassroomOutline, error) {
+	classroom, err := s.classrooms.FindByIDAndOwner(ctx, id, ownerID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
 	}
@@ -121,8 +121,8 @@ func (s *classroomService) GetOutline(ctx context.Context, id uint64) (*response
 	return &responsedto.ClassroomOutline{ClassroomID: id, Title: classroom.Title, Scenes: items}, nil
 }
 
-func (s *classroomService) GetAgents(ctx context.Context, id uint64) ([]responsedto.RoleItem, error) {
-	if _, err := s.classrooms.FindByID(ctx, id); err != nil {
+func (s *classroomService) GetAgents(ctx context.Context, ownerID, id uint64) ([]responsedto.RoleItem, error) {
+	if _, err := s.classrooms.FindByIDAndOwner(ctx, id, ownerID); err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
 	}
 	snapshots, err := s.agents.ListByClassroom(ctx, id)
@@ -153,8 +153,8 @@ func (s *classroomService) GetAgents(ctx context.Context, id uint64) ([]response
 	return items, nil
 }
 
-func (s *classroomService) ListScenes(ctx context.Context, id uint64) ([]responsedto.ClassroomSceneSummary, error) {
-	if _, err := s.classrooms.FindByID(ctx, id); err != nil {
+func (s *classroomService) ListScenes(ctx context.Context, ownerID, id uint64) ([]responsedto.ClassroomSceneSummary, error) {
+	if _, err := s.classrooms.FindByIDAndOwner(ctx, id, ownerID); err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
 	}
 	scenes, err := s.scenes.ListByClassroom(ctx, id)
@@ -174,8 +174,12 @@ func (s *classroomService) ListScenes(ctx context.Context, id uint64) ([]respons
 	return items, nil
 }
 
-func (s *classroomService) RetryScene(ctx context.Context, sceneID uint64) (*responsedto.ClassroomSceneSummary, error) {
+func (s *classroomService) RetryScene(ctx context.Context, ownerID, sceneID uint64) (*responsedto.ClassroomSceneSummary, error) {
 	scene, err := s.scenes.FindByID(ctx, sceneID)
+	if err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "场景不存在", err)
+	}
+	classroom, err := s.classrooms.FindByIDAndOwner(ctx, scene.ClassroomID, ownerID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "场景不存在", err)
 	}
@@ -185,10 +189,6 @@ func (s *classroomService) RetryScene(ctx context.Context, sceneID uint64) (*res
 	queue, ok := s.queue.(SceneRetryQueue)
 	if !ok {
 		return nil, apperrors.New(apperrors.CodeInternalError, "页面重试队列未配置")
-	}
-	classroom, err := s.classrooms.FindByID(ctx, scene.ClassroomID)
-	if err != nil {
-		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
 	}
 	reset, err := s.scenes.ResetForRetry(ctx, sceneID)
 	if err != nil {
@@ -211,7 +211,7 @@ func (s *classroomService) RetryScene(ctx context.Context, sceneID uint64) (*res
 }
 
 // Create 校验入参、落一行 generating、投递队列，立刻返回。
-func (s *classroomService) Create(ctx context.Context, input requestdto.CreateClassroom) (*responsedto.Classroom, error) {
+func (s *classroomService) Create(ctx context.Context, ownerID uint64, input requestdto.CreateClassroom) (*responsedto.Classroom, error) {
 	requirement := strings.TrimSpace(input.Requirement)
 	if requirement == "" {
 		return nil, apperrors.New(apperrors.CodeBadRequest, "生成需求不能为空")
@@ -223,7 +223,7 @@ func (s *classroomService) Create(ctx context.Context, input requestdto.CreateCl
 	if mode != entity.ClassroomModeVocational && mode != entity.ClassroomModeInteractive {
 		return nil, apperrors.New(apperrors.CodeBadRequest, "课程模式无效")
 	}
-	if err := s.validateModel(ctx, input.LLMProviderID, input.LLMModelID); err != nil {
+	if err := s.validateModel(ctx, ownerID, input.LLMProviderID, input.LLMModelID); err != nil {
 		return nil, err
 	}
 	// 角色与音色先解析：这一步会校验勾选的角色和音色，失败时还没落库，不必回滚。
@@ -232,7 +232,7 @@ func (s *classroomService) Create(ctx context.Context, input requestdto.CreateCl
 		return nil, err
 	}
 	// 课程材料只收"现在就检索得到"的文档；名字/大小的归一化结果随后写进生成配置。
-	materials, err := s.normalizeMaterials(ctx, input.Materials)
+	materials, err := s.normalizeMaterials(ctx, ownerID, input.Materials)
 	if err != nil {
 		return nil, err
 	}
@@ -252,6 +252,7 @@ func (s *classroomService) Create(ctx context.Context, input requestdto.CreateCl
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "生成运行标识失败", err)
 	}
 	classroom := &entity.Classroom{
+		OwnerID:          ownerID,
 		Title:            truncateText(requirement, 200),
 		Requirement:      requirement,
 		Mode:             mode,
@@ -276,7 +277,7 @@ func (s *classroomService) Create(ctx context.Context, input requestdto.CreateCl
 		// 材料"转正"与建课同事务：把待用材料的 expires_at 置空。
 		// 行数对不上说明材料已被别的课堂用掉或已失效（并发/过期/删除），整体回滚。
 		if ids := materialDocumentIDs(input.Materials); len(ids) > 0 {
-			applied, err := s.materials.AssociateMaterials(txCtx, ids)
+			applied, err := s.materials.AssociateMaterialsForOwner(txCtx, ownerID, ids)
 			if err != nil {
 				return apperrors.NewWithErr(apperrors.CodeInternalError, "关联课程材料失败", err)
 			}
@@ -399,8 +400,8 @@ func pickVoice(chosen string, fallback string) (string, error) {
 }
 
 // Get 查一门课的状态，供前端轮询。
-func (s *classroomService) Get(ctx context.Context, id uint64) (*responsedto.Classroom, error) {
-	classroom, err := s.classrooms.FindByID(ctx, id)
+func (s *classroomService) Get(ctx context.Context, ownerID, id uint64) (*responsedto.Classroom, error) {
+	classroom, err := s.classrooms.FindByIDAndOwner(ctx, id, ownerID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
 	}
@@ -416,8 +417,8 @@ func (s *classroomService) Get(ctx context.Context, id uint64) (*responsedto.Cla
 // List 查课堂列表，连卡片要用的页数、已就绪页数与封面首页一并带上。
 //
 // 统计与封面各自一次批量查询解决，不按课程逐门去查场景：卡片按门数摊开，逐门查就是 N+1。
-func (s *classroomService) List(ctx context.Context) ([]*responsedto.ClassroomListItem, error) {
-	classrooms, err := s.classrooms.List(ctx)
+func (s *classroomService) List(ctx context.Context, ownerID uint64) ([]*responsedto.ClassroomListItem, error) {
+	classrooms, err := s.classrooms.List(ctx, ownerID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询课堂列表失败", err)
 	}
@@ -458,8 +459,8 @@ func (s *classroomService) List(ctx context.Context) ([]*responsedto.ClassroomLi
 //
 // 「停止写旧结果」不在这里做，也不该在这里做：页面每次写库都带页面租约校验，
 // 行都被级联删掉了，旧执行者的写入自然影响 0 行——靠代码结构保证，不靠删除方记得去拦。
-func (s *classroomService) Delete(ctx context.Context, id uint64) error {
-	classroom, err := s.classrooms.FindByID(ctx, id)
+func (s *classroomService) Delete(ctx context.Context, ownerID, id uint64) error {
+	classroom, err := s.classrooms.FindByIDAndOwner(ctx, id, ownerID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.NewWithErr(apperrors.CodeNotFound, "课堂不存在", err)
@@ -480,11 +481,11 @@ func (s *classroomService) Delete(ctx context.Context, id uint64) error {
 	// 材料不存在（已被手动删除）时 ExpireMaterials 命中 0 行，不是错误。
 	recycled := classroomMaterialIDs(classroom.GenerationConfig)
 	err = s.tx.Run(ctx, func(txCtx context.Context) error {
-		if err := s.classrooms.Delete(txCtx, id); err != nil {
+		if err := s.classrooms.DeleteByIDAndOwner(txCtx, id, ownerID); err != nil {
 			return err
 		}
 		if len(recycled) > 0 {
-			if _, err := s.materials.ExpireMaterials(txCtx, recycled, time.Now().UTC()); err != nil {
+			if _, err := s.materials.ExpireMaterialsForOwner(txCtx, ownerID, recycled, time.Now().UTC()); err != nil {
 				return fmt.Errorf("回收课程材料失败: %w", err)
 			}
 		}
@@ -585,7 +586,7 @@ func (s *classroomService) listAgentBriefs(ctx context.Context, classroomID uint
 //
 // 只收已经能参与检索的文档：不存在 / 还没收录完 / 已停用一律拒绝，避免"课建了、
 // 材料却永远检索不到"的沉默失败。名字是展示快照，缺省回落到文档标题；大小不合法按 0。
-func (s *classroomService) normalizeMaterials(ctx context.Context, materials []requestdto.CreateClassroomMaterial) ([]requestdto.CreateClassroomMaterial, error) {
+func (s *classroomService) normalizeMaterials(ctx context.Context, ownerID uint64, materials []requestdto.CreateClassroomMaterial) ([]requestdto.CreateClassroomMaterial, error) {
 	if len(materials) == 0 {
 		return nil, nil
 	}
@@ -607,7 +608,7 @@ func (s *classroomService) normalizeMaterials(ctx context.Context, materials []r
 		}
 		seen[material.DocumentID] = struct{}{}
 
-		document, err := s.materials.GetByID(ctx, material.DocumentID)
+		document, err := s.materials.GetByIDAndOwner(ctx, material.DocumentID, ownerID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, apperrors.New(apperrors.CodeBadRequest, "课程材料不存在或已被删除")
@@ -640,8 +641,8 @@ func (s *classroomService) normalizeMaterials(ctx context.Context, materials []r
 }
 
 // validateModel 校验 provider + model 在可用列表里。
-func (s *classroomService) validateModel(ctx context.Context, providerID uint64, modelID string) error {
-	models, err := s.models.AvailableModels(ctx)
+func (s *classroomService) validateModel(ctx context.Context, ownerID, providerID uint64, modelID string) error {
+	models, err := s.models.AvailableModelsForOwner(ctx, ownerID)
 	if err != nil {
 		return apperrors.NewWithErr(apperrors.CodeInternalError, "查询可用模型失败", err)
 	}

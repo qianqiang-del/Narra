@@ -42,10 +42,18 @@ func (r *classroomRepository) FindByID(ctx context.Context, id uint64) (*entity.
 	return &classroom, nil
 }
 
-func (r *classroomRepository) List(ctx context.Context) ([]entity.Classroom, error) {
+func (r *classroomRepository) FindByIDAndOwner(ctx context.Context, id, ownerID uint64) (*entity.Classroom, error) {
+	var classroom entity.Classroom
+	if err := conn(ctx, r.db).Where("id = ? AND owner_id = ?", id, ownerID).First(&classroom).Error; err != nil {
+		return nil, err
+	}
+	return &classroom, nil
+}
+
+func (r *classroomRepository) List(ctx context.Context, ownerID uint64) ([]entity.Classroom, error) {
 	classrooms := make([]entity.Classroom, 0)
-	err := r.db.WithContext(ctx).
-		Where("status <> ?", entity.ClassroomStatusFailed).
+	err := conn(ctx, r.db).
+		Where("owner_id = ? AND status <> ?", ownerID, entity.ClassroomStatusFailed).
 		Order("updated_at DESC, id DESC").
 		Find(&classrooms).Error
 	return classrooms, err
@@ -53,6 +61,17 @@ func (r *classroomRepository) List(ctx context.Context) ([]entity.Classroom, err
 
 func (r *classroomRepository) Delete(ctx context.Context, id uint64) error {
 	result := conn(ctx, r.db).Where("id = ?", id).Delete(&entity.Classroom{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (r *classroomRepository) DeleteByIDAndOwner(ctx context.Context, id, ownerID uint64) error {
+	result := conn(ctx, r.db).Where("id = ? AND owner_id = ?", id, ownerID).Delete(&entity.Classroom{})
 	if result.Error != nil {
 		return result.Error
 	}

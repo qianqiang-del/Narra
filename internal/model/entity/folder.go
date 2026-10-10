@@ -8,6 +8,8 @@ package entity
 // V1 只有根目录一层，不需要 parent_id；需要目录树时见 §9.2。
 type Folder struct {
 	BaseModel
+	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_folders_owner_id;comment:所属用户 ID" json:"-"`
+	Owner   *User  `gorm:"foreignKey:OwnerID;constraint:folders_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 
 	Name string `gorm:"column:name;type:varchar(120);not null;comment:文件夹名称" json:"name"` // 文件夹名称
 }

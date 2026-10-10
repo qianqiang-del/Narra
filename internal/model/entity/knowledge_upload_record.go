@@ -31,6 +31,8 @@ const (
 // documents.metadata 的 JSON 里（那是处理产物，结构随实现变化，不该被界面依赖）。
 type KnowledgeUploadRecord struct {
 	BaseModel
+	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_knowledge_upload_records_owner_id;comment:所属用户 ID，文档删除后仍保留归属" json:"-"`
+	Owner   *User  `gorm:"foreignKey:OwnerID;constraint:knowledge_upload_records_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 
 	// 一次上传只写一条记录，但**刻意不做成唯一约束**。
 	//

@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"narra/internal/agent/discussion"
+	"narra/internal/mcp"
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
 	"narra/internal/repository"
@@ -290,7 +291,7 @@ func (s *discussionService) StartWithStyle(ctx context.Context, conversationID u
 		WebSearch bool `json:"web_search"`
 	}
 	_ = json.Unmarshal(classroom.GenerationConfig, &features)
-	go s.run(orchestrator, conversationID, message.ID, participants, classroom.Title, classroom.Requirement, lessonMaterial, models.ModelID, models.Pricing, features.WebSearch, style)
+	go s.run(orchestrator, classroom.OwnerID, conversationID, message.ID, participants, classroom.Title, classroom.Requirement, lessonMaterial, models.ModelID, models.Pricing, features.WebSearch, style)
 
 	handedOver = true
 	s.logger.Info("讨论已受理",
@@ -315,7 +316,7 @@ func (s *discussionService) StartWithStyle(ctx context.Context, conversationID u
 // 这是唯一一处"结果没人接收"的调用：它返回时 HTTP 请求早已结束，所以成败只能靠
 // 日志和事件表说话 —— 讨论失败时编排器会自己往事件表写一条 run.failed，
 // 前端据此把等待结束掉，不会一直转圈。
-func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversationID uint64, triggerMessageID uint64, participants []discussion.Participant, classroomTitle string, classroomRequirement string, lessonMaterial string, modelID string, pricing *discussion.ModelPricing, webSearch bool, style string) {
+func (s *discussionService) run(orchestrator *discussion.Orchestrator, ownerID uint64, conversationID uint64, triggerMessageID uint64, participants []discussion.Participant, classroomTitle string, classroomRequirement string, lessonMaterial string, modelID string, pricing *discussion.ModelPricing, webSearch bool, style string) {
 	// 无论怎么结束都要放锁，否则这条对话只能讨论一次。
 	defer s.release(conversationID)
 
@@ -332,6 +333,7 @@ func (s *discussionService) run(orchestrator *discussion.Orchestrator, conversat
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
+	ctx = mcp.WithOwner(ctx, ownerID)
 
 	result, err := orchestrator.Run(ctx, discussion.Request{
 		ConversationID:       conversationID,

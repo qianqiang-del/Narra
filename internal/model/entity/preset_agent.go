@@ -48,18 +48,19 @@ const (
 //
 // # 约束
 //
-// UNIQUE (agent_key) 与 UNIQUE (sort_order) 由字段上的 unique tag 声明；
+// (owner_id, agent_key) 与 (owner_id, sort_order) 的唯一索引由字段 tag 声明；
 // CHECK role_type 与 CHECK sort_order >= 0 由字段上的 check tag 声明。
 // 全部归 AutoMigrate 建，同一个约束**不能**再在 SQL migration 里声明：
-// AutoMigrate 每次启动都会对账，发现库里唯一而实体上没标 unique，就判定这条约束是多余的
-// 并去删它——删除用的还是 GORM 自己算的名字，删不掉就直接 panic。见 migrations/README.md。
+// 存量库原有的单列唯一约束由 0012 迁移替换，见 migrations/README.md。
 //
 // 删角色要当心：classroom_agents.agent_id 是 ON DELETE RESTRICT，
 // 还被课程引用的角色删不掉。下架应该用 Enabled = false，不是删行。
 type PresetAgent struct {
 	BaseModel
+	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_preset_agents_owner_id;uniqueIndex:preset_agents_owner_agent_key_key,priority:1;uniqueIndex:preset_agents_owner_sort_order_key,priority:1;comment:所属用户 ID" json:"-"`
+	Owner   *User  `gorm:"foreignKey:OwnerID;constraint:preset_agents_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 
-	AgentKey string `gorm:"column:agent_key;type:varchar(80);not null;unique;comment:角色稳定标识，前后端契约，如 teacher / clown；全局唯一，改它等于换了一个角色" json:"agent_key"` // 稳定标识，前后端契约，如 teacher、clown；改它等于换了一个角色
+	AgentKey string `gorm:"column:agent_key;type:varchar(80);not null;uniqueIndex:preset_agents_owner_agent_key_key,priority:2;comment:用户内唯一的角色稳定标识，如 teacher / clown" json:"agent_key"` // 稳定标识，前后端契约，如 teacher、clown；改它等于换了一个角色
 
 	Name     string `gorm:"column:name;type:varchar(120);not null;comment:展示名，如「陈老师」" json:"name"`                                                                                                                                                  // 展示名，如「陈老师」
 	Role     string `gorm:"column:role;type:varchar(120);not null;comment:展示定位，如「主讲」「质疑」" json:"role"`                                                                                                                                              // 展示定位，如「主讲」「质疑」
@@ -71,8 +72,8 @@ type PresetAgent struct {
 	Color   string `gorm:"column:color;type:varchar(16);not null;comment:界面主题色，如 #722ed1" json:"color"`                           // 界面主题色，如 #722ed1
 	VoiceID string `gorm:"column:voice_id;type:varchar(120);not null;comment:默认音色 ID，取值必须在语音目录内" json:"voice_id"`                 // 默认音色 ID，取值必须在 service.IsValidVoiceID 的目录内
 
-	SortOrder int32 `gorm:"column:sort_order;not null;unique;check:preset_agents_sort_order_check,sort_order >= 0;comment:前端角色列表的展示顺序；唯一，否则顺序不确定" json:"sort_order"` // 前端角色列表的展示顺序；唯一，否则顺序不确定
-	Enabled   bool  `gorm:"column:enabled;not null;default:true;comment:是否可被挑中；下架用 false，不要删行" json:"enabled"`                                                       // 是否可被挑中；下架用 false
+	SortOrder int32 `gorm:"column:sort_order;not null;uniqueIndex:preset_agents_owner_sort_order_key,priority:2;check:preset_agents_sort_order_check,sort_order >= 0;comment:用户内唯一的角色展示顺序" json:"sort_order"` // 前端角色列表的展示顺序；唯一，否则顺序不确定
+	Enabled   bool  `gorm:"column:enabled;not null;default:true;comment:是否可被挑中；下架用 false，不要删行" json:"enabled"`                                                                                                // 是否可被挑中；下架用 false
 }
 
 // TableName 返回表名。

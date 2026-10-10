@@ -9,12 +9,12 @@ import (
 
 // ClassroomService 课堂受理与状态查询。
 type ClassroomService interface {
-	Create(ctx context.Context, input requestdto.CreateClassroom) (*responsedto.Classroom, error)
-	List(ctx context.Context) ([]*responsedto.ClassroomListItem, error)
-	Delete(ctx context.Context, id uint64) error
-	Get(ctx context.Context, id uint64) (*responsedto.Classroom, error)
-	GetOutline(ctx context.Context, id uint64) (*responsedto.ClassroomOutline, error)
-	GetAgents(ctx context.Context, id uint64) ([]responsedto.RoleItem, error)
-	ListScenes(ctx context.Context, id uint64) ([]responsedto.ClassroomSceneSummary, error)
-	RetryScene(ctx context.Context, sceneID uint64) (*responsedto.ClassroomSceneSummary, error)
+	Create(ctx context.Context, ownerID uint64, input requestdto.CreateClassroom) (*responsedto.Classroom, error)
+	List(ctx context.Context, ownerID uint64) ([]*responsedto.ClassroomListItem, error)
+	Delete(ctx context.Context, ownerID, id uint64) error
+	Get(ctx context.Context, ownerID, id uint64) (*responsedto.Classroom, error)
+	GetOutline(ctx context.Context, ownerID, id uint64) (*responsedto.ClassroomOutline, error)
+	GetAgents(ctx context.Context, ownerID, id uint64) ([]responsedto.RoleItem, error)
+	ListScenes(ctx context.Context, ownerID, id uint64) ([]responsedto.ClassroomSceneSummary, error)
+	RetryScene(ctx context.Context, ownerID, sceneID uint64) (*responsedto.ClassroomSceneSummary, error)
 }

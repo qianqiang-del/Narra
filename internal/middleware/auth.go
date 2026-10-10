@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"narra/internal/ownership"
 	"strings"
 
 	"narra/pkg/jwt"
@@ -46,15 +47,16 @@ func Auth() gin.HandlerFunc {
 		// 将用户信息存入上下文
 		c.Set(ContextUserID, claims.GetUserID())
 		c.Set(ContextUsername, claims.GetUsername())
+		c.Request = c.Request.WithContext(ownership.WithOwner(c.Request.Context(), claims.GetUserID()))
 
 		c.Next()
 	}
 }
 
 // GetUserID 从上下文获取用户 ID
-func GetUserID(c *gin.Context) uint {
+func GetUserID(c *gin.Context) uint64 {
 	if userID, exists := c.Get(ContextUserID); exists {
-		return userID.(uint)
+		return userID.(uint64)
 	}
 	return 0
 }

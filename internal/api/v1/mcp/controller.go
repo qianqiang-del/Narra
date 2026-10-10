@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"narra/internal/middleware"
 	"strconv"
 
 	"narra/internal/model/dto/request"
@@ -24,7 +25,7 @@ func NewController(svc service.MCPServerService) *Controller {
 //
 //	GET /api/v1/mcp/servers
 func (c *Controller) List(ctx *gin.Context) {
-	items, err := c.svc.List(ctx.Request.Context())
+	items, err := c.svc.List(ctx.Request.Context(), middleware.GetUserID(ctx))
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -41,7 +42,7 @@ func (c *Controller) Create(ctx *gin.Context) {
 		response.BadRequest(ctx, "请求参数错误: "+err.Error())
 		return
 	}
-	item, err := c.svc.Create(ctx.Request.Context(), input)
+	item, err := c.svc.Create(ctx.Request.Context(), input, middleware.GetUserID(ctx))
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -63,7 +64,7 @@ func (c *Controller) Update(ctx *gin.Context) {
 		response.BadRequest(ctx, "请求参数错误: "+err.Error())
 		return
 	}
-	item, err := c.svc.Update(ctx.Request.Context(), id, input)
+	item, err := c.svc.Update(ctx.Request.Context(), id, input, middleware.GetUserID(ctx))
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -80,7 +81,7 @@ func (c *Controller) Delete(ctx *gin.Context) {
 		response.BadRequest(ctx, "无效的 ID")
 		return
 	}
-	if err := c.svc.Delete(ctx.Request.Context(), id); err != nil {
+	if err := c.svc.Delete(ctx.Request.Context(), id, middleware.GetUserID(ctx)); err != nil {
 		response.BizError(ctx, err)
 		return
 	}
@@ -96,7 +97,7 @@ func (c *Controller) Test(ctx *gin.Context) {
 		response.BadRequest(ctx, "无效的 ID")
 		return
 	}
-	result, err := c.svc.Test(ctx.Request.Context(), id)
+	result, err := c.svc.Test(ctx.Request.Context(), id, middleware.GetUserID(ctx))
 	if err != nil {
 		response.BizError(ctx, err)
 		return

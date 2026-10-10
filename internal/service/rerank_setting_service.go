@@ -60,8 +60,14 @@ func NewRerankSettingService(repo repository.RerankSettingRepository, encryption
 }
 
 // List 返回全部配置，含未测试和已停用的，供设置页展示。
-func (s *rerankSettingService) List(ctx context.Context) ([]responsedto.RerankSetting, error) {
-	items, err := s.repo.List(ctx)
+func (s *rerankSettingService) List(ctx context.Context, ownerIDs ...uint64) ([]responsedto.RerankSetting, error) {
+	var items []entity.RerankSetting
+	var err error
+	if len(ownerIDs) > 0 {
+		items, err = s.repo.ListByOwner(ctx, ownerIDs[0])
+	} else {
+		items, err = s.repo.List(ctx)
+	}
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询重排配置失败", err)
 	}
@@ -73,7 +79,7 @@ func (s *rerankSettingService) List(ctx context.Context) ([]responsedto.RerankSe
 }
 
 // Create 新建配置：测通了才能手动启用，所以入库时固定是未测试 + 未启用。
-func (s *rerankSettingService) Create(ctx context.Context, input requestdto.RerankSetting) (*responsedto.RerankSetting, error) {
+func (s *rerankSettingService) Create(ctx context.Context, input requestdto.RerankSetting, ownerIDs ...uint64) (*responsedto.RerankSetting, error) {
 	name, baseURL, timeout, model, err := validateRerankInput(input)
 	if err != nil {
 		return nil, err
@@ -91,6 +97,9 @@ func (s *rerankSettingService) Create(ctx context.Context, input requestdto.Rera
 		APIKeyEncrypted: encrypted, TimeoutSeconds: int32(timeout / time.Second),
 		TestStatus: entity.RerankTestStatusUntested, IsEnabled: false,
 	}
+	if len(ownerIDs) > 0 {
+		item.OwnerID = ownerIDs[0]
+	}
 	if err := s.repo.Create(ctx, item); err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeConflict, "配置名称已存在或保存失败", err)
 	}
@@ -101,8 +110,8 @@ func (s *rerankSettingService) Create(ctx context.Context, input requestdto.Rera
 
 // Update 全量更新。地址、超时、模型、密钥任一变动，都把配置打回未测试并停用：
 // 旧配置测通过不代表新配置能用，继续挂着"测试成功"的徽章是骗人的。
-func (s *rerankSettingService) Update(ctx context.Context, id uint64, input requestdto.RerankSetting) (*responsedto.RerankSetting, error) {
-	item, err := s.find(ctx, id)
+func (s *rerankSettingService) Update(ctx context.Context, id uint64, input requestdto.RerankSetting, ownerIDs ...uint64) (*responsedto.RerankSetting, error) {
+	item, err := s.find(ctx, id, ownerIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -135,29 +144,39 @@ func (s *rerankSettingService) Update(ctx context.Context, id uint64, input requ
 		return nil, apperrors.NewWithErr(apperrors.CodeConflict, "更新重排配置失败", err)
 	}
 	// 关键字段变动会把生效配置打回停用；无论改的是不是启用中的那条，都重载一次。
-	s.reload(ctx)
+	if len(ownerIDs) == 0 {
+		s.reload(ctx)
+	}
 	dto := toRerankResponse(*item)
 	return &dto, nil
 }
 
 // Delete 删除配置；不检查是否正在被引用，因为检索侧读取的是"当前启用"这一行，
 // 删掉启用中的配置等于精排关闭（不会自动切换到其它配置）。
-func (s *rerankSettingService) Delete(ctx context.Context, id uint64) error {
-	if _, err := s.find(ctx, id); err != nil {
+func (s *rerankSettingService) Delete(ctx context.Context, id uint64, ownerIDs ...uint64) error {
+	if _, err := s.find(ctx, id, ownerIDs...); err != nil {
 		return err
 	}
-	if err := s.repo.Delete(ctx, id); err != nil {
+	var err error
+	if len(ownerIDs) > 0 {
+		err = s.repo.DeleteByOwner(ctx, id, ownerIDs[0])
+	} else {
+		err = s.repo.Delete(ctx, id)
+	}
+	if err != nil {
 		return apperrors.NewWithErr(apperrors.CodeInternalError, "删除重排配置失败", err)
 	}
 	// 删掉的正好是启用中的那条时，重载会把精排关掉。
-	s.reload(ctx)
+	if len(ownerIDs) == 0 {
+		s.reload(ctx)
+	}
 	return nil
 }
 
 // Test 发一次真实重排探测。失败要写回状态并停用该配置——测不通的配置不该继续被检索使用；
 // 成功时保持原启用状态不动（测试不是启用动作）。
-func (s *rerankSettingService) Test(ctx context.Context, id uint64) (*responsedto.RerankSettingTestResult, error) {
-	item, err := s.find(ctx, id)
+func (s *rerankSettingService) Test(ctx context.Context, id uint64, ownerIDs ...uint64) (*responsedto.RerankSettingTestResult, error) {
+	item, err := s.find(ctx, id, ownerIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +203,9 @@ func (s *rerankSettingService) Test(ctx context.Context, id uint64) (*responsedt
 			return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "保存测试结果失败", err)
 		}
 		// 失败会停用配置：如果它正生效，运行时必须跟着关掉。
-		s.reload(ctx)
+		if len(ownerIDs) == 0 {
+			s.reload(ctx)
+		}
 		return nil, apperrors.New(apperrors.CodeBadRequest, message)
 	}
 
@@ -193,7 +214,9 @@ func (s *rerankSettingService) Test(ctx context.Context, id uint64) (*responsedt
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "保存测试结果失败", err)
 	}
 	// 测试成功不改变启用状态，重载只是取最新（配置内容没变，代价可忽略）。
-	s.reload(ctx)
+	if len(ownerIDs) == 0 {
+		s.reload(ctx)
+	}
 	return &responsedto.RerankSettingTestResult{
 		Success: true,
 		Message: fmt.Sprintf("测试通过：相关内容 %.2f / 无关内容 %.2f", result.Relevant, result.Irrelevant),
@@ -201,15 +224,20 @@ func (s *rerankSettingService) Test(ctx context.Context, id uint64) (*responsedt
 }
 
 // SetEnabled 切换启用状态；未测试通过的配置不许启用，否则检索会拿到一个必然失败的精排。
-func (s *rerankSettingService) SetEnabled(ctx context.Context, id uint64, enabled bool) (*responsedto.RerankSetting, error) {
-	item, err := s.find(ctx, id)
+func (s *rerankSettingService) SetEnabled(ctx context.Context, id uint64, enabled bool, ownerIDs ...uint64) (*responsedto.RerankSetting, error) {
+	item, err := s.find(ctx, id, ownerIDs...)
 	if err != nil {
 		return nil, err
 	}
 	if enabled && item.TestStatus != entity.RerankTestStatusSuccess {
 		return nil, apperrors.New(apperrors.CodeBadRequest, "请先测试连接，成功后才能启用")
 	}
-	applied, err := s.repo.SetEnabled(ctx, id, enabled)
+	var applied bool
+	if len(ownerIDs) > 0 {
+		applied, err = s.repo.SetEnabledForOwner(ctx, id, ownerIDs[0], enabled)
+	} else {
+		applied, err = s.repo.SetEnabled(ctx, id, enabled)
+	}
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "更新启用状态失败", err)
 	}
@@ -218,7 +246,9 @@ func (s *rerankSettingService) SetEnabled(ctx context.Context, id uint64, enable
 	}
 	item.IsEnabled = enabled
 	// 启用/停用立即反映到检索侧：这是"设置页点一下开关，排序就变"的那根线。
-	s.reload(ctx)
+	if len(ownerIDs) == 0 {
+		s.reload(ctx)
+	}
 	dto := toRerankResponse(*item)
 	return &dto, nil
 }
@@ -279,8 +309,14 @@ func (s *rerankSettingService) reload(ctx context.Context) {
 }
 
 // find 按 ID 取配置，取不到就是 404 语义。
-func (s *rerankSettingService) find(ctx context.Context, id uint64) (*entity.RerankSetting, error) {
-	item, err := s.repo.FindByID(ctx, id)
+func (s *rerankSettingService) find(ctx context.Context, id uint64, ownerIDs ...uint64) (*entity.RerankSetting, error) {
+	var item *entity.RerankSetting
+	var err error
+	if len(ownerIDs) > 0 {
+		item, err = s.repo.FindByIDAndOwner(ctx, id, ownerIDs[0])
+	} else {
+		item, err = s.repo.FindByID(ctx, id)
+	}
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "重排配置不存在", err)
 	}

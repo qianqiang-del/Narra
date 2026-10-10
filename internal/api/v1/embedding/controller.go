@@ -1,6 +1,7 @@
 package embedding
 
 import (
+	"narra/internal/middleware"
 	requestdto "narra/internal/model/dto/request"
 	"narra/internal/service"
 	"narra/pkg/response"
@@ -19,7 +20,7 @@ func NewController(svc service.EmbeddingSettingService) *Controller {
 
 // Current 返回当前正在使用的配置。
 func (c *Controller) Current(ctx *gin.Context) {
-	setting, err := c.svc.Current(ctx.Request.Context())
+	setting, err := c.svc.Current(ctx.Request.Context(), middleware.GetUserID(ctx))
 	if err != nil {
 		response.InternalError(ctx, err.Error())
 		return
@@ -34,7 +35,7 @@ func (c *Controller) Save(ctx *gin.Context) {
 		response.BadRequest(ctx, "向量服务配置格式无效")
 		return
 	}
-	setting, err := c.svc.Save(ctx.Request.Context(), input)
+	setting, err := c.svc.Save(ctx.Request.Context(), input, middleware.GetUserID(ctx))
 	if err != nil {
 		response.BadRequest(ctx, err.Error())
 		return
@@ -49,7 +50,7 @@ func (c *Controller) Test(ctx *gin.Context) {
 		response.BadRequest(ctx, "向量服务配置格式无效")
 		return
 	}
-	dimensions, err := c.svc.Test(ctx.Request.Context(), input)
+	dimensions, err := c.svc.Test(ctx.Request.Context(), input, middleware.GetUserID(ctx))
 	if err != nil {
 		response.BadRequest(ctx, err.Error())
 		return

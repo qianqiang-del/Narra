@@ -46,8 +46,14 @@ func NewEmbeddingSettingService(repo repository.EmbeddingSettingRepository, mode
 // Current 返回当前生效配置的对外结构。
 // 一条配置都没保存过时不算错误：回退启动时读到的 manager 配置，
 // 让设置页首次打开就有一份可编辑的初值，而不是报错或者空白表单。
-func (s *embeddingSettingService) Current(ctx context.Context) (responsedto.EmbeddingSetting, error) {
-	setting, err := s.repo.GetActive(ctx)
+func (s *embeddingSettingService) Current(ctx context.Context, ownerIDs ...uint64) (responsedto.EmbeddingSetting, error) {
+	var setting *entity.EmbeddingSetting
+	var err error
+	if len(ownerIDs) > 0 {
+		setting, err = s.repo.GetActiveByOwner(ctx, ownerIDs[0])
+	} else {
+		setting, err = s.repo.GetActive(ctx)
+	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return settingResponse("默认配置", s.manager.Config()), nil
 	}
@@ -67,10 +73,16 @@ func (s *embeddingSettingService) Current(ctx context.Context) (responsedto.Embe
 // 内存里那份要么还是旧的完整配置，要么已经换成新的完整配置，不会半新半旧。
 //
 // 登记模型行（ensureDefaultModel）夹在两者之间，且必须在 SaveActive 之前 —— 见该方法的注释。
-func (s *embeddingSettingService) Save(ctx context.Context, input requestdto.EmbeddingSetting) (responsedto.EmbeddingSetting, error) {
+func (s *embeddingSettingService) Save(ctx context.Context, input requestdto.EmbeddingSetting, ownerIDs ...uint64) (responsedto.EmbeddingSetting, error) {
 	// 读当前记录有两个用途：请求没带密钥时沿用旧的，以及复用它的行做覆盖更新。
 	// 首次保存查不到记录不算错误。
-	current, err := s.repo.GetActive(ctx)
+	var current *entity.EmbeddingSetting
+	var err error
+	if len(ownerIDs) > 0 {
+		current, err = s.repo.GetActiveByOwner(ctx, ownerIDs[0])
+	} else {
+		current, err = s.repo.GetActive(ctx)
+	}
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return responsedto.EmbeddingSetting{}, fmt.Errorf("查询当前向量配置失败: %w", err)
 	}
@@ -84,19 +96,28 @@ func (s *embeddingSettingService) Save(ctx context.Context, input requestdto.Emb
 		return responsedto.EmbeddingSetting{}, err
 	}
 
-	if err := s.ensureDefaultModel(ctx, cfg); err != nil {
-		return responsedto.EmbeddingSetting{}, err
+	if len(ownerIDs) == 0 {
+		if err := s.ensureDefaultModel(ctx, cfg); err != nil {
+			return responsedto.EmbeddingSetting{}, err
+		}
 	}
 
 	setting, err := s.settingFromConfig(current, cfg)
 	if err != nil {
 		return responsedto.EmbeddingSetting{}, err
 	}
-	if err := s.repo.SaveActive(ctx, setting); err != nil {
+	if len(ownerIDs) > 0 {
+		err = s.repo.SaveActiveForOwner(ctx, ownerIDs[0], setting)
+	} else {
+		err = s.repo.SaveActive(ctx, setting)
+	}
+	if err != nil {
 		return responsedto.EmbeddingSetting{}, fmt.Errorf("保存向量配置失败: %w", err)
 	}
-	if err := s.manager.Configure(cfg); err != nil {
-		return responsedto.EmbeddingSetting{}, err
+	if len(ownerIDs) == 0 {
+		if err := s.manager.Configure(cfg); err != nil {
+			return responsedto.EmbeddingSetting{}, err
+		}
 	}
 	return settingResponse(setting.Name, cfg), nil
 }
@@ -105,8 +126,14 @@ func (s *embeddingSettingService) Save(ctx context.Context, input requestdto.Emb
 // 不写库、也不改当前生效配置，用户可以先试再存。
 // 能走通就说明上游返回的向量条数和维度都跟配置对得上（client.Embed 会逐条校验维度），
 // 成功时再把配置里的 Dimensions 回给前端，让它跟模型文档核对。
-func (s *embeddingSettingService) Test(ctx context.Context, input requestdto.EmbeddingSetting) (int, error) {
-	current, err := s.repo.GetActive(ctx)
+func (s *embeddingSettingService) Test(ctx context.Context, input requestdto.EmbeddingSetting, ownerIDs ...uint64) (int, error) {
+	var current *entity.EmbeddingSetting
+	var err error
+	if len(ownerIDs) > 0 {
+		current, err = s.repo.GetActiveByOwner(ctx, ownerIDs[0])
+	} else {
+		current, err = s.repo.GetActive(ctx)
+	}
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, fmt.Errorf("查询当前向量配置失败: %w", err)
 	}
