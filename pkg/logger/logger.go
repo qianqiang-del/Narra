@@ -2,6 +2,7 @@ package logger
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"narra/pkg/config"
@@ -55,18 +56,20 @@ func Init(cfg *config.LogConfig) error {
 		level = zapcore.ErrorLevel
 	}
 
-	// 文件输出
-	fileWriter := &lumberjack.Logger{
-		Filename:   cfg.Filename,
-		MaxSize:    cfg.MaxSize,
-		MaxBackups: cfg.MaxBackups,
-		MaxAge:     cfg.MaxAge,
-		Compress:   cfg.Compress,
-	}
-
-	// 创建多个输出（文件 + 控制台）
+	// 输出目标：stdout 始终保留；配了 filename 才额外落文件。
+	// 容器部署建议 filename 留空 —— 日志走 stdout 由 docker 的日志设施收集，
+	// 不落在容器可写层（重建即丢），也不会多实例各写一份、只读文件系统启动失败。
 	var writers []zapcore.WriteSyncer
-	writers = append(writers, zapcore.AddSync(fileWriter))
+	if strings.TrimSpace(cfg.Filename) != "" {
+		fileWriter := &lumberjack.Logger{
+			Filename:   cfg.Filename,
+			MaxSize:    cfg.MaxSize,
+			MaxBackups: cfg.MaxBackups,
+			MaxAge:     cfg.MaxAge,
+			Compress:   cfg.Compress,
+		}
+		writers = append(writers, zapcore.AddSync(fileWriter))
+	}
 	writers = append(writers, zapcore.AddSync(os.Stdout))
 
 	// 核心

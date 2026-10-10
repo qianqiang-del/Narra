@@ -3,6 +3,7 @@ module narra
 go 1.25.0
 
 require (
+	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/cloudwego/eino v0.9.19
 	github.com/cloudwego/eino-ext/callbacks/langfuse v0.1.3
 	github.com/eino-contrib/jsonschema v1.0.3
@@ -10,6 +11,7 @@ require (
 	github.com/go-ego/gse v1.1.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hibiken/asynq v0.26.0
+	github.com/joho/godotenv v1.5.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/spf13/viper v1.21.0
@@ -28,6 +30,7 @@ require (
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/opentracing/opentracing-go v1.2.1-0.20220228012449-10b1cf09e00b // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
+	gopkg.in/yaml.v2 v2.3.0 // indirect
 	gopkg.in/yaml.v2 v2.3.0 // indirect
 )
 

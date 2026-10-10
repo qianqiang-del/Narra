@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
 
@@ -12,6 +13,10 @@ var globalConfig *Config
 
 // Load 加载配置文件
 func Load(configPath string) (*Config, error) {
+	// 本地开发便利：仓库根目录存在 .env 时自动加载。godotenv 不覆盖已存在的环境变量，
+	// 所以 CI / Docker Compose 显式注入的变量优先；文件不存在时静默跳过，线上不受影响。
+	_ = godotenv.Load()
+
 	v := viper.New()
 
 	// 设置配置文件路径
