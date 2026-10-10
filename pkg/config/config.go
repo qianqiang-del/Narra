@@ -139,10 +139,12 @@ type StorageConfig struct {
 
 // OSSStorageConfig 是阿里云 OSS 的接入配置。
 //
-// 启用后原件、文档图片与课堂音频统一存进 OSS；本地目录只保留上传解析所需的临时区。
-// 凭证建议走环境变量 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，别写进仓库里的 yaml。
+// 默认使用 OSS：四项接入信息填齐即启用，原件/图片/音频统一进 OSS，本地目录只保留
+// 上传解析所需的临时区；四项全部留空则退回本地目录兜底（单机 / 开发环境）。
+// 只填一部分属于配置错误 —— 半配置最容易造成"有的实例走 OSS、有的走本地"的混跑，
+// 宁可不启动也不猜。凭证建议走环境变量 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，
+// 别写进仓库里的 yaml。
 type OSSStorageConfig struct {
-	Enabled         bool          `mapstructure:"enabled"`
 	Endpoint        string        `mapstructure:"endpoint"`          // Bucket 所在地域的服务地址，如 oss-cn-hangzhou.aliyuncs.com
 	Bucket          string        `mapstructure:"bucket"`            // Bucket 名称；需配置为公共读（图片/音频直链播放）
 	AccessKeyID     string        `mapstructure:"access_key_id"`     // RAM 用户 AccessKey ID
@@ -150,21 +152,33 @@ type OSSStorageConfig struct {
 	Timeout         time.Duration `mapstructure:"timeout"`           // 单次对象操作读写超时；<=0 用 30s
 }
 
-// Validate 校验对象存储配置：启用时四项接入信息缺一不可。
+// Configured 判断四项接入信息是否填齐（取环境变量注入后的值）。
+// 装配层（internal/app）用它决定"构造 OSS 客户端"还是"走本地兜底"。
+func (c OSSStorageConfig) Configured() bool {
+	return strings.TrimSpace(c.Endpoint) != "" &&
+		strings.TrimSpace(c.Bucket) != "" &&
+		strings.TrimSpace(c.AccessKeyID) != "" &&
+		strings.TrimSpace(c.AccessKeySecret) != ""
+}
+
+// anySet 判断是否至少填了一项 —— 用来把"全空（本地兜底）"与"半配置（报错）"分开。
+func (c OSSStorageConfig) anySet() bool {
+	return strings.TrimSpace(c.Endpoint) != "" ||
+		strings.TrimSpace(c.Bucket) != "" ||
+		strings.TrimSpace(c.AccessKeyID) != "" ||
+		strings.TrimSpace(c.AccessKeySecret) != ""
+}
+
+// Validate 校验存储配置：OSS 四项要么全空（本地兜底），要么全填（OSS 模式）。
 func (c StorageConfig) Validate() error {
-	if !c.OSS.Enabled {
+	switch {
+	case c.OSS.Configured():
+		return nil
+	case c.OSS.anySet():
+		return fmt.Errorf("storage.oss 配置不完整：endpoint / bucket / access_key_id / access_key_secret 要么全部留空（本地兜底），要么全部填齐（凭证可用环境变量 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET 注入）")
+	default:
 		return nil
 	}
-	if strings.TrimSpace(c.OSS.Endpoint) == "" {
-		return fmt.Errorf("storage.oss.endpoint 不能为空（启用 OSS 时必填）")
-	}
-	if strings.TrimSpace(c.OSS.Bucket) == "" {
-		return fmt.Errorf("storage.oss.bucket 不能为空（启用 OSS 时必填）")
-	}
-	if strings.TrimSpace(c.OSS.AccessKeyID) == "" || strings.TrimSpace(c.OSS.AccessKeySecret) == "" {
-		return fmt.Errorf("storage.oss.access_key_id / access_key_secret 不能为空（可用环境变量 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET 覆盖）")
-	}
-	return nil
 }
 
 // WorkerConfig 是后台生成任务的执行配置。
@@ -264,6 +278,7 @@ type PostgresConfig struct {
 	Username     string `mapstructure:"username"`
 	Password     string `mapstructure:"password"`
 	Database     string `mapstructure:"database"`
+	SSLMode      string `mapstructure:"sslmode"` // 连接加密模式（disable/require/verify-full 等）；空 = disable
 	MaxIdleConns int    `mapstructure:"max_idle_conns"`
 	MaxOpenConns int    `mapstructure:"max_open_conns"`
 }

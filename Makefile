@@ -33,8 +33,8 @@ ifeq ($(OS),Windows_NT)
 else
 	@echo "Building $(APP_NAME)..."
 	@mkdir -p $(BUILD_DIR)
-	$(GOBUILD) -o $(BUILD_DIR)/$(APP_NAME).exe $(MAIN_PATH)
-	@echo "Build complete: $(BUILD_DIR)/$(APP_NAME).exe"
+	$(GOBUILD) -o $(BUILD_DIR)/$(APP_NAME) $(MAIN_PATH)
+	@echo "Build complete: $(BUILD_DIR)/$(APP_NAME)"
 endif
 
 ## run: 运行项目
