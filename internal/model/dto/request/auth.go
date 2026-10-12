@@ -20,3 +20,7 @@ type AuthCodeLogin struct {
 	Phone string `json:"phone" binding:"required"`
 	Code  string `json:"code" binding:"required"`
 }
+
+type AuthRefresh struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
+}

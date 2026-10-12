@@ -1,4 +1,5 @@
 import { request } from './client'
+import { clearSession, getRefreshToken } from '@/lib/authSession'
 import type { AuthSession, AuthUser } from '@/lib/authSession'
 
 export function sendCode(phone: string, purpose: 'register' | 'login'): Promise<{ sent: boolean }> {
@@ -19,4 +20,11 @@ export function loginCode(phone: string, code: string): Promise<AuthSession> {
 
 export function currentUser(): Promise<AuthUser> {
   return request('/auth/me')
+}
+
+export async function logout(): Promise<void> {
+  const refreshToken = getRefreshToken()
+  clearSession()
+  if (!refreshToken) return
+  await request('/auth/logout', { method: 'POST', body: JSON.stringify({ refresh_token: refreshToken }) })
 }

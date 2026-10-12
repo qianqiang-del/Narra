@@ -1,4 +1,5 @@
-import { clearSession, getToken } from '@/lib/authSession'
+import { clearSession, getRefreshToken, getToken, saveSession } from '@/lib/authSession'
+import type { AuthSession } from '@/lib/authSession'
 
 /**
  * 后端 HTTP 客户端。
@@ -46,42 +47,94 @@ function redirectToLogin(): void {
 }
 
 function isPublicAuthPath(path: string): boolean {
-  return path === '/auth/codes' || path === '/auth/register' || path.startsWith('/auth/login/')
+  return path === '/auth/codes' || path === '/auth/register' || path === '/auth/refresh'
+    || path === '/auth/logout' || path.startsWith('/auth/login/')
+}
+
+let refreshPromise: Promise<string> | null = null
+
+export function refreshAccessToken(): Promise<string> {
+  if (refreshPromise) return refreshPromise
+  refreshPromise = (async () => {
+    const refreshToken = getRefreshToken()
+    if (!refreshToken) throw new ApiError(401, '登录已过期')
+    let res: Response
+    try {
+      res = await fetch(`${BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      })
+    } catch (cause) {
+      throw new ApiError(CODE_NETWORK, cause instanceof Error ? cause.message : String(cause))
+    }
+    let body: Envelope<AuthSession>
+    try {
+      body = (await res.json()) as Envelope<AuthSession>
+    } catch {
+      throw new ApiError(res.status, `响应不是合法 JSON（HTTP ${res.status}）`)
+    }
+    if (body.code !== CODE_SUCCESS || !body.data?.token || !body.data.refresh_token) {
+      throw new ApiError(body.code || 401, body.message || '登录已过期')
+    }
+    if (getRefreshToken() !== refreshToken) throw new ApiError(401, '登录状态已变更')
+    saveSession(body.data)
+    return body.data.token
+  })().finally(() => { refreshPromise = null })
+  return refreshPromise
+}
+
+async function accessToken(): Promise<string | null> {
+  const token = getToken()
+  if (token) return token
+  if (!getRefreshToken()) return null
+  try {
+    return await refreshAccessToken()
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 401) redirectToLogin()
+    throw error
+  }
 }
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = getToken()
-  let res: Response
-  try {
-    // FormData 的 Content-Type 必须由浏览器自己生成（它要往里塞 boundary），
-    // 这里写死 application/json 会让后端把 multipart 体整个解析不出来。
-    const isFormData = init?.body instanceof FormData
-    res = await fetch(`${BASE}${path}`, {
-      ...init,
-      headers: {
-        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...init?.headers,
-      },
-    })
-  } catch (cause) {
-    // fetch 只在网络层失败时 reject。这里刻意不编造中文文案——报什么由调用方决定
-    throw new ApiError(CODE_NETWORK, cause instanceof Error ? cause.message : String(cause))
-  }
+  const publicPath = isPublicAuthPath(path)
+  let token = publicPath ? getToken() : await accessToken()
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let res: Response
+    try {
+      const isFormData = init?.body instanceof FormData
+      res = await fetch(`${BASE}${path}`, {
+        ...init,
+        headers: {
+          ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...init?.headers,
+        },
+      })
+    } catch (cause) {
+      throw new ApiError(CODE_NETWORK, cause instanceof Error ? cause.message : String(cause))
+    }
 
-  let body: Envelope<T>
-  try {
-    body = (await res.json()) as Envelope<T>
-  } catch {
-    throw new ApiError(res.status, `响应不是合法 JSON（HTTP ${res.status}）`)
-  }
-
-  if (body.code !== CODE_SUCCESS) {
-    if (body.code === 401 && !isPublicAuthPath(path)) redirectToLogin()
+    let body: Envelope<T>
+    try {
+      body = (await res.json()) as Envelope<T>
+    } catch {
+      throw new ApiError(res.status, `响应不是合法 JSON（HTTP ${res.status}）`)
+    }
+    if (body.code === CODE_SUCCESS) return body.data as T
+    if (body.code === 401 && !publicPath && attempt === 0 && getRefreshToken()) {
+      try {
+        token = await refreshAccessToken()
+        continue
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 401) redirectToLogin()
+        throw error
+      }
+    }
+    if (body.code === 401 && !publicPath) redirectToLogin()
     throw new ApiError(body.code, body.message || `请求失败（code ${body.code}）`)
   }
-
-  return body.data as T
+  throw new ApiError(401, '登录已过期')
 }
 
 /** 一条 SSE 事件 */
@@ -107,11 +160,26 @@ export interface SseEvent {
  * 拿到的是 JSON 而不是流，这里按信封翻成 ApiError，与 request() 的读法一致。
  */
 export async function* streamEvents(path: string, signal?: AbortSignal): AsyncGenerator<SseEvent> {
-  const token = getToken()
-  const res = await fetch(`${BASE}${path}`, {
+  let token = await accessToken()
+  let res = await fetch(`${BASE}${path}`, {
     headers: { Accept: 'text/event-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     signal,
   })
+
+  if (!(res.headers.get('Content-Type') ?? '').includes('text/event-stream') && getRefreshToken()) {
+    const body = await res.clone().json().catch(() => null) as Envelope<unknown> | null
+    if (body?.code === 401) {
+      try {
+        token = await refreshAccessToken()
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 401) redirectToLogin()
+        throw error
+      }
+      res = await fetch(`${BASE}${path}`, {
+        headers: { Accept: 'text/event-stream', Authorization: `Bearer ${token}` }, signal,
+      })
+    }
+  }
 
   if (!(res.headers.get('Content-Type') ?? '').includes('text/event-stream')) {
     let body: Envelope<unknown>

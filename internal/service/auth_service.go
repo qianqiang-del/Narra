@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -39,6 +40,7 @@ var (
 	ErrAccountNotFound    = errors.New("用户不存在")
 	ErrSMSUnavailable     = errors.New("短信服务暂不可用")
 	ErrCodeRateLimited    = errors.New("验证码发送过于频繁，请稍后再试")
+	ErrInvalidRefresh     = errors.New("刷新令牌无效或已过期")
 )
 
 var mainlandPhone = regexp.MustCompile(`^1[3-9][0-9]{9}$`)
@@ -52,16 +54,18 @@ type managedCodeSender interface {
 }
 
 type authService struct {
-	users   repository.UserRepository
-	codes   repository.VerificationCodeRepository
-	sender  SMSSender
-	secret  []byte
-	expires time.Duration
-	sign    func(uint64, string) (string, error)
+	users          repository.UserRepository
+	codes          repository.VerificationCodeRepository
+	refresh        repository.RefreshTokenRepository
+	sender         SMSSender
+	secret         []byte
+	expires        time.Duration
+	refreshExpires time.Duration
+	sign           func(uint64, string) (string, error)
 }
 
-func NewAuthService(users repository.UserRepository, codes repository.VerificationCodeRepository, sender SMSSender, secret string, expires time.Duration) AuthService {
-	return &authService{users: users, codes: codes, sender: sender, secret: []byte(secret), expires: expires, sign: jwt.GenerateToken}
+func NewAuthService(users repository.UserRepository, codes repository.VerificationCodeRepository, refresh repository.RefreshTokenRepository, sender SMSSender, secret string, expires, refreshExpires time.Duration) AuthService {
+	return &authService{users: users, codes: codes, refresh: refresh, sender: sender, secret: []byte(secret), expires: expires, refreshExpires: refreshExpires, sign: jwt.GenerateToken}
 }
 
 func normalizePhone(input string) (string, error) {
@@ -140,7 +144,7 @@ func (s *authService) Register(ctx context.Context, phoneInput, password, code s
 		}
 		return nil, err
 	}
-	return s.tokenFor(user)
+	return s.tokenFor(ctx, user)
 }
 
 func (s *authService) LoginPassword(ctx context.Context, phoneInput, password string) (*responsedto.AuthResult, error) {
@@ -158,7 +162,7 @@ func (s *authService) LoginPassword(ctx context.Context, phoneInput, password st
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
 		return nil, ErrInvalidCredentials
 	}
-	return s.tokenFor(user)
+	return s.tokenFor(ctx, user)
 }
 
 func (s *authService) LoginCode(ctx context.Context, phoneInput, code string) (*responsedto.AuthResult, error) {
@@ -176,7 +180,44 @@ func (s *authService) LoginCode(ctx context.Context, phoneInput, code string) (*
 	if err := s.verifyCode(ctx, phone, CodePurposeLogin, code); err != nil {
 		return nil, err
 	}
-	return s.tokenFor(user)
+	return s.tokenFor(ctx, user)
+}
+
+func (s *authService) Refresh(ctx context.Context, refreshToken string) (*responsedto.AuthResult, error) {
+	if len(refreshToken) != 43 || s.refresh == nil {
+		return nil, ErrInvalidRefresh
+	}
+	next, err := newRefreshToken()
+	if err != nil {
+		return nil, err
+	}
+	userID, err := s.refresh.Rotate(ctx, refreshDigest(refreshToken), refreshDigest(next), s.refreshExpires)
+	if err != nil {
+		return nil, err
+	}
+	if userID == 0 {
+		return nil, ErrInvalidRefresh
+	}
+	user, err := s.users.FindByID(ctx, userID)
+	if err != nil {
+		_ = s.refresh.Revoke(ctx, refreshDigest(next))
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrInvalidRefresh
+		}
+		return nil, err
+	}
+	result, err := s.resultFor(user, next)
+	if err != nil {
+		_ = s.refresh.Revoke(ctx, refreshDigest(next))
+	}
+	return result, err
+}
+
+func (s *authService) Logout(ctx context.Context, refreshToken string) error {
+	if refreshToken == "" || s.refresh == nil {
+		return nil
+	}
+	return s.refresh.Revoke(ctx, refreshDigest(refreshToken))
 }
 
 func (s *authService) GetUser(ctx context.Context, id uint64) (*responsedto.AuthUser, error) {
@@ -228,10 +269,42 @@ func (s *authService) codeDigest(phone, purpose, code string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func (s *authService) tokenFor(user *entity.User) (*responsedto.AuthResult, error) {
+func (s *authService) tokenFor(ctx context.Context, user *entity.User) (*responsedto.AuthResult, error) {
+	refreshToken, err := newRefreshToken()
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.resultFor(user, refreshToken)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.refresh.Store(ctx, refreshDigest(refreshToken), user.ID, s.refreshExpires); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *authService) resultFor(user *entity.User, refreshToken string) (*responsedto.AuthResult, error) {
 	token, err := s.sign(user.ID, user.Phone)
 	if err != nil {
 		return nil, err
 	}
-	return &responsedto.AuthResult{Token: token, ExpiresIn: int64(s.expires.Seconds()), User: responsedto.AuthUser{ID: user.ID, Phone: user.Phone}}, nil
+	return &responsedto.AuthResult{
+		Token: token, ExpiresIn: int64(s.expires.Seconds()),
+		RefreshToken: refreshToken, RefreshExpiresIn: int64(s.refreshExpires.Seconds()),
+		User: responsedto.AuthUser{ID: user.ID, Phone: user.Phone},
+	}, nil
+}
+
+func newRefreshToken() (string, error) {
+	var bytes [32]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(bytes[:]), nil
+}
+
+func refreshDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }

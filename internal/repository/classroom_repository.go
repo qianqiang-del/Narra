@@ -7,14 +7,18 @@ import (
 	"gorm.io/gorm"
 
 	"narra/internal/model/entity"
+	"narra/internal/ownership"
 )
 
 type classroomRepository struct{ db *gorm.DB }
 
 // UpdateDiscussionConfig 仅更新讨论配置，避免覆盖仍在生成中的课堂数据。
 func (r *classroomRepository) UpdateDiscussionConfig(ctx context.Context, id uint64, config json.RawMessage) error {
-	result := conn(ctx, r.db).Model(&entity.Classroom{}).Where("id = ?", id).
-		Update("discussion_config", string(config))
+	query := conn(ctx, r.db).Model(&entity.Classroom{}).Where("id = ?", id)
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		query = query.Where("owner_id = ?", ownerID)
+	}
+	result := query.Update("discussion_config", string(config))
 	if result.Error != nil {
 		return result.Error
 	}

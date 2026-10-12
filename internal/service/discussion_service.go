@@ -50,6 +50,7 @@ type DiscussionModelFactory interface {
 
 type DiscussionModelCatalog interface {
 	AvailableModels(ctx context.Context) ([]responsedto.AvailableLLMModel, error)
+	AvailableModelsForOwner(ctx context.Context, ownerID uint64) ([]responsedto.AvailableLLMModel, error)
 }
 
 // DiscussionDeps 是讨论入口所需的外部依赖。
@@ -208,6 +209,9 @@ func (s *discussionService) StartWithStyle(ctx context.Context, conversationID u
 		return nil, apperrors.New(apperrors.CodeNotFound, "对话不存在")
 	case err != nil:
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询对话失败", err)
+	}
+	if err := ensureClassroomAccess(ctx, s.classrooms, conversation.ClassroomID); err != nil {
+		return nil, err
 	}
 	if conversation.Status != entity.ConversationStatusActive {
 		// 已结束的对话再发起讨论，内容会挂在一个用户以为早已收场的会话里。

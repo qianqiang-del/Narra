@@ -24,12 +24,12 @@ func NewFolderService(folders repository.FolderRepository, tx repository.Transac
 	return &folderService{folders: folders, tx: tx}
 }
 
-func (s *folderService) Create(ctx context.Context, input requestdto.Folder) (*responsedto.Folder, error) {
+func (s *folderService) Create(ctx context.Context, ownerID uint64, input requestdto.Folder) (*responsedto.Folder, error) {
 	name, err := folderName(input.Name)
 	if err != nil {
 		return nil, err
 	}
-	folder := &entity.Folder{Name: name}
+	folder := &entity.Folder{OwnerID: ownerID, Name: name}
 	if err := s.folders.Create(ctx, folder); err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "创建文件夹失败", err)
 	}
@@ -37,12 +37,12 @@ func (s *folderService) Create(ctx context.Context, input requestdto.Folder) (*r
 	return &item, nil
 }
 
-func (s *folderService) List(ctx context.Context) ([]responsedto.Folder, error) {
-	folders, err := s.folders.List(ctx)
+func (s *folderService) List(ctx context.Context, ownerID uint64) ([]responsedto.Folder, error) {
+	folders, err := s.folders.List(ctx, ownerID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询文件夹失败", err)
 	}
-	counts, err := s.folders.CountClassrooms(ctx)
+	counts, err := s.folders.CountClassrooms(ctx, ownerID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "统计文件夹课堂失败", err)
 	}
@@ -53,12 +53,12 @@ func (s *folderService) List(ctx context.Context) ([]responsedto.Folder, error) 
 	return items, nil
 }
 
-func (s *folderService) Get(ctx context.Context, id uint64) (*responsedto.FolderDetail, error) {
-	folder, err := s.specificFolder(ctx, id)
+func (s *folderService) Get(ctx context.Context, ownerID, id uint64) (*responsedto.FolderDetail, error) {
+	folder, err := s.specificFolder(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
-	classrooms, err := s.folders.ListClassrooms(ctx, id)
+	classrooms, err := s.folders.ListClassrooms(ctx, ownerID, id)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询文件夹课堂失败", err)
 	}
@@ -72,23 +72,23 @@ func (s *folderService) Get(ctx context.Context, id uint64) (*responsedto.Folder
 	return &responsedto.FolderDetail{Folder: folderResponse(folder, int64(len(items))), Classrooms: items}, nil
 }
 
-func (s *folderService) Rename(ctx context.Context, id uint64, input requestdto.Folder) (*responsedto.Folder, error) {
+func (s *folderService) Rename(ctx context.Context, ownerID, id uint64, input requestdto.Folder) (*responsedto.Folder, error) {
 	name, err := folderName(input.Name)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.folders.UpdateName(ctx, id, name); err != nil {
+	if err := s.folders.UpdateName(ctx, ownerID, id, name); err != nil {
 		return nil, folderWriteError(err, "重命名文件夹失败")
 	}
-	return s.folderWithCount(ctx, id)
+	return s.folderWithCount(ctx, ownerID, id)
 }
 
-func (s *folderService) Delete(ctx context.Context, id uint64) error {
+func (s *folderService) Delete(ctx context.Context, ownerID, id uint64) error {
 	err := s.tx.Run(ctx, func(txCtx context.Context) error {
-		if err := s.folders.DetachClassrooms(txCtx, id); err != nil {
+		if err := s.folders.DetachClassrooms(txCtx, ownerID, id); err != nil {
 			return err
 		}
-		return s.folders.Delete(txCtx, id)
+		return s.folders.Delete(txCtx, ownerID, id)
 	})
 	if err != nil {
 		return folderWriteError(err, "删除文件夹失败")
@@ -96,11 +96,11 @@ func (s *folderService) Delete(ctx context.Context, id uint64) error {
 	return nil
 }
 
-func (s *folderService) AddClassroom(ctx context.Context, folderID, classroomID uint64) error {
-	if _, err := s.specificFolder(ctx, folderID); err != nil {
+func (s *folderService) AddClassroom(ctx context.Context, ownerID, folderID, classroomID uint64) error {
+	if _, err := s.specificFolder(ctx, ownerID, folderID); err != nil {
 		return err
 	}
-	if err := s.folders.AssignClassroom(ctx, classroomID, folderID); err != nil {
+	if err := s.folders.AssignClassroom(ctx, ownerID, classroomID, folderID); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.New(apperrors.CodeNotFound, "课堂不存在")
 		}
@@ -109,8 +109,8 @@ func (s *folderService) AddClassroom(ctx context.Context, folderID, classroomID 
 	return nil
 }
 
-func (s *folderService) RemoveClassroom(ctx context.Context, folderID, classroomID uint64) error {
-	if err := s.folders.RemoveClassroom(ctx, folderID, classroomID); err != nil {
+func (s *folderService) RemoveClassroom(ctx context.Context, ownerID, folderID, classroomID uint64) error {
+	if err := s.folders.RemoveClassroom(ctx, ownerID, folderID, classroomID); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apperrors.New(apperrors.CodeNotFound, "课堂不在此文件夹中")
 		}
@@ -119,12 +119,12 @@ func (s *folderService) RemoveClassroom(ctx context.Context, folderID, classroom
 	return nil
 }
 
-func (s *folderService) folderWithCount(ctx context.Context, id uint64) (*responsedto.Folder, error) {
-	folder, err := s.specificFolder(ctx, id)
+func (s *folderService) folderWithCount(ctx context.Context, ownerID, id uint64) (*responsedto.Folder, error) {
+	folder, err := s.specificFolder(ctx, ownerID, id)
 	if err != nil {
 		return nil, err
 	}
-	counts, err := s.folders.CountClassrooms(ctx)
+	counts, err := s.folders.CountClassrooms(ctx, ownerID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "统计文件夹课堂失败", err)
 	}
@@ -132,8 +132,8 @@ func (s *folderService) folderWithCount(ctx context.Context, id uint64) (*respon
 	return &item, nil
 }
 
-func (s *folderService) specificFolder(ctx context.Context, id uint64) (*entity.Folder, error) {
-	folder, err := s.folders.FindByID(ctx, id)
+func (s *folderService) specificFolder(ctx context.Context, ownerID, id uint64) (*entity.Folder, error) {
+	folder, err := s.folders.FindByID(ctx, ownerID, id)
 	if err == nil {
 		return folder, nil
 	}

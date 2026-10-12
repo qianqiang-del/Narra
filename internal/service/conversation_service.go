@@ -124,11 +124,12 @@ func (s *conversationService) ListMessages(ctx context.Context, conversationID u
 // 用一次主键查询而不是 Count：事件流紧接着就要开流，这里只是把"对话不存在"
 // 挡在响应头之前（响应头一出去，错误就只剩事件流一种表达方式了）。
 func (s *conversationService) Exists(ctx context.Context, id uint64) (bool, error) {
-	_, err := s.conversations.FindByID(ctx, id)
+	_, err := s.findConversation(ctx, id)
+	var bizErr *apperrors.BizError
 	switch {
 	case err == nil:
 		return true, nil
-	case errors.Is(err, gorm.ErrRecordNotFound):
+	case errors.As(err, &bizErr) && bizErr.Code == apperrors.CodeNotFound:
 		return false, nil
 	default:
 		return false, fmt.Errorf("查询对话失败: %w", err)
@@ -136,6 +137,9 @@ func (s *conversationService) Exists(ctx context.Context, id uint64) (bool, erro
 }
 
 func (s *conversationService) ensureClassroom(ctx context.Context, classroomID uint64) error {
+	if err := ensureClassroomAccess(ctx, s.classrooms, classroomID); err != nil {
+		return err
+	}
 	_, err := s.classrooms.FindByID(ctx, classroomID)
 	switch {
 	case err == nil:
@@ -151,6 +155,9 @@ func (s *conversationService) findConversation(ctx context.Context, conversation
 	conversation, err := s.conversations.FindByID(ctx, conversationID)
 	switch {
 	case err == nil:
+		if err := ensureClassroomAccess(ctx, s.classrooms, conversation.ClassroomID); err != nil {
+			return nil, err
+		}
 		return conversation, nil
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		return nil, apperrors.New(apperrors.CodeNotFound, "对话不存在")
@@ -185,6 +192,9 @@ func (s *conversationService) ListEventsAfter(
 	after int64,
 	limit int,
 ) ([]responsedto.ConversationEvent, error) {
+	if _, err := s.findConversation(ctx, conversationID); err != nil {
+		return nil, err
+	}
 	events, err := s.events.ListAfter(ctx, conversationID, after, limit)
 	if err != nil {
 		return nil, fmt.Errorf("查询对话事件失败: %w", err)

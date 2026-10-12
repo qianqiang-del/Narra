@@ -1,6 +1,9 @@
 package discussion
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/gin-gonic/gin"
+	"narra/internal/middleware"
+)
 
 // RegisterRoutes 挂载讨论触发入口。
 //
@@ -12,6 +15,7 @@ import "github.com/gin-gonic/gin"
 // 与事件流挂同一个资源下是同一种资源关系。代码放在自己的包里，是为了让这块的改动
 // 不与 SSE 那条链路互相牵扯。
 func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
+	g = g.Group("", middleware.Auth())
 	g.POST("/conversations/:id/discussions", c.Start)
 	g.GET("/classrooms/:id/discussion-settings", c.Settings)
 	g.PATCH("/classrooms/:id/discussion-settings", c.UpdateSettings)

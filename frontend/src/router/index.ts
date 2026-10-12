@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { getToken } from '@/lib/authSession'
+import { clearSession, getRefreshToken, getToken } from '@/lib/authSession'
+import { refreshAccessToken } from '@/api/client'
 
 /**
  * 路由结构对应旧 Next.js 项目的 App Router 目录（见 docs/UI-还原文档.md §1）：
@@ -73,8 +74,17 @@ const router = createRouter({
   },
 })
 
-router.beforeEach((to) => {
-  if (to.name === 'login') return getToken() ? { name: 'home' } : true
+router.beforeEach(async (to) => {
+  if (to.name === 'login') return getToken() || getRefreshToken() ? { name: 'home' } : true
+  if (getToken()) return true
+  if (getRefreshToken()) {
+    try {
+      await refreshAccessToken()
+      return true
+    } catch {
+      clearSession()
+    }
+  }
   if (!getToken()) return { name: 'login', query: { redirect: to.fullPath } }
   return true
 })

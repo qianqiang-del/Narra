@@ -4,21 +4,23 @@ import (
 	"context"
 
 	responsedto "narra/internal/model/dto/response"
+	"narra/internal/model/entity"
 	"narra/internal/repository"
 	apperrors "narra/pkg/errors"
 )
 
 type sceneService struct {
-	segments repository.SceneSegmentRepository
-	scenes   repository.SceneRepository
+	segments   repository.SceneSegmentRepository
+	scenes     repository.SceneRepository
+	classrooms repository.ClassroomRepository
 }
 
-func NewSceneService(segments repository.SceneSegmentRepository, scenes repository.SceneRepository) SceneService {
-	return &sceneService{segments: segments, scenes: scenes}
+func NewSceneService(segments repository.SceneSegmentRepository, scenes repository.SceneRepository, classrooms repository.ClassroomRepository) SceneService {
+	return &sceneService{segments: segments, scenes: scenes, classrooms: classrooms}
 }
 
 func (s *sceneService) GetContent(ctx context.Context, sceneID uint64) (*responsedto.SceneContentResponse, error) {
-	scene, err := s.scenes.FindByID(ctx, sceneID)
+	scene, err := s.findScene(ctx, sceneID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "场景不存在", err)
 	}
@@ -26,7 +28,7 @@ func (s *sceneService) GetContent(ctx context.Context, sceneID uint64) (*respons
 }
 
 func (s *sceneService) Get(ctx context.Context, sceneID uint64) (*responsedto.SceneDetailResponse, error) {
-	scene, err := s.scenes.FindByID(ctx, sceneID)
+	scene, err := s.findScene(ctx, sceneID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "场景不存在", err)
 	}
@@ -42,6 +44,9 @@ func (s *sceneService) Get(ctx context.Context, sceneID uint64) (*responsedto.Sc
 }
 
 func (s *sceneService) ListNarration(ctx context.Context, sceneID uint64) ([]responsedto.SceneNarrationSegment, error) {
+	if _, err := s.findScene(ctx, sceneID); err != nil {
+		return nil, apperrors.NewWithErr(apperrors.CodeNotFound, "场景不存在", err)
+	}
 	segments, err := s.segments.ListByScene(ctx, sceneID)
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询讲解稿失败", err)
@@ -55,4 +60,15 @@ func (s *sceneService) ListNarration(ctx context.Context, sceneID uint64) ([]res
 		})
 	}
 	return items, nil
+}
+
+func (s *sceneService) findScene(ctx context.Context, sceneID uint64) (*entity.Scene, error) {
+	scene, err := s.scenes.FindByID(ctx, sceneID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureClassroomAccess(ctx, s.classrooms, scene.ClassroomID); err != nil {
+		return nil, err
+	}
+	return scene, nil
 }

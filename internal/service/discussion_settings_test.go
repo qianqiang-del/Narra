@@ -46,6 +46,10 @@ func (c discussionSettingsCatalog) AvailableModels(context.Context) ([]responsed
 	return c.rows, c.err
 }
 
+func (c discussionSettingsCatalog) AvailableModelsForOwner(context.Context, uint64) ([]responsedto.AvailableLLMModel, error) {
+	return c.rows, c.err
+}
+
 func TestDiscussionSettingsDefaultAndIsolation(t *testing.T) {
 	r := &discussionSettingsClassrooms{items: map[uint64]*entity.Classroom{
 		1: {GenerationConfig: json.RawMessage(`{"llm_provider_id":1,"llm_model_id":"chat"}`)},
