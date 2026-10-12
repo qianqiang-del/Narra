@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"narra/pkg/config"
 	appcrypto "narra/pkg/crypto"
 	"narra/pkg/llm"
 
@@ -47,6 +48,7 @@ type RuntimeFactory struct {
 	// "解密失败"这种看起来像数据坏了的错。
 	encryptionKey []byte
 	toolSource    DiscussionToolSource
+	defaultLLM    config.DefaultLLMConfig
 }
 
 // NewRuntimeFactory 创建模型运行时工厂。
@@ -59,6 +61,11 @@ func NewRuntimeFactory(providers ProviderFinder, encryptionKey []byte, sources .
 		factory.toolSource = sources[0]
 	}
 	return factory
+}
+
+func (f *RuntimeFactory) WithDefaultLLM(model config.DefaultLLMConfig) *RuntimeFactory {
+	f.defaultLLM = model
+	return f
 }
 
 // ProviderLookup 是按 ID 取一条大模型配置的能力，签名与仓储那一层一致。
@@ -109,37 +116,45 @@ func (f entityProviderFinder) FindByID(ctx context.Context, id uint64) (*Provide
 // 三项能力共用同一个 Client：它们打的是同一个地址、同一个模型、同一个密钥，
 // 建三次只会多出三份一模一样的连接池。
 func (f *RuntimeFactory) Build(ctx context.Context, providerID uint64, modelID string) (Models, error) {
-	if f.providers == nil {
-		return Models{}, fmt.Errorf("建讨论模型：缺少大模型配置仓储")
-	}
-	if len(f.encryptionKey) == 0 {
-		return Models{}, fmt.Errorf("建讨论模型：缺少解密密钥")
-	}
-
-	provider, err := f.providers.FindByID(ctx, providerID)
-	if err != nil {
-		return Models{}, fmt.Errorf("建讨论模型：读取大模型配置 #%d 失败: %w", providerID, err)
-	}
-	if provider == nil {
-		return Models{}, fmt.Errorf("建讨论模型：大模型配置 #%d 不存在", providerID)
-	}
-
-	if modelID == "" {
-		if modelID, err = firstModel(provider.Models); err != nil {
+	var baseURL, apiKey string
+	var timeout time.Duration
+	var pricing json.RawMessage
+	if providerID == config.DefaultLLMProviderID {
+		if !f.defaultLLM.Enabled || modelID != f.defaultLLM.Model {
+			return Models{}, fmt.Errorf("建讨论模型：平台模型不可用")
+		}
+		baseURL, apiKey, timeout = f.defaultLLM.BaseURL, f.defaultLLM.APIKey, f.defaultLLM.Timeout
+	} else {
+		if f.providers == nil {
+			return Models{}, fmt.Errorf("建讨论模型：缺少大模型配置仓储")
+		}
+		if len(f.encryptionKey) == 0 {
+			return Models{}, fmt.Errorf("建讨论模型：缺少解密密钥")
+		}
+		provider, err := f.providers.FindByID(ctx, providerID)
+		if err != nil {
+			return Models{}, fmt.Errorf("建讨论模型：读取大模型配置 #%d 失败: %w", providerID, err)
+		}
+		if provider == nil {
+			return Models{}, fmt.Errorf("建讨论模型：大模型配置 #%d 不存在", providerID)
+		}
+		if modelID == "" {
+			if modelID, err = firstModel(provider.Models); err != nil {
+				return Models{}, fmt.Errorf("建讨论模型：%w", err)
+			}
+		}
+		apiKey, err = decryptAPIKey(provider.APIKeyEncrypted, f.encryptionKey)
+		if err != nil {
 			return Models{}, fmt.Errorf("建讨论模型：%w", err)
 		}
-	}
-
-	apiKey, err := decryptAPIKey(provider.APIKeyEncrypted, f.encryptionKey)
-	if err != nil {
-		return Models{}, fmt.Errorf("建讨论模型：%w", err)
+		baseURL, timeout, pricing = provider.BaseURL, time.Duration(provider.TimeoutSeconds)*time.Second, provider.Pricing
 	}
 
 	client, err := llm.NewClient(llm.Config{
-		BaseURL: provider.BaseURL,
+		BaseURL: baseURL,
 		APIKey:  apiKey,
 		Model:   modelID,
-		Timeout: time.Duration(provider.TimeoutSeconds) * time.Second,
+		Timeout: timeout,
 	})
 	if err != nil {
 		return Models{}, fmt.Errorf("建讨论模型：创建大模型客户端失败: %w", err)
@@ -150,14 +165,14 @@ func (f *RuntimeFactory) Build(ctx context.Context, providerID uint64, modelID s
 		return Models{}, fmt.Errorf("建讨论模型：%w", err)
 	}
 
-	pricing := pricingForModel(provider.Pricing, modelID)
+	modelPricing := pricingForModel(pricing, modelID)
 	models.EnableTeachingTools(f.toolSource)
 	return Models{
 		Model:      models,
 		Summarizer: models,
 		Extractor:  models,
 		ModelID:    modelID,
-		Pricing:    pricing,
+		Pricing:    modelPricing,
 	}, nil
 }
 

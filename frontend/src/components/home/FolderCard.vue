@@ -7,7 +7,7 @@
  */
 import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, Folder, Pencil, Trash2 } from 'lucide-vue-next'
+import { AlertTriangle, Check, Folder, Pencil, Trash2, X } from 'lucide-vue-next'
 
 import ClassroomCover from '@/components/home/ClassroomCover.vue'
 import type { Classroom, Folder as FolderType } from '@/stores/library'
@@ -55,14 +55,19 @@ function startRename() {
   editing.value = true
   nextTick(() => {
     nameInputRef.value?.focus()
-    nameInputRef.value?.select()
   })
 }
 
 function commitRename() {
   const next = draft.value.trim()
-  if (next && next !== props.folder.name) emit('rename', props.folder.id, next.slice(0, 80))
+  if (!next) return
+  if (next !== props.folder.name) emit('rename', props.folder.id, next.slice(0, 80))
   editing.value = false
+}
+
+function cancelRename() {
+  editing.value = false
+  draft.value = ''
 }
 
 function onDragOver(e: DragEvent) {
@@ -192,27 +197,36 @@ function onDrop(e: DragEvent) {
     </div>
 
     <!-- 信息行 -->
-    <div class="mt-2.5 flex items-center gap-2 px-1">
+    <div class="mt-2.5 flex h-11 min-w-0 items-center gap-2 px-1">
       <span
+        v-if="!editing"
         class="inline-flex shrink-0 items-center rounded-full bg-brand-100 px-2 py-0.5 text-[11px] font-medium text-brand-700 dark:bg-brand-900/30 dark:text-brand-400"
       >
         {{ t('home.folder') }}
       </span>
 
-      <input
-        v-if="editing"
-        ref="nameInputRef"
-        v-model="draft"
-        type="text"
-        maxlength="80"
-        class="w-full border-b border-brand-400/70 bg-transparent text-[15px] font-medium text-foreground/90 outline-none placeholder:text-muted-foreground/40"
-        @keydown.enter.prevent="commitRename"
-        @keydown.esc="editing = false"
-        @blur="commitRename"
-      />
+      <div v-if="editing" class="rename-field flex h-11 min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-card px-3 focus-within:border-brand-500">
+        <Folder class="size-4 shrink-0 text-muted-foreground" />
+        <input
+          ref="nameInputRef"
+          v-model="draft"
+          type="text"
+          maxlength="80"
+          :aria-label="t('home.folderNameLabel')"
+          class="min-w-0 flex-1 bg-transparent text-sm outline-none"
+          @keydown.enter.prevent="commitRename"
+          @keydown.esc.prevent="cancelRename"
+        />
+        <button type="button" :disabled="!draft.trim()" :title="t('common.confirm')" :aria-label="t('common.confirm')" class="flex size-7 shrink-0 items-center justify-center rounded text-brand-700 transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40 dark:text-brand-300" @click.stop="commitRename">
+          <Check class="size-4" />
+        </button>
+        <button type="button" :title="t('common.cancel')" :aria-label="t('common.cancel')" class="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" @click.stop="cancelRename">
+          <X class="size-4" />
+        </button>
+      </div>
       <p
         v-else
-        class="min-w-0 cursor-text truncate text-[15px] font-medium text-foreground/90"
+        class="min-w-0 flex-1 cursor-text truncate text-[15px] font-medium text-foreground/90"
         @dblclick.stop="startRename"
       >
         {{ folder.name }}
@@ -220,3 +234,10 @@ function onDrop(e: DragEvent) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.rename-field input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+</style>

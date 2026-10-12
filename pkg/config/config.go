@@ -12,6 +12,7 @@ type Config struct {
 	App             AppConfig             `mapstructure:"app"`
 	Database        DatabaseConfig        `mapstructure:"database"`
 	Embedding       EmbeddingConfig       `mapstructure:"embedding"`
+	DefaultLLM      DefaultLLMConfig      `mapstructure:"default_llm"`
 	TTS             TTSConfig             `mapstructure:"tts"`
 	DocumentParser  DocumentParserConfig  `mapstructure:"document_parser"`
 	Storage         StorageConfig         `mapstructure:"storage"`
@@ -24,6 +25,36 @@ type Config struct {
 	Classroom       ClassroomConfig       `mapstructure:"classroom"`
 	KnowledgeIngest KnowledgeIngestConfig `mapstructure:"knowledge_ingest"`
 	ConfigPath      string                `mapstructure:"-"`
+}
+
+// DefaultLLMProviderID 是平台模型在模型选择器和课堂快照中的保留标识。
+// 它处于 JavaScript 安全整数范围内，且不对应 llm_providers 表中的记录。
+const DefaultLLMProviderID uint64 = 9007199254740991
+
+type DefaultLLMConfig struct {
+	Enabled bool          `mapstructure:"enabled"`
+	Name    string        `mapstructure:"name"`
+	BaseURL string        `mapstructure:"base_url"`
+	APIKey  string        `mapstructure:"api_key"`
+	Model   string        `mapstructure:"model"`
+	Timeout time.Duration `mapstructure:"timeout"`
+}
+
+func (c DefaultLLMConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Model) == "" {
+		return fmt.Errorf("平台模型名称和模型 ID 不能为空")
+	}
+	baseURL, err := url.Parse(strings.TrimSpace(c.BaseURL))
+	if err != nil || baseURL.Host == "" || (baseURL.Scheme != "http" && baseURL.Scheme != "https") {
+		return fmt.Errorf("平台模型地址必须是有效的 HTTP 或 HTTPS 地址")
+	}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("平台模型请求超时必须大于 0")
+	}
+	return nil
 }
 
 // KnowledgeIngestConfig 是知识库文件收录的批量限制、队列容量与并发约束。

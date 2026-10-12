@@ -45,7 +45,7 @@ func generateScenes(ctx context.Context, deps Deps, classroom *entity.Classroom,
 		return err
 	}
 	// 页面级的调研要用到与规划同一个工具集，所以联网开关要一路带到这里。
-	rt, err := newRuntime(ctx, deps, config.ProviderID, config.ModelID, config.WebSearch)
+	rt, err := newRuntime(ctx, deps, classroom.OwnerID, config.ProviderID, config.ModelID, config.WebSearch)
 	if err != nil {
 		return err
 	}
