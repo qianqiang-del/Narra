@@ -17,12 +17,19 @@ var (
 // GenerateToken 生成 JWT Token
 func GenerateToken(userID uint64, username string) (string, error) {
 	cfg := config.Get().JWT
+	ttl := cfg.AccessTTL
+	if ttl <= 0 {
+		ttl = cfg.ExpireHours
+	}
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
 
 	claims := CustomClaims{
 		UserID:   userID,
 		Username: username,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(cfg.ExpireHours)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			NotBefore: jwt.NewNumericDate(time.Now()),
 			Issuer:    "narra",
@@ -53,14 +60,4 @@ func ParseToken(tokenString string) (*CustomClaims, error) {
 	}
 
 	return nil, ErrTokenInvalid
-}
-
-// RefreshToken 刷新 Token
-func RefreshToken(tokenString string) (string, error) {
-	claims, err := ParseToken(tokenString)
-	if err != nil {
-		return "", err
-	}
-
-	return GenerateToken(claims.UserID, claims.Username)
 }

@@ -17,18 +17,23 @@ import (
 )
 
 type traceService struct {
-	runs  repository.RunRepository
-	turns repository.TurnRepository
-	spans repository.AgentTraceSpanRepository
+	runs          repository.RunRepository
+	turns         repository.TurnRepository
+	spans         repository.AgentTraceSpanRepository
+	conversations repository.ConversationRepository
+	classrooms    repository.ClassroomRepository
 }
 
 var _ TraceService = (*traceService)(nil)
 
-func NewTraceService(runs repository.RunRepository, turns repository.TurnRepository, spans repository.AgentTraceSpanRepository) TraceService {
-	return &traceService{runs: runs, turns: turns, spans: spans}
+func NewTraceService(runs repository.RunRepository, turns repository.TurnRepository, spans repository.AgentTraceSpanRepository, conversations repository.ConversationRepository, classrooms repository.ClassroomRepository) TraceService {
+	return &traceService{runs: runs, turns: turns, spans: spans, conversations: conversations, classrooms: classrooms}
 }
 
 func (s *traceService) ListRuns(ctx context.Context, conversationID uint64, limit int) ([]responsedto.DiscussionRun, error) {
+	if err := ensureConversationAccess(ctx, s.conversations, s.classrooms, conversationID); err != nil {
+		return nil, err
+	}
 	runs, err := s.runs.ListByConversation(ctx, conversationID, normalizeTraceLimit(limit))
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询讨论运行失败", err)
@@ -45,6 +50,9 @@ func (s *traceService) ListRuns(ctx context.Context, conversationID uint64, limi
 }
 
 func (s *traceService) GetTrace(ctx context.Context, conversationID, runID uint64) (*responsedto.DiscussionTrace, error) {
+	if err := ensureConversationAccess(ctx, s.conversations, s.classrooms, conversationID); err != nil {
+		return nil, err
+	}
 	run, err := s.runs.FindByID(ctx, runID)
 	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && run.ConversationID != conversationID) {
 		return nil, apperrors.New(apperrors.CodeNotFound, "讨论运行不存在")

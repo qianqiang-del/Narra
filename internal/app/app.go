@@ -255,6 +255,7 @@ func (a *App) initDependencies() error {
 	// ========== 创建 Repository ==========
 	userRepo := repository.NewUserRepository(a.postgresDB)
 	codeRepo := repository.NewVerificationCodeRepository(a.redis)
+	refreshRepo := repository.NewRefreshTokenRepository(a.redis)
 	roleRepo := repository.NewRoleRepository(a.postgresDB)
 	embeddingSettingRepo := repository.NewEmbeddingSettingRepository(a.postgresDB)
 	embeddingModelRepo := repository.NewEmbeddingModelRepository(a.postgresDB)
@@ -296,7 +297,7 @@ func (a *App) initDependencies() error {
 	if aliSender != nil {
 		smsSender = aliSender
 	}
-	authSvc := service.NewAuthService(userRepo, codeRepo, smsSender, a.cfg.JWT.Secret, a.cfg.JWT.ExpireHours)
+	authSvc := service.NewAuthService(userRepo, codeRepo, refreshRepo, smsSender, a.cfg.JWT.Secret, a.cfg.JWT.AccessTTL, a.cfg.JWT.RefreshTTL)
 	roleSvc := service.NewRoleService(roleRepo)
 	// 配置文件中的 Embedding 保持共享，数据库里的私人配置不加载到全局 manager。
 	embeddingManager := embedding.NewManager(a.cfg.Embedding)
@@ -595,8 +596,8 @@ func (a *App) initDependencies() error {
 		return err
 	}
 
-	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo)
-	traceSvc := service.NewTraceService(runRepo, turnRepo, traceSpanRepo)
+	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo, classroomRepo)
+	traceSvc := service.NewTraceService(runRepo, turnRepo, traceSpanRepo, conversationRepo, classroomRepo)
 	a.router = api.NewRouter(authSvc, roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, vlmSettingSvc, classroomSvc, folderSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, traceSvc, uploadDir, parser, knowledgeIngest)
 	return nil
 }

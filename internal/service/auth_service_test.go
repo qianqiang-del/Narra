@@ -81,6 +81,30 @@ type authSenderFake struct {
 	err  error
 }
 
+type authRefreshFake struct{ sessions map[string]uint64 }
+
+func (f *authRefreshFake) Store(_ context.Context, digest string, userID uint64, _ time.Duration) error {
+	if f.sessions == nil {
+		f.sessions = make(map[string]uint64)
+	}
+	f.sessions[digest] = userID
+	return nil
+}
+
+func (f *authRefreshFake) Rotate(_ context.Context, oldDigest, newDigest string, _ time.Duration) (uint64, error) {
+	userID := f.sessions[oldDigest]
+	if userID != 0 {
+		delete(f.sessions, oldDigest)
+		f.sessions[newDigest] = userID
+	}
+	return userID, nil
+}
+
+func (f *authRefreshFake) Revoke(_ context.Context, digest string) error {
+	delete(f.sessions, digest)
+	return nil
+}
+
 type managedSenderFake struct {
 	authSenderFake
 	valid       bool
@@ -101,8 +125,8 @@ func newAuthServiceFake() (*authService, *authUsersFake, *authSenderFake) {
 	users := &authUsersFake{}
 	sender := &authSenderFake{}
 	svc := &authService{
-		users: users, codes: &authCodesFake{}, sender: sender,
-		secret: []byte("test-secret"), expires: 24 * time.Hour,
+		users: users, codes: &authCodesFake{}, refresh: &authRefreshFake{}, sender: sender,
+		secret: []byte("test-secret"), expires: 15 * time.Minute, refreshExpires: 7 * 24 * time.Hour,
 		sign: func(uint64, string) (string, error) { return "signed-token", nil },
 	}
 	return svc, users, sender
@@ -118,7 +142,7 @@ func TestRegisterAndBothLoginMethods(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registered.Token != "signed-token" || registered.User.ID != 42 || registered.User.Phone != "+8613592209805" {
+	if registered.Token != "signed-token" || registered.RefreshToken == "" || registered.User.ID != 42 || registered.User.Phone != "+8613592209805" {
 		t.Fatalf("unexpected registration result: %+v", registered)
 	}
 	if users.user.PasswordHash == "strong-password" || bcrypt.CompareHashAndPassword([]byte(users.user.PasswordHash), []byte("strong-password")) != nil {
@@ -142,6 +166,43 @@ func TestRegisterAndBothLoginMethods(t *testing.T) {
 	if _, err := svc.LoginCode(ctx, "13592209805", sender.code); !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("used login code accepted: %v", err)
 	}
+}
+
+func TestRefreshTokenRotatesAndLogoutRevokes(t *testing.T) {
+	ctx := context.Background()
+	svc, users, _ := newAuthServiceFake()
+	users.user = &entity.User{Phone: "+8613592209805", BaseModel: entity.BaseModel{ID: 42}}
+	login, err := svc.LoginPassword(ctx, "13592209805", "")
+	if !errors.Is(err, ErrInvalidCredentials) || login != nil {
+		t.Fatalf("错误密码不能登录: result=%+v err=%v", login, err)
+	}
+	users.user.PasswordHash = string(mustPasswordHash(t, "strong-password"))
+	login, err = svc.LoginPassword(ctx, "13592209805", "strong-password")
+	if err != nil || login.RefreshToken == "" || login.ExpiresIn != 900 || login.RefreshExpiresIn != 604800 {
+		t.Fatalf("登录未签发双令牌: result=%+v err=%v", login, err)
+	}
+	rotated, err := svc.Refresh(ctx, login.RefreshToken)
+	if err != nil || rotated.Token != "signed-token" || rotated.RefreshToken == login.RefreshToken {
+		t.Fatalf("刷新未轮换令牌: result=%+v err=%v", rotated, err)
+	}
+	if _, err := svc.Refresh(ctx, login.RefreshToken); !errors.Is(err, ErrInvalidRefresh) {
+		t.Fatalf("旧刷新令牌仍可使用: %v", err)
+	}
+	if err := svc.Logout(ctx, rotated.RefreshToken); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Refresh(ctx, rotated.RefreshToken); !errors.Is(err, ErrInvalidRefresh) {
+		t.Fatalf("注销后的刷新令牌仍可使用: %v", err)
+	}
+}
+
+func mustPasswordHash(t *testing.T, password string) []byte {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hash
 }
 
 func TestAuthRequiresConfiguredSMS(t *testing.T) {

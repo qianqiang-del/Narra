@@ -9,10 +9,14 @@ import (
 	"gorm.io/gorm"
 	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
+	"narra/internal/ownership"
 	apperrors "narra/pkg/errors"
 )
 
 func (s *discussionService) readModelSelection(ctx context.Context, classroomID uint64) (modelConfig, string, error) {
+	if err := ensureClassroomAccess(ctx, s.classrooms, classroomID); err != nil {
+		return modelConfig{}, "", err
+	}
 	classroom, err := s.classrooms.FindByID(ctx, classroomID)
 	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && classroom == nil) {
 		return modelConfig{}, "", apperrors.New(apperrors.CodeNotFound, "课程不存在")
@@ -45,7 +49,15 @@ func (s *discussionService) describeSelection(ctx context.Context, config modelC
 	if s.modelCatalog == nil {
 		return nil, apperrors.New(apperrors.CodeInternalError, "讨论模型目录未配置")
 	}
-	rows, err := s.modelCatalog.AvailableModels(ctx)
+	var (
+		rows []responsedto.AvailableLLMModel
+		err  error
+	)
+	if ownerID := ownership.FromContext(ctx); ownerID != 0 {
+		rows, err = s.modelCatalog.AvailableModelsForOwner(ctx, ownerID)
+	} else {
+		rows, err = s.modelCatalog.AvailableModels(ctx)
+	}
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "读取可用模型失败", err)
 	}
@@ -70,6 +82,9 @@ func (s *discussionService) GetSettings(ctx context.Context, classroomID uint64)
 func (s *discussionService) UpdateSettings(ctx context.Context, classroomID uint64, input requestdto.DiscussionSettings) (*responsedto.DiscussionSettings, error) {
 	if input.ProviderID == 0 || strings.TrimSpace(input.ModelID) == "" {
 		return nil, apperrors.New(apperrors.CodeBadRequest, "请选择服务商和模型")
+	}
+	if err := ensureClassroomAccess(ctx, s.classrooms, classroomID); err != nil {
+		return nil, err
 	}
 	// Read only for existence: a damaged previous selection must still be repairable.
 	classroom, err := s.classrooms.FindByID(ctx, classroomID)

@@ -37,6 +37,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetEnvPrefix("NARRA")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	v.SetDefault("jwt.access_ttl", "15m")
+	v.SetDefault("jwt.refresh_ttl", "168h")
 	// Embedding 默认不启用。模型与向量维度因服务商而异，启用时必须显式配置。
 	v.SetDefault("embedding.timeout", "120s")
 	v.SetDefault("sms.region_id", "cn-hangzhou")

@@ -12,5 +12,7 @@ func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	auth.POST("/register", c.Register)
 	auth.POST("/login/password", c.LoginPassword)
 	auth.POST("/login/code", c.LoginCode)
+	auth.POST("/refresh", c.Refresh)
+	auth.POST("/logout", c.Logout)
 	auth.GET("/me", middleware.Auth(), c.Me)
 }

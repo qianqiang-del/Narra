@@ -113,11 +113,15 @@ func (f *fakeDiscussionService) StartWithStyle(ctx context.Context, conversation
 	return f.StartAtScene(ctx, conversationID, content, sceneID)
 }
 
-// newTestEngine 挂上真实路由，返回引擎与假服务。
+// newTestEngine 单独测试控制器；路由鉴权由 api 包的用例覆盖。
 func newTestEngine(svc *fakeDiscussionService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	RegisterRoutes(engine.Group("/api/v1"), NewController(svc))
+	controller := NewController(svc)
+	group := engine.Group("/api/v1")
+	group.POST("/conversations/:id/discussions", controller.Start)
+	group.GET("/classrooms/:id/discussion-settings", controller.Settings)
+	group.PATCH("/classrooms/:id/discussion-settings", controller.UpdateSettings)
 	return engine
 }
 

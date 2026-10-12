@@ -72,6 +72,33 @@ func (c *Controller) LoginCode(ctx *gin.Context) {
 	response.Success(ctx, result)
 }
 
+func (c *Controller) Refresh(ctx *gin.Context) {
+	var input requestdto.AuthRefresh
+	if ctx.ShouldBindJSON(&input) != nil {
+		response.BadRequest(ctx, "请提供刷新令牌")
+		return
+	}
+	result, err := c.svc.Refresh(ctx.Request.Context(), input.RefreshToken)
+	if err != nil {
+		respondError(ctx, err)
+		return
+	}
+	response.Success(ctx, result)
+}
+
+func (c *Controller) Logout(ctx *gin.Context) {
+	var input requestdto.AuthRefresh
+	if ctx.ShouldBindJSON(&input) != nil {
+		response.BadRequest(ctx, "请提供刷新令牌")
+		return
+	}
+	if err := c.svc.Logout(ctx.Request.Context(), input.RefreshToken); err != nil {
+		respondError(ctx, err)
+		return
+	}
+	response.Success(ctx, gin.H{"revoked": true})
+}
+
 func (c *Controller) Me(ctx *gin.Context) {
 	user, err := c.svc.GetUser(ctx.Request.Context(), middleware.GetUserID(ctx))
 	if err != nil {
@@ -93,7 +120,7 @@ func respondError(ctx *gin.Context, err error) {
 		response.Conflict(ctx, err.Error())
 	case errors.Is(err, service.ErrAccountNotFound):
 		response.NotFound(ctx, err.Error())
-	case errors.Is(err, service.ErrInvalidCredentials):
+	case errors.Is(err, service.ErrInvalidCredentials), errors.Is(err, service.ErrInvalidRefresh):
 		response.Unauthorized(ctx, err.Error())
 	case errors.Is(err, service.ErrCodeRateLimited):
 		response.Error(ctx, 429, err.Error())

@@ -450,6 +450,8 @@ func (c DocumentParserConfig) Validate() error {
 type JWTConfig struct {
 	Secret      string        `mapstructure:"secret"`
 	ExpireHours time.Duration `mapstructure:"expire_hours"`
+	AccessTTL   time.Duration `mapstructure:"access_ttl"`
+	RefreshTTL  time.Duration `mapstructure:"refresh_ttl"`
 }
 
 // SMSConfig configures Alibaba Cloud SMS. Credentials are loaded from environment variables.

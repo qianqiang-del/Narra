@@ -30,7 +30,8 @@ registerHooks({
 })
 
 const { createLlmProvider } = await import('../src/api/llm.ts')
-const { saveSession, getToken } = await import('../src/lib/authSession.ts')
+const { saveSession, getToken, getRefreshToken } = await import('../src/lib/authSession.ts')
+const { logout } = await import('../src/api/auth.ts')
 
 test('creating an LLM provider sends the logged-in token', async () => {
   const previousStorage = globalThis.localStorage
@@ -41,7 +42,7 @@ test('creating an LLM provider sends the logged-in token', async () => {
     setItem: (key, value) => values.set(key, value),
     removeItem: (key) => values.delete(key),
   }
-  saveSession({ token: 'test-token', expires_in: 3600, user: { id: 1, phone: '13500000000' } })
+  saveSession({ token: 'test-token', expires_in: 3600, refresh_token: 'refresh-1', refresh_expires_in: 604800, user: { id: 1, phone: '13500000000' } })
   globalThis.fetch = async (url, init) => {
     assert.equal(url, '/api/v1/settings/llm/providers')
     assert.equal(init.headers.Authorization, 'Bearer test-token')
@@ -67,7 +68,7 @@ test('a protected 401 clears the session and returns to login', async () => {
   }
   const destinations = []
   globalThis.window = { location: { pathname: '/workspace/1', search: '?tab=models', hash: '', assign: (url) => destinations.push(url) } }
-  saveSession({ token: 'expired-token', expires_in: 3600, user: { id: 1, phone: '13500000000' } })
+  saveSession({ token: 'expired-token', expires_in: 3600, refresh_token: 'refresh-1', refresh_expires_in: 604800, user: { id: 1, phone: '13500000000' } })
   globalThis.fetch = async () => ({ json: async () => ({ code: 401, message: '令牌无效' }) })
   try {
     await assert.rejects(createLlmProvider({ name: 'test', baseUrl: 'https://example.com', apiKey: '', clearApiKey: false, timeout: '30s', models: [], pricing: {} }), /令牌无效/)
@@ -76,6 +77,61 @@ test('a protected 401 clears the session and returns to login', async () => {
   } finally {
     globalThis.fetch = previousFetch
     globalThis.window = previousLocation
+    globalThis.localStorage = previousStorage
+  }
+})
+
+test('expired access token refreshes once and retries the request', async () => {
+  const previousStorage = globalThis.localStorage
+  const previousFetch = globalThis.fetch
+  const values = new Map()
+  globalThis.localStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  }
+  saveSession({ token: 'old-access', expires_in: 0, refresh_token: 'old-refresh', refresh_expires_in: 604800, user: { id: 1, phone: '13500000000' } })
+  const calls = []
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init })
+    if (url === '/api/v1/auth/refresh') {
+      assert.equal(JSON.parse(init.body).refresh_token, 'old-refresh')
+      return { json: async () => ({ code: 0, data: { token: 'new-access', expires_in: 900, refresh_token: 'new-refresh', refresh_expires_in: 604800, user: { id: 1, phone: '13500000000' } } }) }
+    }
+    assert.equal(init.headers.Authorization, 'Bearer new-access')
+    return { json: async () => ({ code: 0, data: { id: 1 } }) }
+  }
+  try {
+    await createLlmProvider({ name: 'test', baseUrl: 'https://example.com', apiKey: '', clearApiKey: false, timeout: '30s', models: [], pricing: {} })
+    assert.equal(calls.length, 2)
+    assert.equal(getRefreshToken(), 'new-refresh')
+  } finally {
+    globalThis.fetch = previousFetch
+    globalThis.localStorage = previousStorage
+  }
+})
+
+test('logout revokes the refresh token and clears the local session', async () => {
+  const previousStorage = globalThis.localStorage
+  const previousFetch = globalThis.fetch
+  const values = new Map()
+  globalThis.localStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  }
+  saveSession({ token: 'access', expires_in: 900, refresh_token: 'refresh-1', refresh_expires_in: 604800, user: { id: 1, phone: '13500000000' } })
+  globalThis.fetch = async (url, init) => {
+    assert.equal(url, '/api/v1/auth/logout')
+    assert.equal(JSON.parse(init.body).refresh_token, 'refresh-1')
+    assert.equal(getRefreshToken(), null)
+    return { json: async () => ({ code: 0, data: { revoked: true } }) }
+  }
+  try {
+    await logout()
+    assert.equal(getToken(), null)
+  } finally {
+    globalThis.fetch = previousFetch
     globalThis.localStorage = previousStorage
   }
 })

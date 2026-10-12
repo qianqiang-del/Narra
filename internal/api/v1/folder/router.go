@@ -1,9 +1,12 @@
 package folder
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/gin-gonic/gin"
+	"narra/internal/middleware"
+)
 
 func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
-	folders := g.Group("/folders")
+	folders := g.Group("/folders", middleware.Auth())
 	{
 		folders.GET("", c.List)
 		folders.POST("", c.Create)

@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"narra/internal/middleware"
 
 	requestdto "narra/internal/model/dto/request"
 	"narra/internal/service"
@@ -20,7 +21,7 @@ func (c *Controller) Create(ctx *gin.Context) {
 		response.BadRequest(ctx, "请求参数错误")
 		return
 	}
-	item, err := c.svc.Create(ctx.Request.Context(), input)
+	item, err := c.svc.Create(ctx.Request.Context(), middleware.GetUserID(ctx), input)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -29,7 +30,7 @@ func (c *Controller) Create(ctx *gin.Context) {
 }
 
 func (c *Controller) List(ctx *gin.Context) {
-	items, err := c.svc.List(ctx.Request.Context())
+	items, err := c.svc.List(ctx.Request.Context(), middleware.GetUserID(ctx))
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -42,7 +43,7 @@ func (c *Controller) Get(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	item, err := c.svc.Get(ctx.Request.Context(), id)
+	item, err := c.svc.Get(ctx.Request.Context(), middleware.GetUserID(ctx), id)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -60,7 +61,7 @@ func (c *Controller) Rename(ctx *gin.Context) {
 		response.BadRequest(ctx, "请求参数错误")
 		return
 	}
-	item, err := c.svc.Rename(ctx.Request.Context(), id, input)
+	item, err := c.svc.Rename(ctx.Request.Context(), middleware.GetUserID(ctx), id, input)
 	if err != nil {
 		response.BizError(ctx, err)
 		return
@@ -73,7 +74,7 @@ func (c *Controller) Delete(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := c.svc.Delete(ctx.Request.Context(), id); err != nil {
+	if err := c.svc.Delete(ctx.Request.Context(), middleware.GetUserID(ctx), id); err != nil {
 		response.BizError(ctx, err)
 		return
 	}
@@ -85,7 +86,7 @@ func (c *Controller) AddClassroom(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := c.svc.AddClassroom(ctx.Request.Context(), folderID, classroomID); err != nil {
+	if err := c.svc.AddClassroom(ctx.Request.Context(), middleware.GetUserID(ctx), folderID, classroomID); err != nil {
 		response.BizError(ctx, err)
 		return
 	}
@@ -97,7 +98,7 @@ func (c *Controller) RemoveClassroom(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := c.svc.RemoveClassroom(ctx.Request.Context(), folderID, classroomID); err != nil {
+	if err := c.svc.RemoveClassroom(ctx.Request.Context(), middleware.GetUserID(ctx), folderID, classroomID); err != nil {
 		response.BizError(ctx, err)
 		return
 	}

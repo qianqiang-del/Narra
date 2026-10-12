@@ -13,7 +13,7 @@ import { Check, ChevronDown, Database, LogOut, Monitor, Moon, Settings, Sun } fr
 import { useTheme, type ThemeMode } from '@/composables/useTheme'
 import { SUPPORTED_LOCALES, setLocale, type LocaleCode } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { clearSession } from '@/lib/authSession'
+import { logout as revokeSession } from '@/api/auth'
 
 const emit = defineEmits<{ (e: 'open-settings'): void }>()
 
@@ -49,7 +49,7 @@ function pickLocale(code: LocaleCode) {
 }
 
 function logout() {
-  clearSession()
+  void revokeSession().catch(() => {})
   router.replace({ name: 'login' })
 }
 
