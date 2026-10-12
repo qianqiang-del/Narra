@@ -24,6 +24,7 @@ import (
 	"narra/internal/ownership"
 	"narra/internal/rag/einoretriever"
 	"narra/internal/repository"
+	"narra/pkg/config"
 	appcrypto "narra/pkg/crypto"
 	"narra/pkg/llm"
 	"narra/pkg/logger"
@@ -44,6 +45,7 @@ type ToolSource interface {
 // Deps 是生成课堂需要的外部依赖。
 type Deps struct {
 	Providers  repository.LLMProviderRepository
+	DefaultLLM config.DefaultLLMConfig
 	Classrooms repository.ClassroomRepository
 	Scenes     repository.SceneRepository
 	Segments   repository.SceneSegmentRepository
@@ -80,34 +82,45 @@ type runtime struct {
 // newRuntime 读配置 → 解密 → 建模型 → 定工具集。
 //
 // allowSearch 为假时不挂**远端**工具（V1 是联网搜索）；内置工具（知识库检索）不受它影响。
-func newRuntime(ctx context.Context, deps Deps, providerID uint64, modelID string, allowSearch bool) (*runtime, error) {
-	if deps.Providers == nil {
-		return nil, fmt.Errorf("建运行时：缺少大模型配置仓储")
-	}
-	if len(deps.EncryptionKey) == 0 {
-		return nil, fmt.Errorf("建运行时：缺少解密密钥")
-	}
-
-	provider, err := deps.Providers.FindByID(ctx, providerID)
-	if err != nil {
-		return nil, fmt.Errorf("建运行时：读取大模型配置 #%d 失败: %w", providerID, err)
-	}
-	if modelID == "" {
-		if modelID, err = firstModel(provider.Models); err != nil {
-			return nil, fmt.Errorf("建运行时：%w", err)
+func newRuntime(ctx context.Context, deps Deps, ownerID, providerID uint64, modelID string, allowSearch bool) (*runtime, error) {
+	var baseURL, apiKey string
+	var timeout time.Duration
+	if providerID == config.DefaultLLMProviderID {
+		if !deps.DefaultLLM.Enabled || modelID != deps.DefaultLLM.Model {
+			return nil, fmt.Errorf("建运行时：平台模型不可用")
 		}
-	}
-
-	apiKey, err := appcrypto.Decrypt(provider.APIKeyEncrypted, deps.EncryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("建运行时：解密 API Key 失败: %w", err)
+		baseURL, apiKey, timeout = deps.DefaultLLM.BaseURL, deps.DefaultLLM.APIKey, deps.DefaultLLM.Timeout
+	} else {
+		if deps.Providers == nil {
+			return nil, fmt.Errorf("建运行时：缺少大模型配置仓储")
+		}
+		if len(deps.EncryptionKey) == 0 {
+			return nil, fmt.Errorf("建运行时：缺少解密密钥")
+		}
+		provider, err := deps.Providers.FindByID(ctx, providerID)
+		if err != nil {
+			return nil, fmt.Errorf("建运行时：读取大模型配置 #%d 失败: %w", providerID, err)
+		}
+		if provider == nil || provider.OwnerID != ownerID {
+			return nil, fmt.Errorf("建运行时：大模型配置不属于当前课堂")
+		}
+		if modelID == "" {
+			if modelID, err = firstModel(provider.Models); err != nil {
+				return nil, fmt.Errorf("建运行时：%w", err)
+			}
+		}
+		apiKey, err = appcrypto.Decrypt(provider.APIKeyEncrypted, deps.EncryptionKey)
+		if err != nil {
+			return nil, fmt.Errorf("建运行时：解密 API Key 失败: %w", err)
+		}
+		baseURL, timeout = provider.BaseURL, time.Duration(provider.TimeoutSeconds)*time.Second
 	}
 
 	client, err := llm.NewClient(llm.Config{
-		BaseURL: provider.BaseURL,
+		BaseURL: baseURL,
 		APIKey:  apiKey,
 		Model:   modelID,
-		Timeout: time.Duration(provider.TimeoutSeconds) * time.Second,
+		Timeout: timeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("建运行时：创建大模型客户端失败: %w", err)
@@ -119,14 +132,14 @@ func newRuntime(ctx context.Context, deps Deps, providerID uint64, modelID strin
 
 	var tools []tool.BaseTool
 	if deps.Tools != nil {
-		if tools, err = deps.Tools.EinoTools(mcp.WithOwner(ctx, provider.OwnerID), allowSearch); err != nil {
+		if tools, err = deps.Tools.EinoTools(mcp.WithOwner(ctx, ownerID), allowSearch); err != nil {
 			return nil, fmt.Errorf("建运行时：获取 MCP 工具失败: %w", err)
 		}
 	} else if allowSearch {
 		return nil, fmt.Errorf("建运行时：需要联网但没有工具来源")
 	}
 
-	return &runtime{chatModel: chatModel, tools: tools, ownerID: provider.OwnerID}, nil
+	return &runtime{chatModel: chatModel, tools: tools, ownerID: ownerID}, nil
 }
 
 // hasTools 报告本次运行时有没有挂到工具；没有工具时调研节点无从下手，图上也会跳过它。

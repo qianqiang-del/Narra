@@ -6,7 +6,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"narra/pkg/config"
 	appcrypto "narra/pkg/crypto"
 
 	"narra/internal/model/entity"
@@ -37,6 +39,24 @@ func (f *fakeProviderFinder) FindByID(_ context.Context, id uint64) (*Provider, 
 
 // testKey 是与下面 testProvider 里密文配套的密钥。
 var testEncryptionKey = appcrypto.DeriveKey("narra-test-secret")
+
+func TestRuntimeFactoryUsesDefaultLLM(t *testing.T) {
+	stub := newStubServer(t, `{"content":"收到","next_action":"continue"}`, false)
+	factory := NewRuntimeFactory(nil, nil).WithDefaultLLM(config.DefaultLLMConfig{
+		Enabled: true, BaseURL: stub.server.URL, APIKey: "sk-platform", Model: "chat-default", Timeout: time.Minute,
+	})
+	models, err := factory.Build(context.Background(), config.DefaultLLMProviderID, "chat-default")
+	if err != nil {
+		t.Fatalf("构建平台讨论模型失败: %v", err)
+	}
+	if _, err := models.Model.Generate(context.Background(), GenerationRequest{Participant: testParticipant()}); err != nil {
+		t.Fatalf("平台模型请求失败: %v", err)
+	}
+	request := stub.lastRequest(t)
+	if request.body.Model != "chat-default" || request.auth != "Bearer sk-platform" {
+		t.Fatalf("模型或密钥错误: model=%q auth=%q", request.body.Model, request.auth)
+	}
+}
 
 // testProvider 造一条配置：密钥用真加密算出来，地址稍后由用例填成假服务的。
 func testProvider(t *testing.T, baseURL string, models string) *Provider {

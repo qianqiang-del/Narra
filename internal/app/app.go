@@ -468,7 +468,7 @@ func (a *App) initDependencies() error {
 		return fmt.Errorf("创建课程材料摘要组件失败: %w", err)
 	}
 
-	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey, a.mcpManager)
+	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey, a.mcpManager, a.cfg.DefaultLLM)
 	// 设置页保存的重排配置按用户存储，不在启动时覆盖共享运行时。
 	rerankSettingSvc := service.NewRerankSettingService(rerankSettingRepo, encryptionKey, rerankManager)
 	audioDir := a.cfg.Storage.AudioDir
@@ -499,6 +499,7 @@ func (a *App) initDependencies() error {
 	// 下游 deps.TTS == nil 的判断失效。所以只在真的有客户端时才赋值。
 	classroomDeps := classroom.Deps{
 		Providers:       llmProviderRepo,
+		DefaultLLM:      a.cfg.DefaultLLM,
 		Classrooms:      classroomRepo,
 		Scenes:          sceneRepo,
 		Segments:        sceneSegmentRepo,
@@ -567,7 +568,7 @@ func (a *App) initDependencies() error {
 		Orchestrator:  discussionOrchestrator,
 		// 读课程快照里的服务商与模型 → 解密 API Key → 建 llm 客户端 →
 		// 包成讨论要的三件能力。密钥与课堂生成那条链路同源，都是 JWT Secret 派生的。
-		ModelFactory: discussion.NewRuntimeFactory(discussion.NewEntityProviderFinder(llmProviderRepo), encryptionKey, a.mcpManager),
+		ModelFactory: discussion.NewRuntimeFactory(discussion.NewEntityProviderFinder(llmProviderRepo), encryptionKey, a.mcpManager).WithDefaultLLM(a.cfg.DefaultLLM),
 		ModelCatalog: llmProviderSvc,
 		Logger:       logger.GetLogger(),
 	})

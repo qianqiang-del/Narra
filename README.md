@@ -63,6 +63,22 @@ npm run dev                   # http://localhost:5173（/api 已代理到 8080�
 
 常用命令：`make build / test / fmt / vet / lint`，详见 `make help`。
 
+### 平台默认大模型
+
+在本地 `configs/config.yaml` 中加入以下配置，填好 OpenAI 兼容接口的地址和模型 ID 后启用；API Key 放在 `NARRA_DEFAULT_LLM_API_KEY` 环境变量中。`configs/config.yaml` 不纳入 Git。
+
+```yaml
+default_llm:
+  enabled: true
+  name: "平台默认模型"
+  base_url: "https://example.com/v1"
+  api_key: ""
+  model: "实际模型 ID"
+  timeout: 60s
+```
+
+该模型会出现在登录用户的模型选择器中，不会出现在个人模型设置页。课堂和讨论仍使用课堂所属用户的知识库与工具配置。
+
 ## 目录结构
 
 ```

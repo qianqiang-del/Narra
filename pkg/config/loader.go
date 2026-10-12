@@ -41,6 +41,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("jwt.refresh_ttl", "168h")
 	// Embedding 默认不启用。模型与向量维度因服务商而异，启用时必须显式配置。
 	v.SetDefault("embedding.timeout", "120s")
+	v.SetDefault("default_llm.timeout", "60s")
 	v.SetDefault("sms.region_id", "cn-hangzhou")
 	// TTS 同理。provider 故意不给默认值：它决定客户端走哪种协议，写错了要到合成那一步才炸。
 	v.SetDefault("tts.model", "qwen3-tts-flash")
@@ -129,6 +130,9 @@ func Load(configPath string) (*Config, error) {
 	if val := os.Getenv("EMBEDDING_API_KEY"); val != "" {
 		config.Embedding.APIKey = val
 	}
+	if val := os.Getenv("NARRA_DEFAULT_LLM_API_KEY"); val != "" {
+		config.DefaultLLM.APIKey = val
+	}
 	if val := os.Getenv("TTS_API_KEY"); val != "" {
 		config.TTS.APIKey = val
 	}
@@ -157,6 +161,9 @@ func Load(configPath string) (*Config, error) {
 
 	if err := config.Embedding.Validate(); err != nil {
 		return nil, fmt.Errorf("向量服务配置无效: %w", err)
+	}
+	if err := config.DefaultLLM.Validate(); err != nil {
+		return nil, fmt.Errorf("平台大模型配置无效: %w", err)
 	}
 	if err := config.TTS.Validate(); err != nil {
 		return nil, fmt.Errorf("tts 配置无效: %w", err)

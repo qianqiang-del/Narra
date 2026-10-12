@@ -48,7 +48,7 @@ func planClassroom(ctx context.Context, deps Deps, classroom *entity.Classroom, 
 		return nil, fmt.Errorf("解析 generation_config 失败: %w", err)
 	}
 
-	rt, err := newRuntime(ctx, deps, config.ProviderID, config.ModelID, config.WebSearch)
+	rt, err := newRuntime(ctx, deps, classroom.OwnerID, config.ProviderID, config.ModelID, config.WebSearch)
 	if err != nil {
 		return nil, err
 	}

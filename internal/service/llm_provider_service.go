@@ -13,6 +13,7 @@ import (
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
 	"narra/internal/repository"
+	"narra/pkg/config"
 	appcrypto "narra/pkg/crypto"
 	apperrors "narra/pkg/errors"
 	"narra/pkg/llm"
@@ -22,11 +23,16 @@ type llmProviderService struct {
 	repo          repository.LLMProviderRepository
 	encryptionKey []byte
 	searchTools   PricingSearchTools
+	defaultLLM    config.DefaultLLMConfig
 }
 
 // NewLLMProviderService 构造大模型配置服务，encryptionKey 用于 API Key 的加解密。
-func NewLLMProviderService(repo repository.LLMProviderRepository, encryptionKey []byte, searchTools PricingSearchTools) LLMProviderService {
-	return &llmProviderService{repo: repo, encryptionKey: encryptionKey, searchTools: searchTools}
+func NewLLMProviderService(repo repository.LLMProviderRepository, encryptionKey []byte, searchTools PricingSearchTools, defaults ...config.DefaultLLMConfig) LLMProviderService {
+	s := &llmProviderService{repo: repo, encryptionKey: encryptionKey, searchTools: searchTools}
+	if len(defaults) > 0 {
+		s.defaultLLM = defaults[0]
+	}
+	return s
 }
 
 // List 返回全部配置，含未测试和已停用的，供设置页展示。
@@ -54,7 +60,7 @@ func (s *llmProviderService) AvailableModels(ctx context.Context) ([]responsedto
 	}
 	// 必须 make 出非 nil 切片：nil 切片会被 encoding/json 编成 null，
 	// 前端拿到 null 再 .map 就炸。没有可用模型时也要返回 []。
-	out := make([]responsedto.AvailableLLMModel, 0, len(items))
+	out := s.availableDefaultModel()
 	for _, item := range items {
 		models, err := decodeModels(item.Models)
 		if err != nil {
@@ -72,7 +78,7 @@ func (s *llmProviderService) AvailableModelsForOwner(ctx context.Context, ownerI
 	if err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "查询可用大模型失败", err)
 	}
-	out := make([]responsedto.AvailableLLMModel, 0, len(items))
+	out := s.availableDefaultModel()
 	for _, item := range items {
 		models, err := decodeModels(item.Models)
 		if err != nil {
@@ -83,6 +89,18 @@ func (s *llmProviderService) AvailableModelsForOwner(ctx context.Context, ownerI
 		}
 	}
 	return out, nil
+}
+
+func (s *llmProviderService) availableDefaultModel() []responsedto.AvailableLLMModel {
+	out := make([]responsedto.AvailableLLMModel, 0, 1)
+	if s.defaultLLM.Enabled {
+		out = append(out, responsedto.AvailableLLMModel{
+			ProviderID:   config.DefaultLLMProviderID,
+			ProviderName: s.defaultLLM.Name,
+			ModelID:      s.defaultLLM.Model,
+		})
+	}
+	return out
 }
 
 // Create 新建配置，一律全部入库：测通了才能手动启用。
