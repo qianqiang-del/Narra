@@ -167,11 +167,17 @@ cd frontend && npm run build # 前端类型检查与构建
 
 ## 文档索引
 
+- [Git 提交规范](docs/Git提交规范.md)
+- [PR 流程规范](docs/PR流程规范.md)
+- [模型接入指南](docs/model_integration_guide.md)
 - [课堂规划与页面执行](internal/agent/classroom/generate.go)
 - [页面 Graph](internal/agent/classroom/page_graph.go)
 - [异步任务装配与恢复](internal/bootstrap/worker.go)
 - [MCP 工具接入](docs/modules/agent-mcp-tools.md)
-- [数据库设计](docs/database-design-v1.md)
+- [数据库设计](docs/数据库设计.md)
+- [用户认证模块](docs/用户认证模块.md)
+- [模型层设计文档](docs/设计文档.md)
+- [部署流程](docs/部署流程.md)
 - [数据库迁移说明](migrations/README.md)
 
 README 介绍项目入口和运行方式。专项设计细节以对应文档及当前代码为准。
