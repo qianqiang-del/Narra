@@ -226,6 +226,10 @@ func applyEnvOverrides(cfg *Config) error {
 		{"REDIS_HOST", &cfg.Database.Redis.Host},
 		{"APP_MODE", &cfg.App.Mode},
 		{"LOG_LEVEL", &cfg.Log.Level},
+		{"SMS_API", &cfg.SMS.API},
+		{"SMS_TEMPLATE_PARAM", &cfg.SMS.TemplateParam},
+		{"SMS_SCHEME_NAME", &cfg.SMS.SchemeName},
+		{"SMS_COUNTRY_CODE", &cfg.SMS.CountryCode},
 	}
 	for _, item := range stringsToOverride {
 		if val := os.Getenv(item.envKey); val != "" {
@@ -241,6 +245,12 @@ func applyEnvOverrides(cfg *Config) error {
 		{"REDIS_PORT", &cfg.Database.Redis.Port},
 		{"REDIS_DB", &cfg.Database.Redis.DB},
 		{"APP_PORT", &cfg.App.Port},
+		{"SMS_CODE_LENGTH", &cfg.SMS.CodeLength},
+		{"SMS_VALID_TIME", &cfg.SMS.ValidTime},
+		{"SMS_DUPLICATE_POLICY", &cfg.SMS.DuplicatePolicy},
+		{"SMS_INTERVAL", &cfg.SMS.Interval},
+		{"SMS_CODE_TYPE", &cfg.SMS.CodeType},
+		{"SMS_CASE_AUTH_POLICY", &cfg.SMS.CaseAuthPolicy},
 	}
 	for _, item := range intsToOverride {
 		val := strings.TrimSpace(os.Getenv(item.envKey))
