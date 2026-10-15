@@ -1,0 +1,17 @@
+.git
+.github
+.gocache
+.idea
+.workbuddy
+frontend
+data
+logs
+docs
+migrations
+tools
+*.log
+.env
+.env.*
+configs/config.yaml
+**/*_test.go
+_*

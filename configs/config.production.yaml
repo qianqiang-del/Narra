@@ -1,0 +1,49 @@
+app:
+  name: Narra
+  version: prod
+  mode: release
+  port: 8080
+database:
+  postgres:
+    host: localhost
+    port: 5432
+    username: narra
+    password: ""
+    database: narra
+    sslmode: disable
+    max_idle_conns: 3
+    max_open_conns: 15
+  redis:
+    host: localhost
+    port: 6379
+    password: ""
+    db: 0
+    pool_size: 8
+jwt:
+  secret: ""
+sms:
+  enabled: false
+embedding:
+  enabled: false
+default_llm:
+  enabled: false
+tts:
+  enabled: false
+document_parser:
+  enabled: false
+storage:
+  upload_dir: data/uploads
+  audio_dir: data/audio
+  knowledge_dir: data/knowledge
+langfuse:
+  enabled: false
+log:
+  level: info
+worker:
+  concurrency: 1
+  max_retry: 2
+  timeout: 30m
+  reconcile_interval: 10m
+classroom:
+  page_concurrency: 1
+  tts_pool_size: 1
