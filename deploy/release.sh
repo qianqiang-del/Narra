@@ -2,15 +2,14 @@
 set -euo pipefail
 
 sha="${1:?commit SHA is required}"
-image="${2:?image reference is required}"
-registry_user="${3:?GitHub actor is required}"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid commit SHA" >&2; exit 1; }
-[[ "$image" == "ghcr.io/qianqiang-del/narra-api:$sha" ]] || { echo "Unexpected image reference" >&2; exit 1; }
-[[ "$registry_user" =~ ^[A-Za-z0-9-]+$ ]] || { echo "Invalid registry username" >&2; exit 1; }
+image="narra-api:$sha"
+archive="images/incoming/$sha.tar.gz"
 
 cd /opt/narra
 test -f .env || { echo "Missing /opt/narra/.env" >&2; exit 1; }
 test -f "web/incoming/$sha.tar.gz" || { echo "Missing frontend artifact" >&2; exit 1; }
+test -f "$archive" || { echo "Missing backend image archive" >&2; exit 1; }
 
 release="web/releases/$sha"
 if [ ! -d "$release" ]; then
@@ -21,16 +20,14 @@ if [ ! -d "$release" ]; then
   mv "$staging" "$release"
 fi
 
-IFS= read -r registry_token
-printf '%s' "$registry_token" | docker login ghcr.io -u "$registry_user" --password-stdin >/dev/null
-unset registry_token
-trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+gzip -dc "$archive" | docker load
+docker image inspect "$image" >/dev/null
+rm -f "$archive"
 
 previous_image="$(docker inspect --format '{{.Config.Image}}' narra-api 2>/dev/null || true)"
 export IMAGE="$image"
 compose=(docker compose --env-file /opt/narra/.env -f deploy/compose.app.yml)
-"${compose[@]}" pull api
-"${compose[@]}" up -d api
+"${compose[@]}" up -d --pull never api
 
 ready=0
 for i in $(seq 1 40); do
@@ -45,7 +42,7 @@ if [ "$ready" -ne 1 ]; then
   "${compose[@]}" logs --tail=100 api >&2
   if [ -n "$previous_image" ]; then
     echo "API health check failed; restoring $previous_image" >&2
-    IMAGE="$previous_image" "${compose[@]}" up -d --force-recreate api
+    IMAGE="$previous_image" "${compose[@]}" up -d --pull never --force-recreate api
   fi
   exit 1
 fi

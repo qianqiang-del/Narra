@@ -61,8 +61,15 @@ embedding-service/model-cache/
 # WorkBuddy workspace: 本地工作笔记、验证截图与临时文件，属于开发过程产物而非项目代码
 /.workbuddy/
 
-# Docs: 本地设计、计划与原型文档，不进版本库
-/docs/
+# Docs: 默认忽略本地设计、计划与原型文档；公开的协作规范纳入版本库
+/docs/*
+!/docs/Git提交规范.md
+!/docs/PR流程规范.md
+!/docs/model_integration_guide.md
+!/docs/数据库设计.md
+!/docs/用户认证模块.md
+!/docs/设计文档.md
+!/docs/部署流程.md
 
 # 成员 C 的 AI 工作记录（会话记忆、工作日志、交接文档）
 # 是本地协作上下文，不属于项目产物：里面有本机路径、代理端口等环境信息，
