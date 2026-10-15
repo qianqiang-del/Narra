@@ -1,0 +1,29 @@
+name: Publish data images
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Mirror PostgreSQL with pgvector
+        run: |
+          docker pull --platform linux/amd64 pgvector/pgvector:pg17
+          docker tag pgvector/pgvector:pg17 ghcr.io/qianqiang-del/narra-postgres:pg17
+          docker push ghcr.io/qianqiang-del/narra-postgres:pg17
+      - name: Mirror Redis
+        run: |
+          docker pull --platform linux/amd64 redis:7-alpine
+          docker tag redis:7-alpine ghcr.io/qianqiang-del/narra-redis:7-alpine
+          docker push ghcr.io/qianqiang-del/narra-redis:7-alpine
