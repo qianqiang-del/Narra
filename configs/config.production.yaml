@@ -22,21 +22,47 @@ database:
 jwt:
   secret: ""
 sms:
-  enabled: false
+  enabled: true
+  api: dypnsapi
+  region_id: cn-hangzhou
+  sign_name: "恒创联众"
+  template_code: "100001"
+  template_param: '{"code":"##code##","min":"5"}'
+  scheme_name: "1"
+  country_code: "86"
+  code_length: 6
+  valid_time: 300
+  duplicate_policy: 1
+  interval: 60
+  code_type: 1
+  case_auth_policy: 1
 embedding:
   enabled: false
 default_llm:
-  enabled: false
+  enabled: true
+  name: "平台默认模型"
+  base_url: https://api.deepseek.com/v1
+  model: deepseek-v4-flash
+  timeout: 120s
 tts:
-  enabled: false
+  enabled: true
+  provider: qwen
+  base_url: https://dashscope.aliyuncs.com/api/v1
+  model: qwen3-tts-flash
+  timeout: 60s
 document_parser:
   enabled: false
 storage:
   upload_dir: data/uploads
   audio_dir: data/audio
   knowledge_dir: data/knowledge
+  oss:
+    endpoint: oss-cn-beijing.aliyuncs.com
+    bucket: narra-agent
+    timeout: 30s
 langfuse:
   enabled: false
+  host: https://us.cloud.langfuse.com
 log:
   level: info
 worker:
