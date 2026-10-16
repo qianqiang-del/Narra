@@ -9,6 +9,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { Check, ChevronDown, Database, LogOut, Monitor, Moon, Settings, Sun } from 'lucide-vue-next'
+import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 
 import { useTheme, type ThemeMode } from '@/composables/useTheme'
 import { SUPPORTED_LOCALES, setLocale, type LocaleCode } from '@/i18n'
@@ -25,6 +26,7 @@ const { mode, setMode } = useTheme()
 const toolbarRef = ref<HTMLElement | null>(null)
 const themeOpen = ref(false)
 const langOpen = ref(false)
+const logoutOpen = ref(false)
 
 const currentLocale = computed(() => SUPPORTED_LOCALES.find((l) => l.code === locale.value))
 const localeShort = computed(() => currentLocale.value?.short ?? 'EN')
@@ -50,6 +52,7 @@ function pickLocale(code: LocaleCode) {
 }
 
 function logout() {
+  logoutOpen.value = false
   useRolesStore().reset()
   void revokeSession().catch(() => {})
   router.replace({ name: 'login' })
@@ -163,8 +166,22 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown))
     </button>
 
     <div class="h-4 w-[1px] bg-gray-200 dark:bg-gray-700" />
-    <button type="button" title="退出登录" aria-label="退出登录" class="rounded-full p-2 text-gray-400 transition-colors hover:bg-muted hover:text-gray-800 dark:text-gray-500 dark:hover:bg-gray-700" @click="logout">
+    <button type="button" :title="t('common.logout')" :aria-label="t('common.logout')" class="rounded-full p-2 text-gray-400 transition-colors hover:bg-muted hover:text-gray-800 dark:text-gray-500 dark:hover:bg-gray-700" @click="logoutOpen = true">
       <LogOut class="size-4" />
     </button>
   </div>
+
+  <DialogRoot v-model:open="logoutOpen">
+    <DialogPortal>
+      <DialogOverlay class="fixed inset-0 z-[100] bg-black/40 backdrop-blur-[2px]" />
+      <DialogContent class="fixed top-1/2 left-1/2 z-[101] w-[min(400px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-background p-5 shadow-2xl focus:outline-none">
+        <DialogTitle class="text-base font-semibold">{{ t('common.logoutTitle') }}</DialogTitle>
+        <DialogDescription class="mt-2 text-sm text-muted-foreground">{{ t('common.logoutDescription') }}</DialogDescription>
+        <div class="mt-6 flex justify-end gap-2">
+          <button type="button" class="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted" @click="logoutOpen = false">{{ t('common.cancel') }}</button>
+          <button type="button" class="rounded-md bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-800" @click="logout">{{ t('common.logout') }}</button>
+        </div>
+      </DialogContent>
+    </DialogPortal>
+  </DialogRoot>
 </template>

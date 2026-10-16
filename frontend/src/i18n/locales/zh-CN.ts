@@ -8,6 +8,9 @@ export default {
     appName: 'Narra',
     backToHome: '返回首页',
     cancel: '取消',
+    logout: '退出登录',
+    logoutTitle: '确认退出登录？',
+    logoutDescription: '退出后，需要重新登录才能访问课堂和个人资料。',
     confirm: '确认',
     delete: '删除',
     retry: '重试',
@@ -17,7 +20,7 @@ export default {
     close: '关闭',
   },
   home: {
-    slogan: 'Many voices, one lesson, a real discussion',
+    slogan: '多元视角，同上一堂课，展开真实讨论',
     greetingWithName: '嗨，{name}',
     greetingAnon: '嗨，欢迎回来',
     editProfile: '点击编辑个人资料',

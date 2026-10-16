@@ -103,13 +103,14 @@ onBeforeUnmount(() => clearInterval(timer))
 </script>
 
 <template>
-  <main class="flex min-h-screen items-center justify-center bg-background px-4 py-12 text-foreground">
+  <main class="login-page relative flex min-h-screen items-center justify-center px-4 py-12 text-foreground">
     <div class="w-full max-w-[390px]">
-      <div class="mb-9 flex items-center justify-center">
+      <div class="mb-9 flex flex-col items-center gap-3 text-center">
         <img src="/logo-horizontal.svg" alt="Narra" class="h-12 w-[208px] md:h-16 md:w-[277px]" />
+        <p class="text-sm text-muted-foreground">{{ $t('home.slogan') }}</p>
       </div>
 
-      <div class="rounded-lg border border-border bg-card p-6 shadow-sm sm:p-8">
+      <div class="rounded-2xl border border-border bg-card p-6 shadow-soft sm:p-8">
         <h1 class="text-xl font-semibold">{{ mode === 'register' ? '注册账号' : '登录 Narra' }}</h1>
         <div v-if="mode !== 'register'" class="mt-6 grid grid-cols-2 rounded-md bg-muted p-1" role="tablist" aria-label="登录方式">
           <button type="button" role="tab" :aria-selected="mode === 'password'" class="h-9 rounded text-sm font-medium transition-colors" :class="mode === 'password' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'" @click="selectMode('password')">密码登录</button>
@@ -119,7 +120,7 @@ onBeforeUnmount(() => clearInterval(timer))
         <form class="mt-6 space-y-4" novalidate @submit.prevent="submit">
           <label class="block text-sm font-medium">
             手机号
-            <span class="login-field mt-2 flex h-11 items-center gap-3 rounded-md border px-3" :class="fieldErrors.phone ? 'border-destructive focus-within:border-destructive' : 'border-border focus-within:border-brand-500'">
+            <span class="login-field mt-2 flex h-11 items-center gap-3 rounded-md border px-3 transition-[border-color,box-shadow] duration-150" :class="fieldErrors.phone ? 'border-destructive focus-within:border-destructive focus-within:ring-2 focus-within:ring-destructive/25' : 'border-border focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/25'">
               <Phone class="size-4 shrink-0 text-muted-foreground" />
               <input ref="phoneInput" v-model.trim="phone" type="tel" inputmode="tel" autocomplete="tel" required placeholder="请输入手机号" :aria-invalid="!!fieldErrors.phone" :aria-describedby="fieldErrors.phone ? 'login-phone-error' : undefined" class="min-w-0 flex-1 bg-transparent text-sm outline-none" @input="fieldErrors.phone = ''" />
             </span>
@@ -128,7 +129,7 @@ onBeforeUnmount(() => clearInterval(timer))
 
           <label v-if="mode !== 'code'" class="block text-sm font-medium">
             密码
-            <span class="login-field mt-2 flex h-11 items-center gap-3 rounded-md border px-3" :class="fieldErrors.password ? 'border-destructive focus-within:border-destructive' : 'border-border focus-within:border-brand-500'">
+            <span class="login-field mt-2 flex h-11 items-center gap-3 rounded-md border px-3 transition-[border-color,box-shadow] duration-150" :class="fieldErrors.password ? 'border-destructive focus-within:border-destructive focus-within:ring-2 focus-within:ring-destructive/25' : 'border-border focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/25'">
               <LockKeyhole class="size-4 shrink-0 text-muted-foreground" />
               <input ref="passwordInput" v-model="password" type="password" :autocomplete="mode === 'register' ? 'new-password' : 'current-password'" required :minlength="mode === 'register' ? 8 : undefined" placeholder="请输入密码" :aria-invalid="!!fieldErrors.password" :aria-describedby="fieldErrors.password ? 'login-password-error' : undefined" class="min-w-0 flex-1 bg-transparent text-sm outline-none" @input="fieldErrors.password = ''" />
             </span>
@@ -137,7 +138,7 @@ onBeforeUnmount(() => clearInterval(timer))
 
           <label v-if="mode !== 'password'" class="block text-sm font-medium">
             短信验证码
-            <span class="login-field mt-2 flex h-11 items-center gap-2 rounded-md border px-3" :class="fieldErrors.code ? 'border-destructive focus-within:border-destructive' : 'border-border focus-within:border-brand-500'">
+            <span class="login-field mt-2 flex h-11 items-center gap-2 rounded-md border px-3 transition-[border-color,box-shadow] duration-150" :class="fieldErrors.code ? 'border-destructive focus-within:border-destructive focus-within:ring-2 focus-within:ring-destructive/25' : 'border-border focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/25'">
               <MessageSquareText class="size-4 shrink-0 text-muted-foreground" />
               <input ref="codeInput" v-model.trim="code" type="text" inputmode="numeric" autocomplete="one-time-code" required maxlength="6" pattern="[0-9]{6}" placeholder="6 位验证码" :aria-invalid="!!fieldErrors.code" :aria-describedby="fieldErrors.code ? 'login-code-error' : undefined" class="min-w-0 flex-1 bg-transparent text-sm outline-none" @input="fieldErrors.code = ''" />
               <button type="button" :disabled="sending || cooldown > 0" class="shrink-0 text-xs font-semibold text-brand-700 disabled:opacity-50 dark:text-brand-300" @click="requestCode">{{ cooldown > 0 ? `${cooldown}s` : sending ? '发送中' : '发送验证码' }}</button>
@@ -147,7 +148,7 @@ onBeforeUnmount(() => clearInterval(timer))
 
           <p v-if="error" role="alert" class="text-sm text-destructive">{{ error }}</p>
 
-          <button type="submit" :disabled="busy" class="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-brand-700 text-sm font-semibold text-white transition-colors hover:bg-brand-800 disabled:opacity-60">
+          <button type="submit" :disabled="busy" class="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-brand-700 text-sm font-semibold text-white shadow-soft transition-all duration-150 hover:-translate-y-px hover:bg-brand-800 active:translate-y-0 active:shadow-xs disabled:opacity-60 disabled:hover:translate-y-0">
             <Loader2 v-if="busy" class="size-4 animate-spin" />
             <template v-else><span>{{ mode === 'register' ? '注册并登录' : '登录' }}</span><ArrowRight class="size-4" /></template>
           </button>
@@ -166,5 +167,43 @@ onBeforeUnmount(() => clearInterval(timer))
 .login-field input:focus-visible {
   outline: none;
   box-shadow: none;
+}
+
+/* 渐变背景：品牌雾霾蓝打底 + 左上蓝色光晕 + 右下金铜光晕 + 细圆点纹理，同 globals.css 色温 */
+.login-page {
+  background:
+    radial-gradient(60rem 40rem at 10% -10%, rgba(147, 169, 207, 0.6), transparent 62%),
+    radial-gradient(52rem 38rem at 112% 112%, rgba(220, 192, 138, 0.5), transparent 62%),
+    linear-gradient(160deg, #e3eaf6 0%, #eef2f9 38%, #f4f5f9 62%, #dde5f1 100%);
+}
+
+/* 细圆点纹理：让大留白有细节，透明度压到很低不抢卡片 */
+.login-page::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, rgba(70, 99, 156, 0.1) 1px, transparent 1.5px);
+  background-size: 26px 26px;
+  pointer-events: none;
+}
+
+/* 四角轻微压暗的晕影，视线自然聚到中间卡片 */
+.login-page::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 90% 80% at 50% 45%, transparent 55%, rgba(35, 48, 73, 0.08) 100%);
+  pointer-events: none;
+}
+
+:global(.dark) .login-page {
+  background:
+    radial-gradient(60rem 40rem at 10% -10%, rgba(70, 99, 156, 0.5), transparent 62%),
+    radial-gradient(52rem 38rem at 112% 112%, rgba(138, 111, 60, 0.35), transparent 62%),
+    linear-gradient(160deg, #1b2436 0%, #151d2e 45%, #101827 100%);
+}
+
+:global(.dark) .login-page::before {
+  background-image: radial-gradient(circle, rgba(164, 186, 224, 0.08) 1px, transparent 1.5px);
 }
 </style>
