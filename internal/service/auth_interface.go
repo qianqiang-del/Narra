@@ -7,9 +7,10 @@ import (
 )
 
 type AuthService interface {
-	SendCode(ctx context.Context, phone, purpose, ip string) error
+	NewCaptcha(ctx context.Context, ip string) (*CaptchaChallenge, error)
+	SendCode(ctx context.Context, phone, purpose, ip string, captcha ...CaptchaAnswer) error
 	Register(ctx context.Context, phone, password, code string) (*responsedto.AuthResult, error)
-	LoginPassword(ctx context.Context, phone, password string) (*responsedto.AuthResult, error)
+	LoginPassword(ctx context.Context, phone, password string, captcha ...CaptchaAnswer) (*responsedto.AuthResult, error)
 	LoginCode(ctx context.Context, phone, code string) (*responsedto.AuthResult, error)
 	Refresh(ctx context.Context, refreshToken string) (*responsedto.AuthResult, error)
 	Logout(ctx context.Context, refreshToken string) error

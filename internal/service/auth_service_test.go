@@ -151,13 +151,15 @@ func TestRegisterAndBothLoginMethods(t *testing.T) {
 	if _, err := svc.Register(ctx, "13592209805", "strong-password", sender.code); !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("used registration code accepted: %v", err)
 	}
-	if _, err := svc.LoginPassword(ctx, "+8613592209805", "wrong-password"); !errors.Is(err, ErrInvalidCredentials) {
+	svc.captcha = &captchaStoreFake{}
+	if _, err := svc.LoginPassword(ctx, "+8613592209805", "wrong-password", newTestCaptchaAnswer(t, svc)); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("wrong password accepted: %v", err)
 	}
-	if result, err := svc.LoginPassword(ctx, "13592209805", "strong-password"); err != nil || result.Token != "signed-token" {
+	if result, err := svc.LoginPassword(ctx, "13592209805", "strong-password", newTestCaptchaAnswer(t, svc)); err != nil || result.Token != "signed-token" {
 		t.Fatalf("password login failed: %v", err)
 	}
-	if err := svc.SendCode(ctx, "13592209805", CodePurposeLogin, "127.0.0.1"); err != nil {
+	answer := newTestCaptchaAnswer(t, svc)
+	if err := svc.SendCode(ctx, "13592209805", CodePurposeLogin, "127.0.0.1", answer); err != nil {
 		t.Fatal(err)
 	}
 	if result, err := svc.LoginCode(ctx, "13592209805", sender.code); err != nil || result.Token != "signed-token" {
@@ -171,13 +173,14 @@ func TestRegisterAndBothLoginMethods(t *testing.T) {
 func TestRefreshTokenRotatesAndLogoutRevokes(t *testing.T) {
 	ctx := context.Background()
 	svc, users, _ := newAuthServiceFake()
+	svc.captcha = &captchaStoreFake{}
 	users.user = &entity.User{Phone: "+8613592209805", BaseModel: entity.BaseModel{ID: 42}}
-	login, err := svc.LoginPassword(ctx, "13592209805", "")
+	login, err := svc.LoginPassword(ctx, "13592209805", "", newTestCaptchaAnswer(t, svc))
 	if !errors.Is(err, ErrInvalidCredentials) || login != nil {
 		t.Fatalf("错误密码不能登录: result=%+v err=%v", login, err)
 	}
 	users.user.PasswordHash = string(mustPasswordHash(t, "strong-password"))
-	login, err = svc.LoginPassword(ctx, "13592209805", "strong-password")
+	login, err = svc.LoginPassword(ctx, "13592209805", "strong-password", newTestCaptchaAnswer(t, svc))
 	if err != nil || login.RefreshToken == "" || login.ExpiresIn != 900 || login.RefreshExpiresIn != 604800 {
 		t.Fatalf("登录未签发双令牌: result=%+v err=%v", login, err)
 	}

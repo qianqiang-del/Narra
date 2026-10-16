@@ -1,8 +1,10 @@
 package request
 
 type AuthCode struct {
-	Phone   string `json:"phone" binding:"required"`
-	Purpose string `json:"purpose" binding:"required"`
+	Phone       string `json:"phone" binding:"required"`
+	Purpose     string `json:"purpose" binding:"required"`
+	CaptchaID   string `json:"captcha_id"`
+	CaptchaCode string `json:"captcha_code"`
 }
 
 type AuthRegister struct {
@@ -12,8 +14,10 @@ type AuthRegister struct {
 }
 
 type AuthPasswordLogin struct {
-	Phone    string `json:"phone" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Phone       string `json:"phone" binding:"required"`
+	Password    string `json:"password" binding:"required"`
+	CaptchaID   string `json:"captcha_id"`
+	CaptchaCode string `json:"captcha_code"`
 }
 
 type AuthCodeLogin struct {

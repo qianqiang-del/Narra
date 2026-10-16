@@ -297,7 +297,7 @@ func (a *App) initDependencies() error {
 	if aliSender != nil {
 		smsSender = aliSender
 	}
-	authSvc := service.NewAuthService(userRepo, codeRepo, refreshRepo, smsSender, a.cfg.JWT.Secret, a.cfg.JWT.AccessTTL, a.cfg.JWT.RefreshTTL)
+	authSvc := service.NewAuthService(userRepo, codeRepo, refreshRepo, smsSender, a.cfg.JWT.Secret, a.cfg.JWT.AccessTTL, a.cfg.JWT.RefreshTTL, service.NewRedisCaptchaStore(a.redis))
 	roleSvc := service.NewRoleService(roleRepo)
 	// 配置文件中的 Embedding 保持共享，数据库里的私人配置不加载到全局 manager。
 	embeddingManager := embedding.NewManager(a.cfg.Embedding)
