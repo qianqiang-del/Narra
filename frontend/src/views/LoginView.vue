@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowRight, Loader2, LockKeyhole, MessageSquareText, Phone } from 'lucide-vue-next'
+import { ArrowRight, Loader2, LockKeyhole, MessageSquareText, Phone, RefreshCw } from 'lucide-vue-next'
 
-import { loginCode, loginPassword, register, sendCode } from '@/api/auth'
+import { fetchCaptcha, loginCode, loginPassword, register, sendCode } from '@/api/auth'
 import { saveSession } from '@/lib/authSession'
 import { useRolesStore } from '@/stores/roles'
 
@@ -15,15 +15,37 @@ const mode = ref<Mode>('password')
 const phone = ref('')
 const password = ref('')
 const code = ref('')
+const captchaId = ref('')
+const captchaImage = ref('')
+const captchaCode = ref('')
+const captchaLoading = ref(false)
 const busy = ref(false)
 const sending = ref(false)
 const cooldown = ref(0)
 const error = ref('')
-const fieldErrors = ref({ phone: '', password: '', code: '' })
+const fieldErrors = ref({ phone: '', password: '', code: '', captcha: '' })
 const phoneInput = ref<HTMLInputElement | null>(null)
 const passwordInput = ref<HTMLInputElement | null>(null)
 const codeInput = ref<HTMLInputElement | null>(null)
+const captchaInput = ref<HTMLInputElement | null>(null)
 let timer: ReturnType<typeof setInterval> | undefined
+
+async function loadCaptcha() {
+  if (captchaLoading.value) return
+  captchaLoading.value = true
+  captchaId.value = ''
+  captchaImage.value = ''
+  captchaCode.value = ''
+  try {
+    const challenge = await fetchCaptcha()
+    captchaId.value = challenge.id
+    captchaImage.value = challenge.image
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '图片验证码加载失败'
+  } finally {
+    captchaLoading.value = false
+  }
+}
 
 function validatePhone(): string {
   if (!phone.value) return '请输入手机号'
@@ -39,9 +61,11 @@ function validateForm(): boolean {
         ? '密码需为 8 到 72 个字符' : '',
     code: mode.value === 'password' ? '' : !code.value ? '请输入短信验证码'
       : !/^\d{6}$/.test(code.value) ? '请输入 6 位数字验证码' : '',
+    captcha: mode.value === 'password' && (!captchaId.value || !/^\d{4}$/.test(captchaCode.value)) ? '请输入 4 位图片验证码' : '',
   }
   if (fieldErrors.value.phone) phoneInput.value?.focus()
   else if (fieldErrors.value.password) passwordInput.value?.focus()
+  else if (fieldErrors.value.captcha) captchaInput.value?.focus()
   else if (fieldErrors.value.code) codeInput.value?.focus()
   return !Object.values(fieldErrors.value).some(Boolean)
 }
@@ -49,8 +73,12 @@ function validateForm(): boolean {
 function selectMode(next: Mode) {
   mode.value = next
   error.value = ''
-  fieldErrors.value = { phone: '', password: '', code: '' }
+  fieldErrors.value = { phone: '', password: '', code: '', captcha: '' }
   code.value = ''
+  captchaId.value = ''
+  captchaImage.value = ''
+  captchaCode.value = ''
+  void loadCaptcha()
 }
 
 async function requestCode() {
@@ -61,9 +89,15 @@ async function requestCode() {
     phoneInput.value?.focus()
     return
   }
+  if (!captchaId.value || !/^\d{4}$/.test(captchaCode.value)) {
+    fieldErrors.value.captcha = '请输入 4 位图片验证码'
+    if (!captchaId.value) void loadCaptcha()
+    else captchaInput.value?.focus()
+    return
+  }
   sending.value = true
   try {
-    await sendCode(phone.value, mode.value === 'register' ? 'register' : 'login')
+    await sendCode(phone.value, mode.value === 'register' ? 'register' : 'login', captchaId.value, captchaCode.value)
     cooldown.value = 60
     clearInterval(timer)
     timer = setInterval(() => {
@@ -74,6 +108,7 @@ async function requestCode() {
     error.value = cause instanceof Error ? cause.message : '验证码发送失败'
   } finally {
     sending.value = false
+    void loadCaptcha()
   }
 }
 
@@ -87,7 +122,7 @@ async function submit() {
       ? await register(phone.value, password.value, code.value)
       : mode.value === 'code'
         ? await loginCode(phone.value, code.value)
-        : await loginPassword(phone.value, password.value)
+        : await loginPassword(phone.value, password.value, captchaId.value, captchaCode.value)
     saveSession(session)
     useRolesStore().reset()
     const redirect = route.query.redirect
@@ -96,9 +131,11 @@ async function submit() {
     error.value = cause instanceof Error ? cause.message : '登录失败'
   } finally {
     busy.value = false
+    if (mode.value === 'password') void loadCaptcha()
   }
 }
 
+onMounted(() => { void loadCaptcha() })
 onBeforeUnmount(() => clearInterval(timer))
 </script>
 
@@ -144,6 +181,21 @@ onBeforeUnmount(() => clearInterval(timer))
               <button type="button" :disabled="sending || cooldown > 0" class="shrink-0 text-xs font-semibold text-brand-700 disabled:opacity-50 dark:text-brand-300" @click="requestCode">{{ cooldown > 0 ? `${cooldown}s` : sending ? '发送中' : '发送验证码' }}</button>
             </span>
             <span v-if="fieldErrors.code" id="login-code-error" class="mt-1 block text-xs font-normal text-destructive">{{ fieldErrors.code }}</span>
+          </label>
+
+          <label class="block text-sm font-medium">
+            图片验证码
+            <span class="mt-2 flex items-center gap-2">
+              <span class="login-field flex h-11 min-w-0 flex-1 items-center rounded-md border px-3" :class="fieldErrors.captcha ? 'border-destructive' : 'border-border focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/25'">
+                <input ref="captchaInput" v-model.trim="captchaCode" type="text" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="4 位数字" :aria-invalid="!!fieldErrors.captcha" class="w-full bg-transparent text-sm outline-none" @input="fieldErrors.captcha = ''" />
+              </span>
+              <button type="button" class="flex h-12 w-36 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-slate-100" :disabled="captchaLoading" title="刷新图片验证码" aria-label="刷新图片验证码" @click="loadCaptcha">
+                <Loader2 v-if="captchaLoading" class="size-5 animate-spin text-muted-foreground" />
+                <img v-else-if="captchaImage" :src="captchaImage" alt="图片验证码" class="size-full object-contain" />
+                <RefreshCw v-else class="size-5 text-muted-foreground" />
+              </button>
+            </span>
+            <span v-if="fieldErrors.captcha" class="mt-1 block text-xs font-normal text-destructive">{{ fieldErrors.captcha }}</span>
           </label>
 
           <p v-if="error" role="alert" class="text-sm text-destructive">{{ error }}</p>

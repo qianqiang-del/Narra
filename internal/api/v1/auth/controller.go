@@ -17,13 +17,23 @@ type Controller struct{ svc service.AuthService }
 
 func NewController(svc service.AuthService) *Controller { return &Controller{svc: svc} }
 
+func (c *Controller) Captcha(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	challenge, err := c.svc.NewCaptcha(ctx.Request.Context(), ctx.ClientIP())
+	if err != nil {
+		respondError(ctx, err)
+		return
+	}
+	response.Success(ctx, challenge)
+}
+
 func (c *Controller) SendCode(ctx *gin.Context) {
 	var input requestdto.AuthCode
 	if ctx.ShouldBindJSON(&input) != nil {
 		response.BadRequest(ctx, "手机号和验证码用途不能为空")
 		return
 	}
-	if err := c.svc.SendCode(ctx.Request.Context(), input.Phone, input.Purpose, ctx.ClientIP()); err != nil {
+	if err := c.svc.SendCode(ctx.Request.Context(), input.Phone, input.Purpose, ctx.ClientIP(), service.CaptchaAnswer{ID: input.CaptchaID, Code: input.CaptchaCode}); err != nil {
 		respondError(ctx, err)
 		return
 	}
@@ -50,7 +60,7 @@ func (c *Controller) LoginPassword(ctx *gin.Context) {
 		response.BadRequest(ctx, "手机号和密码不能为空")
 		return
 	}
-	result, err := c.svc.LoginPassword(ctx.Request.Context(), input.Phone, input.Password)
+	result, err := c.svc.LoginPassword(ctx.Request.Context(), input.Phone, input.Password, service.CaptchaAnswer{ID: input.CaptchaID, Code: input.CaptchaCode, IP: ctx.ClientIP()})
 	if err != nil {
 		respondError(ctx, err)
 		return
@@ -123,6 +133,10 @@ func respondError(ctx *gin.Context, err error) {
 	case errors.Is(err, service.ErrInvalidCredentials), errors.Is(err, service.ErrInvalidRefresh):
 		response.Unauthorized(ctx, err.Error())
 	case errors.Is(err, service.ErrCodeRateLimited):
+		response.Error(ctx, 429, err.Error())
+	case errors.Is(err, service.ErrCaptchaRequired):
+		response.Error(ctx, 428, err.Error())
+	case errors.Is(err, service.ErrCaptchaRateLimited):
 		response.Error(ctx, 429, err.Error())
 	case errors.Is(err, service.ErrSMSUnavailable):
 		response.Error(ctx, 503, err.Error())

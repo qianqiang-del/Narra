@@ -13,7 +13,40 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.detect.outputs.backend }}
+      frontend: ${{ steps.detect.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        env:
+          BASE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            backend=true
+            frontend=true
+          else
+            backend=false
+            frontend=false
+            if ! git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- . \
+              ':(exclude)frontend/**' ':(exclude)docs/**' ':(exclude)README.md' \
+              ':(exclude)LICENSE' ':(exclude)deploy/README.md'; then
+              backend=true
+            fi
+            if ! git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- frontend/; then
+              frontend=true
+            fi
+          fi
+          echo "backend=$backend" >> "$GITHUB_OUTPUT"
+          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+
   backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +70,8 @@ jobs:
           compression-level: 0
 
   frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,14 +92,17 @@ jobs:
           retention-days: 1
 
   deploy:
-    needs: [backend, frontend]
+    needs: [changes, backend, frontend]
+    if: ${{ always() && needs.changes.result == 'success' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.frontend == 'true') && (needs.backend.result == 'success' || needs.backend.result == 'skipped') && (needs.frontend.result == 'success' || needs.frontend.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.frontend == 'true'
         with:
           name: narra-web
       - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.backend == 'true'
         with:
           name: narra-api-image
       - name: Configure SSH
@@ -80,19 +118,29 @@ jobs:
         env:
           SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_BACKEND: ${{ needs.changes.outputs.backend }}
+          DEPLOY_FRONTEND: ${{ needs.changes.outputs.frontend }}
         run: |
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
             'mkdir -p /opt/narra/deploy /opt/narra/data /opt/narra/web/incoming /opt/narra/web/releases /opt/narra/images/incoming'
-          scp -o StrictHostKeyChecking=yes deploy/compose.app.yml deploy/nginx.conf deploy/release.sh \
+          scp -o StrictHostKeyChecking=yes deploy/release.sh \
             "$SSH_USER@$SSH_HOST:/opt/narra/deploy/"
-          scp -o StrictHostKeyChecking=yes web.tar.gz \
-            "$SSH_USER@$SSH_HOST:/opt/narra/web/incoming/$GITHUB_SHA.tar.gz"
-          scp -o StrictHostKeyChecking=yes narra-api.tar.gz \
-            "$SSH_USER@$SSH_HOST:/opt/narra/images/incoming/$GITHUB_SHA.tar.gz"
+          if [[ "$DEPLOY_BACKEND" == "true" ]]; then
+            scp -o StrictHostKeyChecking=yes deploy/compose.app.yml deploy/nginx.conf \
+              "$SSH_USER@$SSH_HOST:/opt/narra/deploy/"
+            scp -o StrictHostKeyChecking=yes narra-api.tar.gz \
+              "$SSH_USER@$SSH_HOST:/opt/narra/images/incoming/$GITHUB_SHA.tar.gz"
+          fi
+          if [[ "$DEPLOY_FRONTEND" == "true" ]]; then
+            scp -o StrictHostKeyChecking=yes web.tar.gz \
+              "$SSH_USER@$SSH_HOST:/opt/narra/web/incoming/$GITHUB_SHA.tar.gz"
+          fi
       - name: Deploy and verify
         env:
           SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_BACKEND: ${{ needs.changes.outputs.backend }}
+          DEPLOY_FRONTEND: ${{ needs.changes.outputs.frontend }}
         run: |
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$SSH_USER@$SSH_HOST" "bash /opt/narra/deploy/release.sh $GITHUB_SHA"
+            "$SSH_USER@$SSH_HOST" "bash /opt/narra/deploy/release.sh $GITHUB_SHA $DEPLOY_BACKEND $DEPLOY_FRONTEND"

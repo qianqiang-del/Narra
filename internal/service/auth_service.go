@@ -41,6 +41,8 @@ var (
 	ErrSMSUnavailable     = errors.New("短信服务暂不可用")
 	ErrCodeRateLimited    = errors.New("验证码发送过于频繁，请稍后再试")
 	ErrInvalidRefresh     = errors.New("刷新令牌无效或已过期")
+	ErrCaptchaRequired    = errors.New("请完成图片验证码验证")
+	ErrCaptchaRateLimited = errors.New("图片验证码获取过于频繁，请稍后再试")
 )
 
 var mainlandPhone = regexp.MustCompile(`^1[3-9][0-9]{9}$`)
@@ -57,6 +59,7 @@ type authService struct {
 	users          repository.UserRepository
 	codes          repository.VerificationCodeRepository
 	refresh        repository.RefreshTokenRepository
+	captcha        CaptchaStore
 	sender         SMSSender
 	secret         []byte
 	expires        time.Duration
@@ -64,8 +67,36 @@ type authService struct {
 	sign           func(uint64, string) (string, error)
 }
 
-func NewAuthService(users repository.UserRepository, codes repository.VerificationCodeRepository, refresh repository.RefreshTokenRepository, sender SMSSender, secret string, expires, refreshExpires time.Duration) AuthService {
-	return &authService{users: users, codes: codes, refresh: refresh, sender: sender, secret: []byte(secret), expires: expires, refreshExpires: refreshExpires, sign: jwt.GenerateToken}
+func NewAuthService(users repository.UserRepository, codes repository.VerificationCodeRepository, refresh repository.RefreshTokenRepository, sender SMSSender, secret string, expires, refreshExpires time.Duration, captcha CaptchaStore) AuthService {
+	return &authService{users: users, codes: codes, refresh: refresh, captcha: captcha, sender: sender, secret: []byte(secret), expires: expires, refreshExpires: refreshExpires, sign: jwt.GenerateToken}
+}
+
+func (s *authService) NewCaptcha(ctx context.Context, ip string) (*CaptchaChallenge, error) {
+	if s.captcha == nil {
+		return nil, errors.New("图片验证码服务不可用")
+	}
+	id, code, err := newCaptcha()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.captcha.Issue(ctx, id, ip, captchaDigest(s.secret, id, ip, code)); err != nil {
+		return nil, err
+	}
+	return &CaptchaChallenge{ID: id, Image: captchaImage(code)}, nil
+}
+
+func (s *authService) verifyCaptcha(ctx context.Context, ip, id, answer string) error {
+	if s.captcha == nil || len(id) != 32 || len(answer) != 4 || strings.Trim(answer, "0123456789") != "" {
+		return ErrCaptchaRequired
+	}
+	ok, err := s.captcha.Consume(ctx, id, captchaDigest(s.secret, id, ip, answer))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrCaptchaRequired
+	}
+	return nil
 }
 
 func normalizePhone(input string) (string, error) {
@@ -77,13 +108,21 @@ func normalizePhone(input string) (string, error) {
 	return "+86" + phone, nil
 }
 
-func (s *authService) SendCode(ctx context.Context, phoneInput, purpose, ip string) error {
+func (s *authService) SendCode(ctx context.Context, phoneInput, purpose, ip string, captcha ...CaptchaAnswer) error {
 	phone, err := normalizePhone(phoneInput)
 	if err != nil {
 		return err
 	}
 	if purpose != CodePurposeRegister && purpose != CodePurposeLogin {
 		return errors.New("验证码用途无效")
+	}
+	if s.captcha != nil {
+		if len(captcha) == 0 {
+			return ErrCaptchaRequired
+		}
+		if err := s.verifyCaptcha(ctx, ip, captcha[0].ID, captcha[0].Code); err != nil {
+			return err
+		}
 	}
 	if s.codes == nil || s.sender == nil {
 		return ErrSMSUnavailable
@@ -147,10 +186,16 @@ func (s *authService) Register(ctx context.Context, phoneInput, password, code s
 	return s.tokenFor(ctx, user)
 }
 
-func (s *authService) LoginPassword(ctx context.Context, phoneInput, password string) (*responsedto.AuthResult, error) {
+func (s *authService) LoginPassword(ctx context.Context, phoneInput, password string, captcha ...CaptchaAnswer) (*responsedto.AuthResult, error) {
 	phone, err := normalizePhone(phoneInput)
 	if err != nil {
 		return nil, ErrInvalidCredentials
+	}
+	if len(captcha) == 0 {
+		return nil, ErrCaptchaRequired
+	}
+	if err := s.verifyCaptcha(ctx, captcha[0].IP, captcha[0].ID, captcha[0].Code); err != nil {
+		return nil, err
 	}
 	user, err := s.users.FindByPhone(ctx, phone)
 	if errors.Is(err, gorm.ErrRecordNotFound) {

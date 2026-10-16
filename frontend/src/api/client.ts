@@ -47,7 +47,7 @@ function redirectToLogin(): void {
 }
 
 function isPublicAuthPath(path: string): boolean {
-  return path === '/auth/codes' || path === '/auth/register' || path === '/auth/refresh'
+  return path === '/auth/captcha' || path === '/auth/codes' || path === '/auth/register' || path === '/auth/refresh'
     || path === '/auth/logout' || path.startsWith('/auth/login/')
 }
 
