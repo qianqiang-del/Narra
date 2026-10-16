@@ -30,38 +30,54 @@ const BASE_H = 720
 const { t } = useI18n()
 
 const hostRef = ref<HTMLDivElement | null>(null)
-const scale = ref(0.1)
+const scale = ref(0)
 /** 缩略图懒加载：进入视口才真正挂载 iframe */
 const shouldMount = ref(false)
+const frameReady = ref(false)
+const inViewport = ref(props.interactive)
 const frameKey = ref(0)
 
 let resizeObserver: ResizeObserver | null = null
 let intersectionObserver: IntersectionObserver | null = null
 let mountFrame = 0
+let paintFrame = 0
 
 const sandboxHTML = computed(() => props.html?.trim() ?? '')
 
 const frameStyle = computed(() => ({
   width: `${BASE_W}px`,
   height: `${BASE_H}px`,
-  transform: `translate(-50%, -50%) scale(${scale.value})`,
+  transform: `translate(-50%, -50%) scale(${scale.value * (frameReady.value ? 1 : 0.999)})`,
 }))
 
 function updateScale() {
   const box = hostRef.value?.getBoundingClientRect()
-  if (!box || box.width <= 0 || box.height <= 0) return
+  if (!box || box.width <= 0 || box.height <= 0) return false
   scale.value = Math.min(box.width / BASE_W, box.height / BASE_H)
+  return true
 }
 
-function mountInteractiveFrame() {
+function mountFrameWhenSized() {
   window.cancelAnimationFrame(mountFrame)
+  window.cancelAnimationFrame(paintFrame)
   shouldMount.value = false
+  frameReady.value = false
   if (!sandboxHTML.value) return
+  if (!props.interactive && !inViewport.value) return
   frameKey.value += 1
   void nextTick(() => {
     mountFrame = window.requestAnimationFrame(() => {
-      updateScale()
-      shouldMount.value = true
+      if (updateScale()) shouldMount.value = true
+    })
+  })
+}
+
+function onFrameLoad() {
+  if (!updateScale()) return
+  // The iframe can load before its scaled layer has had a chance to paint.
+  paintFrame = window.requestAnimationFrame(() => {
+    paintFrame = window.requestAnimationFrame(() => {
+      frameReady.value = true
     })
   })
 }
@@ -75,20 +91,20 @@ onMounted(() => {
     if (!box) return
     if (box.width > 0 && box.height > 0) {
       scale.value = Math.min(box.width / BASE_W, box.height / BASE_H)
+      if (!shouldMount.value && inViewport.value) mountFrameWhenSized()
     }
   })
   resizeObserver.observe(host)
   updateScale()
 
   if (props.interactive) {
-    mountInteractiveFrame()
+    mountFrameWhenSized()
   } else {
     intersectionObserver = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
-          updateScale()
-          frameKey.value += 1
-          shouldMount.value = true
+          inViewport.value = true
+          mountFrameWhenSized()
           intersectionObserver?.disconnect()
           intersectionObserver = null
         }
@@ -100,15 +116,13 @@ onMounted(() => {
 })
 
 watch([sandboxHTML, () => props.interactive], () => {
-  if (props.interactive) {
-    mountInteractiveFrame()
-    return
-  }
-  if (!sandboxHTML.value) shouldMount.value = false
+  inViewport.value ||= props.interactive
+  mountFrameWhenSized()
 })
 
 onBeforeUnmount(() => {
   window.cancelAnimationFrame(mountFrame)
+  window.cancelAnimationFrame(paintFrame)
   resizeObserver?.disconnect()
   intersectionObserver?.disconnect()
 })
@@ -121,12 +135,13 @@ onBeforeUnmount(() => {
       :key="frameKey"
       :srcdoc="sandboxHTML"
       :style="frameStyle"
-      :class="interactive ? 'pointer-events-auto' : 'pointer-events-none'"
+      :class="[interactive ? 'pointer-events-auto' : 'pointer-events-none', frameReady ? 'opacity-100' : 'opacity-0']"
       class="absolute top-1/2 left-1/2 origin-center border-0 bg-white select-none"
       sandbox="allow-scripts allow-forms"
       referrerpolicy="no-referrer"
       tabindex="-1"
       title=""
+      @load="onFrameLoad"
     />
     <!-- 没有 HTML：旧课堂没这一列，或这次生成没交出可用文档 -->
     <div
@@ -136,6 +151,6 @@ onBeforeUnmount(() => {
       {{ t('scene.interactiveUnavailable') }}
     </div>
     <!-- 缩略图未进入视口 -->
-    <div v-else class="absolute inset-0 animate-pulse bg-gray-100 dark:bg-gray-800" />
+    <div v-if="sandboxHTML && !frameReady" class="pointer-events-none absolute inset-0 animate-pulse bg-gray-100 dark:bg-gray-800" />
   </div>
 </template>
