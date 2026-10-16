@@ -71,7 +71,10 @@ func generateScenes(ctx context.Context, deps Deps, classroom *entity.Classroom,
 		zap.String("run_id", runID),
 	)
 
-	outcomes := runPages(ctx, tasks, concurrency, executor.run)
+	outcomes := runPages(ctx, tasks, completedPages(plan, scenes), concurrency, executor.run)
+	if err := interruptedGeneration(ctx); err != nil {
+		return err
+	}
 	failures := make(map[int32]string, len(outcomes))
 	for _, outcome := range outcomes {
 		if outcome.err == nil {
@@ -116,6 +119,13 @@ func generateScenes(ctx context.Context, deps Deps, classroom *entity.Classroom,
 	}
 	message := truncateRunes("部分场景生成失败："+strings.Join(reasons, "；"), 500)
 	return deps.Classrooms.UpdateStatus(writeCtx, classroom.ID, entity.ClassroomStatusPlayable, &message)
+}
+
+func interruptedGeneration(ctx context.Context) error {
+	if ctx.Err() != nil && !errors.Is(context.Cause(ctx), errBudgetExceeded) {
+		return ctx.Err()
+	}
+	return nil
 }
 
 // materialDocumentIDs 取本课材料的文档 ID，供页面级定向检索用。
@@ -183,6 +193,23 @@ func pendingPages(plan *ClassroomPlan, scenes []entity.Scene) []pageTask {
 		tasks = append(tasks, pageTask{Page: page, Scene: scene})
 	}
 	return tasks
+}
+
+// completedPages 保留恢复前已完成页面的依赖状态，避免后续页面被误判为不可达。
+func completedPages(plan *ClassroomPlan, scenes []entity.Scene) map[string]bool {
+	ready := make(map[int]bool, len(scenes))
+	for _, scene := range scenes {
+		if scene.Status == entity.SceneStatusReady {
+			ready[int(scene.SortOrder)] = true
+		}
+	}
+	completed := make(map[string]bool)
+	for _, page := range plan.Pages {
+		if ready[page.Order] {
+			completed[page.PlanID] = true
+		}
+	}
+	return completed
 }
 
 // classroomTeacher 取本课堂的教师角色与音色。

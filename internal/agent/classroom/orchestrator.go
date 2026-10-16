@@ -42,13 +42,16 @@ func effectiveTTSPoolSize(deps Deps) int {
 // 单页失败只记在它自己的结果里，不影响别的页；失败页同样算「已结束」，
 // 依赖它的页照常执行——页与页共享的是计划，不是上游页的产物。
 // 每一轮都从 tasks 头部开始找可启动的页，所以页序在前的先进入并发池。
-func runPages(ctx context.Context, tasks []pageTask, concurrency int, generate func(context.Context, pageTask) error) []pageOutcome {
+func runPages(ctx context.Context, tasks []pageTask, completed map[string]bool, concurrency int, generate func(context.Context, pageTask) error) []pageOutcome {
 	if concurrency < 1 {
 		concurrency = 1
 	}
 	results := make(chan pageOutcome, len(tasks))
 	running := make(map[string]bool, len(tasks))
-	finished := make(map[string]bool, len(tasks))
+	finished := make(map[string]bool, len(tasks)+len(completed))
+	for planID := range completed {
+		finished[planID] = true
+	}
 	outcomes := make([]pageOutcome, 0, len(tasks))
 
 	for len(outcomes) < len(tasks) {
