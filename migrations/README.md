@@ -46,14 +46,16 @@ V1 六张表：`folders`、`classrooms`、`preset_agents`、`classroom_agents`�
 go run ./cmd/server -c configs/config.yaml
 ```
 
-**第二步，灌角色池初始数据**（只需要跑一次）：
+**第二步，灌角色池初始数据**（执行一次，也可在 PostgreSQL 客户端直接运行）：
 
 ```bash
-psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0002_seed_preset_agents.sql
+psql -X -v ON_ERROR_STOP=1 -f migrations/0002_seed_preset_agents.sql '<connection-string>'
 ```
 
-灌的是**初始值**，不是权威值：角色池以后由人工直接维护数据库，
-加角色、改角色不用回改这个文件。
+脚本为已有账号补齐角色，并创建注册触发器，后续新账号自动得到角色。
+角色池按用户隔离，重复执行不会覆盖已存在或已人工修改的角色。
+若账号已有自定义角色占用了默认排序位次，唯一约束会阻止插入，事务会回滚；
+需先核对该账号的角色排序，再决定如何补齐。新库尚无用户也可以先执行，触发器会处理后续注册。
 
 **第三步，回填上传记录**（只需要跑一次）：
 
@@ -212,7 +214,7 @@ psql "postgresql://postgres:密码@localhost:5432/narra" -f migrations/0011_desa
 内容反而被衬得看不清。降饱和后六人仍可互相区分，界面安静下来。
 
 - **幂等**，只替换六个角色的旧默认色；重复执行为 0 行。用户自建角色与已手工修改的预设角色颜色不受影响。
-- **新环境也要跑**：0002 种子里的仍是旧配色，seed 不会因为本脚本而改变。
+- 新版 0002 种子已直接使用新配色；本脚本用于把旧种子创建的角色颜色更新到新配色。
 - **不用改 `avatar` 字段**：新头像是同名替换文件内容，文件名和路径都没变。
 - 脚本注释末尾附了回滚 SQL。
 

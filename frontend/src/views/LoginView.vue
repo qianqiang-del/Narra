@@ -5,6 +5,7 @@ import { ArrowRight, Loader2, LockKeyhole, MessageSquareText, Phone } from 'luci
 
 import { loginCode, loginPassword, register, sendCode } from '@/api/auth'
 import { saveSession } from '@/lib/authSession'
+import { useRolesStore } from '@/stores/roles'
 
 type Mode = 'password' | 'code' | 'register'
 
@@ -88,6 +89,7 @@ async function submit() {
         ? await loginCode(phone.value, code.value)
         : await loginPassword(phone.value, password.value)
     saveSession(session)
+    useRolesStore().reset()
     const redirect = route.query.redirect
     await router.replace(typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/')
   } catch (cause) {

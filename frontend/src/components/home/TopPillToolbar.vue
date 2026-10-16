@@ -14,6 +14,7 @@ import { useTheme, type ThemeMode } from '@/composables/useTheme'
 import { SUPPORTED_LOCALES, setLocale, type LocaleCode } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { logout as revokeSession } from '@/api/auth'
+import { useRolesStore } from '@/stores/roles'
 
 const emit = defineEmits<{ (e: 'open-settings'): void }>()
 
@@ -49,6 +50,7 @@ function pickLocale(code: LocaleCode) {
 }
 
 function logout() {
+  useRolesStore().reset()
   void revokeSession().catch(() => {})
   router.replace({ name: 'login' })
 }

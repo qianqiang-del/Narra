@@ -6,6 +6,7 @@ import (
 	"gorm.io/gorm"
 
 	"narra/internal/model/entity"
+	"narra/internal/ownership"
 )
 
 // roleRepository 基于 GORM 的角色池仓储。
@@ -25,7 +26,7 @@ func (r *roleRepository) ListEnabled(ctx context.Context) ([]entity.PresetAgent,
 	var agents []entity.PresetAgent
 
 	err := r.db.WithContext(ctx).
-		Where("enabled = ?", true).
+		Where("owner_id = ? AND enabled = ?", ownership.FromContext(ctx), true).
 		Order("sort_order ASC").
 		Find(&agents).Error
 	if err != nil {
