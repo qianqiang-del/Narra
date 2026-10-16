@@ -33,25 +33,44 @@ export const useRolesStore = defineStore('roles', () => {
 
   /** 在途请求。并发的 load() 共享同一个 Promise，避免重复打接口 */
   let inflight: Promise<void> | null = null
+  let generation = 0
 
   async function run() {
+    const current = generation
     loading.value = true
     error.value = null
     try {
-      roles.value = await fetchRoles()
+      const result = await fetchRoles()
+      if (current !== generation) return
+      roles.value = result
       loaded.value = true
     } catch (e) {
+      if (current !== generation) return
       error.value = e instanceof ApiError ? e : new ApiError(-1, String(e))
     } finally {
-      loading.value = false
+      if (current === generation) loading.value = false
     }
   }
 
   function load(): Promise<void> {
     if (loaded.value) return Promise.resolve()
-    if (!inflight) inflight = run().finally(() => (inflight = null))
+    if (!inflight) {
+      const pending = run().finally(() => {
+        if (inflight === pending) inflight = null
+      })
+      inflight = pending
+    }
     return inflight
   }
 
-  return { roles, loading, error, loaded, teacher, selectable, load }
+  function reset() {
+    generation += 1
+    inflight = null
+    roles.value = []
+    loading.value = false
+    error.value = null
+    loaded.value = false
+  }
+
+  return { roles, loading, error, loaded, teacher, selectable, load, reset }
 })

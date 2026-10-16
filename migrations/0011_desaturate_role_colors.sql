@@ -17,7 +17,7 @@
 -- 刻意不动 avatar：新头像是「同名替换文件内容」，文件名和路径都没变
 -- （public/avatars/teacher-2.png 等），所以数据库不需要跟着改。
 --
--- 新环境也要跑这一条：0002 种子里的仍是旧配色，seed 不会因为本脚本而改变。
+-- 新版 0002 种子已使用新配色；本脚本只用于更新旧版种子写入的颜色。
 --
 -- 回滚（如果不喜欢这套配色）：
 --   UPDATE preset_agents SET color = '#722ed1' WHERE agent_key = 'teacher' AND color = '#46639c';
