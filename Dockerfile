@@ -5,11 +5,16 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/narra-api ./cmd/server
 
-FROM alpine:3.21
-RUN apk add --no-cache ca-certificates tzdata curl
+FROM python:3.13-slim-bookworm
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl libgomp1 tzdata \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /out/narra-api /app/narra-api
 COPY configs/config.production.yaml /app/configs/config.production.yaml
+COPY pkg/documentparser/python/ /app/python/
+RUN pip install --no-cache-dir -r /app/python/requirements.txt \
+    && python -c "import fitz; from docling.document_converter import DocumentConverter; from rapidocr import RapidOCR"
 RUN mkdir -p /app/data/uploads /app/data/audio /app/data/knowledge
 EXPOSE 8080
 CMD ["/app/narra-api", "-c", "/app/configs/config.production.yaml"]

@@ -51,7 +51,11 @@ tts:
   model: qwen3-tts-flash
   timeout: 60s
 document_parser:
-  enabled: false
+  enabled: true
+  python_path: /usr/local/bin/python3
+
+knowledge_ingest:
+  parse_concurrency: 1
 storage:
   upload_dir: data/uploads
   audio_dir: data/audio

@@ -31,11 +31,14 @@ services:
       OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
       OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
       TZ: Asia/Shanghai
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MALLOC_ARENA_MAX: "2"
     volumes:
       - /opt/narra/data:/app/data
     ports:
       - "127.0.0.1:8080:8080"
-    mem_limit: 768m
+    mem_limit: 1280m
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/v1/health"]
       interval: 15s
