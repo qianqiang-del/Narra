@@ -184,4 +184,4 @@ README 介绍项目入口和运行方式。专项设计细节以对应文档及�
 
 ## License
 
-仓库根目录目前没有统一的 `LICENSE` 文件；使用或再发布代码前请与项目维护者确认授权范围。
+本项目采用 [MIT 许可证](LICENSE)。前端目录保留其原有的版权声明，见 [frontend/LICENSE](frontend/LICENSE)。
