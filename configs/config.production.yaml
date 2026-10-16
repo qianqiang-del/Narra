@@ -66,10 +66,11 @@ langfuse:
 log:
   level: info
 worker:
-  concurrency: 1
+  concurrency: 5
   max_retry: 2
   timeout: 30m
   reconcile_interval: 10m
 classroom:
-  page_concurrency: 1
-  tts_pool_size: 1
+  page_concurrency: 10
+  tts_pool_size: 3
+  max_duration: 25m
