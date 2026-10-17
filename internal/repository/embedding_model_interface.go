@@ -12,7 +12,11 @@ import (
 // 这张表是知识库向量的合法模型来源：knowledge_embeddings.model_id 外键指向它，
 // 而设置页写的是另一张表 embedding_settings（记录"怎么连服务"）。
 // 两张表语义相邻却没有关联，桥接就落在这里 —— 保存一次生效配置，
-// 就保证这里有一行与之对应、且全局唯一的默认模型。
+// 就保证该账号名下有一行与之对应、且账号内唯一的默认模型。
+//
+// 模型行按账号（owner_id）分区：UNIQUE (owner_id, name) 与
+// "每 owner 至多一个 is_default" 的部分唯一索引保证各账号互不干扰 ——
+// 用户 A 换模型不会动到用户 B 的默认模型与向量归属。
 //
 // 写入口只开了一个 EnsureDefault：模型行的字段全部由当前生效配置推导，
 // 没有"单独改某一列"的场景，所以不提供 Update，避免出现两处都能改同一行的局面。
@@ -21,17 +25,18 @@ import (
 // 模型 ID，走 EnsureDefault 相当于每传一份文档就写一次配置表（还会顺带挪动
 // "谁是默认模型"），读路径不该有写副作用。
 type EmbeddingModelRepository interface {
-	// EnsureDefault 保证 name 对应的模型行存在、字段与入参一致、并成为唯一默认模型。
-	// 返回落库后的模型（含 ID），供写入知识库向量时引用。
+	// EnsureDefault 保证 model.OwnerID 名下、name 对应的模型行存在、字段与入参一致、
+	// 并成为该账号的唯一默认模型。返回落库后的模型（含 ID），供写入知识库向量时引用。
+	// model.OwnerID 必须非零。
 	//
 	// 同名模型的维度发生变化且该模型下已有向量时，返回 *DimensionsMismatchError
 	// 而不是就地覆盖 —— 理由见该类型的注释。
 	EnsureDefault(ctx context.Context, model entity.EmbeddingModel) (*entity.EmbeddingModel, error)
 
-	// GetDefault 返回当前默认模型。一条都没有时返回 gorm.ErrRecordNotFound。
+	// GetDefault 返回该账号的默认模型。一条都没有时返回 gorm.ErrRecordNotFound。
 	//
 	// 只读，不改任何状态：调用方拿到它只是为了知道"新向量该挂在哪个 model_id 下"。
-	GetDefault(ctx context.Context) (*entity.EmbeddingModel, error)
+	GetDefault(ctx context.Context, ownerID uint64) (*entity.EmbeddingModel, error)
 
 	// EnsureVectorIndex 为该模型的向量补建 HNSW 余弦索引（幂等，维度或精度变了会自愈重建）。
 	//
@@ -48,13 +53,13 @@ type EmbeddingModelRepository interface {
 	// ⚠️ 必须在事务外调用：CREATE INDEX CONCURRENTLY 不能跑在事务块里。
 	EnsureVectorIndex(ctx context.Context, model *entity.EmbeddingModel) error
 
-	// CountVectorsByModel 统计每个已登记模型名下的向量数（没有向量的模型计 0）。
+	// CountVectorsByModel 统计该账号每个已登记模型名下的向量数（没有向量的模型计 0）。
 	//
 	// 它给"向量召回静默为零"的体检提供事实：默认模型下 0 条、其他模型下有，
 	// 是换过默认模型却未重新收录的典型形态（见 rag.VectorRecallHint）。
-	CountVectorsByModel(ctx context.Context) ([]entity.ModelVectorCount, error)
+	CountVectorsByModel(ctx context.Context, ownerID uint64) ([]entity.ModelVectorCount, error)
 
-	// DeleteUnusedModels 删除名下已无向量的非默认模型行，返回被删掉的名字。
+	// DeleteUnusedModels 删除该账号名下已无向量的非默认模型行，返回被删掉的名字。
 	//
 	// 收录成功后调用：重新向量化把旧模型的最后一批向量替换掉之后，那个模型行
 	// 就只剩一个空壳 —— 检索只认默认模型，它再也不会被用到，留着只会让
@@ -63,7 +68,7 @@ type EmbeddingModelRepository interface {
 	//
 	// 外键 ON DELETE RESTRICT 是最后一道兜底：真有向量引用时删也删不掉。
 	// 它是 best-effort 的收尾，失败由调用方记日志，不影响收录结果。
-	DeleteUnusedModels(ctx context.Context) ([]string, error)
+	DeleteUnusedModels(ctx context.Context, ownerID uint64) ([]string, error)
 }
 
 // DimensionsMismatchError 表示同名模型请求的维度与已登记值不一致。

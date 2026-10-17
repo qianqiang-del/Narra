@@ -35,7 +35,7 @@ func (c *Controller) Save(ctx *gin.Context) {
 		response.BadRequest(ctx, "向量服务配置格式无效")
 		return
 	}
-	setting, err := c.svc.Save(ctx.Request.Context(), input, middleware.GetUserID(ctx))
+	setting, err := c.svc.Save(ctx.Request.Context(), middleware.GetUserID(ctx), input)
 	if err != nil {
 		response.BadRequest(ctx, err.Error())
 		return
@@ -50,7 +50,7 @@ func (c *Controller) Test(ctx *gin.Context) {
 		response.BadRequest(ctx, "向量服务配置格式无效")
 		return
 	}
-	dimensions, err := c.svc.Test(ctx.Request.Context(), input, middleware.GetUserID(ctx))
+	dimensions, err := c.svc.Test(ctx.Request.Context(), middleware.GetUserID(ctx), input)
 	if err != nil {
 		response.BadRequest(ctx, err.Error())
 		return

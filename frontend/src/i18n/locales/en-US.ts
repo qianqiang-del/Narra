@@ -336,7 +336,8 @@ export default {
     embeddingAPIKeyConfigured: 'Configured; leave blank to keep it',
     embeddingAPIKeyPlaceholder: 'Optional: test or replace the current key',
     embeddingLoaded: 'Embedding configuration loaded.',
-    embeddingSaved: 'Embedding configuration saved for the current server process.',
+    embeddingUsingDefault: 'Currently using the platform default configuration. Fill in and save to switch to your own.',
+    embeddingSaved: 'Embedding configuration saved and effective immediately.',
     embeddingTestSuccess: 'Connection succeeded; the service returned {dimensions} dimensions.',
     embeddingRequestFailed: 'Embedding settings request failed.',
     embeddingNativeHint: {

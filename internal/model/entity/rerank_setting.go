@@ -15,7 +15,7 @@ const (
 // 换模型只是换一个打分器，所以启停与切换是纯配置行为。
 type RerankSetting struct {
 	BaseModel
-	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_rerank_settings_owner_id;uniqueIndex:rerank_settings_owner_name_key,priority:1;uniqueIndex:rerank_settings_one_enabled_idx,priority:1,where:is_enabled" json:"-"`
+	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_rerank_settings_owner_id;comment:所属用户 ID;uniqueIndex:rerank_settings_owner_name_key,priority:1;uniqueIndex:rerank_settings_one_enabled_idx,priority:1,where:is_enabled" json:"-"`
 	Owner   *User  `gorm:"foreignKey:OwnerID;constraint:rerank_settings_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 
 	Name            string  `gorm:"column:name;type:varchar(120);not null;uniqueIndex:rerank_settings_owner_name_key,priority:2;comment:用户内唯一的配置名称" json:"name"`

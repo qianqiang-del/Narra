@@ -33,7 +33,7 @@ func TestKnowledgeIngestCommitWritesAllRows(t *testing.T) {
 		if err := docRepo.AcquireIngestQueueLock(ctx); err != nil {
 			return fmt.Errorf("取得队列锁失败: %w", err)
 		}
-		document := knowledgeTestDocument()
+		document := knowledgeTestDocument(t, tx)
 		if err := docRepo.Create(ctx, document); err != nil {
 			return err
 		}
@@ -48,6 +48,7 @@ func TestKnowledgeIngestCommitWritesAllRows(t *testing.T) {
 			return err
 		}
 		record := &entity.KnowledgeUploadRecord{
+			OwnerID:      document.OwnerID,
 			DocumentID:   &document.ID,
 			OriginalName: "设计.md",
 			Status:       entity.KnowledgeUploadRecordStatusPending,
@@ -96,7 +97,7 @@ func TestKnowledgeIngestRollbackLeavesNothing(t *testing.T) {
 		if err := docRepo.AcquireIngestQueueLock(ctx); err != nil {
 			return err
 		}
-		document := knowledgeTestDocument()
+		document := knowledgeTestDocument(t, tx)
 		document.Title = title
 		if err := docRepo.Create(ctx, document); err != nil {
 			return err
@@ -106,6 +107,7 @@ func TestKnowledgeIngestRollbackLeavesNothing(t *testing.T) {
 			return err
 		}
 		record := &entity.KnowledgeUploadRecord{
+			OwnerID:      document.OwnerID,
 			DocumentID:   &document.ID,
 			OriginalName: "设计.md",
 			Status:       entity.KnowledgeUploadRecordStatusPending,

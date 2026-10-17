@@ -19,8 +19,8 @@ import (
 
 	"narra/internal/model/entity"
 	"narra/internal/ownership"
+	"narra/pkg/config"
 	"narra/pkg/documentparser"
-	"narra/pkg/embedding"
 	"narra/pkg/logger"
 )
 
@@ -89,21 +89,26 @@ type FileStore interface {
 }
 
 // ModelRegistry 是收录与检索两条链路对向量模型登记的最小依赖面。
+//
+// 全部方法都以 ownerID 为作用域：模型行按账号登记（embedding_models 上有
+// UNIQUE (owner_id, name) 与"每 owner 至多一个默认"的部分唯一索引），
+// 这样每个账号的向量归属彼此隔离，换配置只影响自己的模型行。
 type ModelRegistry interface {
-	// GetDefault 取当前默认模型。库里没有默认模型时返回 gorm.ErrRecordNotFound。
-	GetDefault(ctx context.Context) (*entity.EmbeddingModel, error)
+	// GetDefault 取该账号的默认模型。库里没有时返回 gorm.ErrRecordNotFound。
+	GetDefault(ctx context.Context, ownerID uint64) (*entity.EmbeddingModel, error)
 
-	// EnsureDefault 把一份模型登记为唯一默认模型；同名且维度一致时复用已有行。
-	// 同名但维度不同、且该模型下已有向量时，实现方会拒绝并返回维度冲突错误。
+	// EnsureDefault 把一份模型登记为该账号的唯一默认模型；同名且维度一致时复用已有行。
+	// model.OwnerID 必须非零。同名但维度不同、且该模型下已有向量时，实现方会拒绝并
+	// 返回维度冲突错误。
 	EnsureDefault(ctx context.Context, model entity.EmbeddingModel) (*entity.EmbeddingModel, error)
 
-	// CountVectorsByModel 统计每个模型名下的向量数，给"向量召回静默为零"的体检用
-	// （见 vector_census.go）。收录链路不用它，但两链路共用同一个接口，不另拆一个。
-	CountVectorsByModel(ctx context.Context) ([]entity.ModelVectorCount, error)
+	// CountVectorsByModel 统计该账号每个模型名下的向量数，给"向量召回静默为零"的
+	// 体检用（见 vector_census.go）。收录链路不用它，但两链路共用同一个接口，不另拆一个。
+	CountVectorsByModel(ctx context.Context, ownerID uint64) ([]entity.ModelVectorCount, error)
 
-	// DeleteUnusedModels 删除名下已无向量的非默认模型行，返回被删掉的名字。
+	// DeleteUnusedModels 删除该账号名下已无向量的非默认模型行，返回被删掉的名字。
 	// 收录成功后做一次收尾：重新向量化把旧模型的最后一批向量替换掉后，旧行就是空壳。
-	DeleteUnusedModels(ctx context.Context) ([]string, error)
+	DeleteUnusedModels(ctx context.Context, ownerID uint64) ([]string, error)
 }
 
 // FileInput 是从磁盘收录一份文件所需的输入。
@@ -171,8 +176,8 @@ type TxRunner interface {
 
 // VisionProvider 提供当前启用的视觉模型（VLM）配置：设置页维护，启用即生效。
 //
-// 收录链路在每次解析前现取一次 —— 与 embedding / rerank 的常驻运行时不同，
-// 视觉配置只在这一个点用到，没有需要热推送的理由（实现方是 vlm 设置服务）。
+// 与 embedding 一样在每次解析前按账号现取（文档的 OwnerID）；视觉配置只在这一个点
+// 用到，没有热推送的理由（实现方是 vlm 设置服务）。
 // 返回 ok = false 表示"未启用视觉理解"，不是错误。
 type VisionProvider interface {
 	CurrentVision(ctx context.Context, ownerID ...uint64) (documentparser.VLMConfig, bool, error)
@@ -231,7 +236,7 @@ type Ingester struct {
 	store     DocumentStore
 	records   UploadRecordStore
 	models    ModelRegistry
-	embedding *embedding.Manager
+	embedding EmbeddingProvider
 	parser    documentparser.Parser
 	images    ImagePublisher
 	// files 是原件的对象存储；nil 表示本地模式（原件留在 upload 目录）。
@@ -250,7 +255,7 @@ type Ingester struct {
 	// nil 表示不限（只在不走 Ingester 的同步测试路径里可能出现）。
 	embeddingSem chan struct{}
 
-	// newEmbedder 是这个包唯一的注入点，默认按模型行 + 当前生效配置现建 Eino 适配器
+	// newEmbedder 是这个包唯一的注入点，默认按"生效连接配置 + 模型行"现建 Eino 适配器
 	// （见 embedderFactory）。测试把它换成返回桩的工厂，整条链路就能完全离线跑完。
 	newEmbedder embedderFactory
 }
@@ -352,7 +357,7 @@ func NewIngester(
 	store DocumentStore,
 	records UploadRecordStore,
 	models ModelRegistry,
-	embeddingManager *embedding.Manager,
+	embeddingProvider EmbeddingProvider,
 	parser documentparser.Parser,
 	options IngestOptions,
 ) *Ingester {
@@ -368,7 +373,7 @@ func NewIngester(
 		store:         store,
 		records:       records,
 		models:        models,
-		embedding:     embeddingManager,
+		embedding:     embeddingProvider,
 		parser:        parser,
 		images:        options.Images,
 		files:         options.Files,
@@ -377,7 +382,7 @@ func NewIngester(
 		queueCapacity: options.QueueCapacity,
 		materialTTL:   materialTTL,
 		embeddingSem:  make(chan struct{}, limit),
-		newEmbedder:   newModelEmbedderFactory(embeddingManager),
+		newEmbedder:   newModelEmbedderFactory(),
 	}
 }
 
@@ -806,11 +811,11 @@ func (i *Ingester) processExistingFile(
 				fmt.Errorf("这篇文档没有已落库的切片，无法从向量阶段恢复；请重新上传"))
 		}
 
-		model, err := i.resolveModel(ctx)
+		cfg, model, err := i.resolveModel(ctx, document.OwnerID)
 		if err != nil {
 			return i.failIngest(ctx, document, attempt, "model", err)
 		}
-		embedder, err := i.newEmbedder(model)
+		embedder, err := i.newEmbedder(cfg, model)
 		if err != nil {
 			return i.failIngest(ctx, document, attempt, "model", err)
 		}
@@ -843,7 +848,7 @@ func (i *Ingester) processExistingFile(
 			return i.failIngest(ctx, document, attempt, "store", fmt.Errorf("保存向量失败: %w", err))
 		}
 		// 向量换完了，被替换光的旧模型行就此收尾（best-effort，不参与成败）。
-		i.cleanupUnusedModels(ctx)
+		i.cleanupUnusedModels(ctx, document.OwnerID)
 
 		// 回读一次再返回：内存里这份是 worker 取任务时读到的，中间的阶段推进与正文替换
 		// 都没有回写到它身上。
@@ -914,14 +919,14 @@ func (i *Ingester) ingestMarkdown(
 	metadata["chunk_ms"] = time.Since(chunkStarted).Milliseconds()
 
 	// 模型必须在向量化之前定下来：向量的 model_id 指向它，维度校验也以它为准。
-	model, err := i.resolveModel(ctx)
+	cfg, model, err := i.resolveModel(ctx, document.OwnerID)
 	if err != nil {
 		return i.failIngest(ctx, document, 0, "model", err)
 	}
 	metadata["model"] = model.Name
 	metadata["model_id"] = model.ID
 
-	embedder, err := i.newEmbedder(model)
+	embedder, err := i.newEmbedder(cfg, model)
 	if err != nil {
 		return i.failIngest(ctx, document, 0, "model", err)
 	}
@@ -942,7 +947,7 @@ func (i *Ingester) ingestMarkdown(
 		return i.failIngest(ctx, document, 0, "store", err)
 	}
 	// 重新收录也会把旧模型的向量整批换掉，同样顺手收尾（best-effort，不参与成败）。
-	i.cleanupUnusedModels(ctx)
+	i.cleanupUnusedModels(ctx, document.OwnerID)
 
 	// 回读一次再返回：内存里这份是创建文档时读到的，中间的状态推进和正文替换
 	// 都没有回写到它身上。直接拿它出响应会给出一个"刚创建就再没更新过"的
@@ -958,35 +963,43 @@ func (i *Ingester) ingestMarkdown(
 	return IngestResult{Document: document, Chunks: len(chunks)}, nil
 }
 
-// resolveModel 确定新向量该挂在哪个模型下。
-func (i *Ingester) resolveModel(ctx context.Context) (*entity.EmbeddingModel, error) {
-	cfg := i.embedding.Config()
-	if !cfg.Enabled {
-		return nil, fmt.Errorf("%w：请先在设置页配置向量服务", ErrEmbeddingDisabled)
-	}
-
-	model, err := i.models.GetDefault(ctx)
+// resolveModel 确定新向量该挂在哪个模型下，返回"连接配置 + 模型行"。
+//
+// ownerID 是文档归属的账号：文件收录跑在后台 worker 里，ctx 上没有登录态，
+// 必须用 document.OwnerID（与视觉配置的取法一致）。解析顺序由 EmbeddingProvider
+// 保证：账号自己的配置 → 平台默认 → 未配置。
+//
+// 模型行按账号登记：账号还没配过、首次吃平台默认收录时，这里会为它惰性建行，
+// 之后 reembed、向量统计、模型清理都天然按账号隔离。
+func (i *Ingester) resolveModel(ctx context.Context, ownerID uint64) (config.EmbeddingConfig, *entity.EmbeddingModel, error) {
+	cfg, err := i.embedding.CurrentEmbedding(ctx, ownerID)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("%w：请先在设置页保存一次向量服务配置", ErrNoEmbeddingModel)
-		}
-		return nil, fmt.Errorf("查询默认向量模型失败: %w", err)
+		return config.EmbeddingConfig{}, nil, fmt.Errorf("读取向量服务配置失败: %w", err)
 	}
-	if model.Name == cfg.Model && int(model.Dimensions) == cfg.Dimensions {
-		return model, nil
+	if !cfg.Enabled {
+		return config.EmbeddingConfig{}, nil, fmt.Errorf("%w：请先在设置页保存向量服务配置，或由管理员配置平台默认向量服务", ErrEmbeddingDisabled)
 	}
 
-	// 模型行与当前生效配置对不上。这时继续写会很隐蔽：向量挂在旧模型名下，
-	// 而检索按配置里的模型去查，一条也取不到。
-	// 以配置为准重新登记一次，让维度冲突在这里变成明确错误，而不是变成一份查不到的向量。
+	model, err := i.models.GetDefault(ctx, ownerID)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return config.EmbeddingConfig{}, nil, fmt.Errorf("查询默认向量模型失败: %w", err)
+	}
+	if err == nil && model.Name == cfg.Model && int(model.Dimensions) == cfg.Dimensions {
+		return cfg, model, nil
+	}
+
+	// 模型行不存在、或与当前生效配置对不上。对不上的时候继续写会很隐蔽：向量挂在
+	// 旧模型名下，而检索按配置里的模型去查，一条也取不到。
+	// 以配置为准登记/对齐一次，让维度冲突在这里变成明确错误，而不是变成一份查不到的向量。
 	aligned, err := i.models.EnsureDefault(ctx, entity.EmbeddingModel{
+		OwnerID:    ownerID,
 		Name:       cfg.Model,
 		Dimensions: int32(cfg.Dimensions),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("向量模型登记与当前配置不一致，重新对齐失败: %w", err)
+		return config.EmbeddingConfig{}, nil, fmt.Errorf("登记向量模型失败: %w", err)
 	}
-	return aligned, nil
+	return cfg, aligned, nil
 }
 
 // cleanupUnusedModels 清掉名下已无向量的非默认模型行（best-effort）。
@@ -995,8 +1008,8 @@ func (i *Ingester) resolveModel(ctx context.Context) (*entity.EmbeddingModel, er
 // 向量写入成功之后顺手收尾，旧行不会在库里长期留着。它刻意不参与收录成败：
 // 失败只记一条 Warn —— 为一条清理把一篇已经成功的文档判成失败，代价完全不成比例，
 // 而且下一次成功的收录还会再清一次。
-func (i *Ingester) cleanupUnusedModels(ctx context.Context) {
-	deleted, err := i.models.DeleteUnusedModels(ctx)
+func (i *Ingester) cleanupUnusedModels(ctx context.Context, ownerID uint64) {
+	deleted, err := i.models.DeleteUnusedModels(ctx, ownerID)
 	if err != nil {
 		// 关停时 ctx 已取消，失败是预期内的，不必喧哗。
 		if ctx.Err() == nil {

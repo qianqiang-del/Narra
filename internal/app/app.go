@@ -28,7 +28,6 @@ import (
 	"narra/pkg/crypto"
 	"narra/pkg/database"
 	"narra/pkg/documentparser"
-	"narra/pkg/embedding"
 	"narra/pkg/logger"
 	"narra/pkg/objectstorage"
 	"narra/pkg/rerank"
@@ -299,9 +298,10 @@ func (a *App) initDependencies() error {
 	}
 	authSvc := service.NewAuthService(userRepo, codeRepo, refreshRepo, smsSender, a.cfg.JWT.Secret, a.cfg.JWT.AccessTTL, a.cfg.JWT.RefreshTTL, service.NewRedisCaptchaStore(a.redis))
 	roleSvc := service.NewRoleService(roleRepo)
-	// 配置文件中的 Embedding 保持共享，数据库里的私人配置不加载到全局 manager。
-	embeddingManager := embedding.NewManager(a.cfg.Embedding)
-	embeddingSettingSvc := service.NewEmbeddingSettingService(embeddingSettingRepo, embeddingModelRepo, embeddingManager, a.cfg.JWT.Secret)
+	// Embedding 配置分两层：config.yaml 是只读的平台默认，用户保存的配置落库、
+	// 按账号生效。运行时不再有"全局生效配置"，收录与检索通过服务按账号现取
+	// （见 service.EmbeddingSettingService.CurrentEmbedding）。
+	embeddingSettingSvc := service.NewEmbeddingSettingService(embeddingSettingRepo, embeddingModelRepo, a.cfg.Embedding, a.cfg.JWT.Secret)
 
 	// TTS 没启用或配置不全时客户端留 nil：音色列表照常可用，只有试听会返回一句明确的
 	// 错误。这里不 fail-fast，是因为试听是附加能力，不该拦住整个服务启动。
@@ -375,7 +375,7 @@ func (a *App) initDependencies() error {
 	}
 	a.imagesDir = filepath.Join(knowledgeDir, "images")
 	knowledgeIngester := rag.NewIngester(
-		knowledgeDocumentRepo, knowledgeUploadRecordRepo, embeddingModelRepo, embeddingManager, parser,
+		knowledgeDocumentRepo, knowledgeUploadRecordRepo, embeddingModelRepo, embeddingSettingSvc, parser,
 		rag.IngestOptions{
 			Tx:                   txManager,
 			QueueCapacity:        knowledgeIngest.QueueCapacity,
@@ -409,7 +409,7 @@ func (a *App) initDependencies() error {
 	// 检索是收录的另一半门面：两路召回（余弦相似度 + 词项命中）经 RRF 融合，
 	// 编排在 rag.Retriever，服务层只做 DTO 映射。向量模型的登记与索引维护走
 	// embeddingModelRepo —— 检索只在同一模型下比向量，那个"默认模型"由它说了算。
-	knowledgeRetriever := rag.NewRetriever(knowledgeSearchRepo, embeddingModelRepo, embeddingManager)
+	knowledgeRetriever := rag.NewRetriever(knowledgeSearchRepo, embeddingModelRepo, embeddingSettingSvc)
 	// 词法路的中文分词器要加载秒级大小的词典：在启动时做掉，不让第一个检索请求承担这笔开销。
 	rag.WarmupLexicalTokenizer()
 	// 多查询门面：单查询直通 rag.Retriever；输入里带 queries 变体时，经 Eino 的

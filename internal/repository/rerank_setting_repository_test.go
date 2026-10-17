@@ -28,9 +28,10 @@ func ensureRerankTable(t *testing.T, tx *gorm.DB) {
 	}
 }
 
-// rerankTestSetting 造一条满足全部约束的配置（名字全局唯一，避免和开发库撞车）。
-func rerankTestSetting(name string) entity.RerankSetting {
+// rerankTestSetting 造一条满足全部约束的配置（名字在账号内唯一，避免和开发库撞车）。
+func rerankTestSetting(ownerID uint64, name string) entity.RerankSetting {
 	return entity.RerankSetting{
+		OwnerID:        ownerID,
 		Name:           name,
 		BaseURL:        "https://api.siliconflow.cn/v1",
 		Model:          "BAAI/bge-reranker-v2-m3",
@@ -56,7 +57,7 @@ func TestRerankSettingCrud(t *testing.T) {
 	ctx := context.Background()
 	repo := NewRerankSettingRepository(tx)
 
-	setting := rerankTestSetting(uniqueName("rerank-crud"))
+	setting := rerankTestSetting(testOwnerID(t, tx), uniqueName("rerank-crud"))
 	if err := repo.Create(ctx, &setting); err != nil {
 		t.Fatalf("创建配置失败: %v", err)
 	}
@@ -107,8 +108,8 @@ func TestRerankSetEnabledKeepsSingleEnabled(t *testing.T) {
 	ctx := context.Background()
 	repo := NewRerankSettingRepository(tx)
 
-	first := rerankTestSetting(uniqueName("rerank-first"))
-	second := rerankTestSetting(uniqueName("rerank-second"))
+	first := rerankTestSetting(testOwnerID(t, tx), uniqueName("rerank-first"))
+	second := rerankTestSetting(testOwnerID(t, tx), uniqueName("rerank-second"))
 	for _, item := range []*entity.RerankSetting{&first, &second} {
 		if err := repo.Create(ctx, item); err != nil {
 			t.Fatalf("创建配置失败: %v", err)
@@ -151,7 +152,7 @@ func TestRerankSetEnabledRollsBackWhenTargetMissing(t *testing.T) {
 	ctx := context.Background()
 	repo := NewRerankSettingRepository(tx)
 
-	setting := rerankTestSetting(uniqueName("rerank-rollback"))
+	setting := rerankTestSetting(testOwnerID(t, tx), uniqueName("rerank-rollback"))
 	if err := repo.Create(ctx, &setting); err != nil {
 		t.Fatalf("创建配置失败: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestRerankDisableAndDeleteClearsEnabled(t *testing.T) {
 	ctx := context.Background()
 	repo := NewRerankSettingRepository(tx)
 
-	setting := rerankTestSetting(uniqueName("rerank-clear"))
+	setting := rerankTestSetting(testOwnerID(t, tx), uniqueName("rerank-clear"))
 	if err := repo.Create(ctx, &setting); err != nil {
 		t.Fatalf("创建配置失败: %v", err)
 	}
@@ -221,8 +222,8 @@ func TestRerankSettingListOrdersEnabledFirst(t *testing.T) {
 	ctx := context.Background()
 	repo := NewRerankSettingRepository(tx)
 
-	older := rerankTestSetting(uniqueName("rerank-older"))
-	newer := rerankTestSetting(uniqueName("rerank-newer"))
+	older := rerankTestSetting(testOwnerID(t, tx), uniqueName("rerank-older"))
+	newer := rerankTestSetting(testOwnerID(t, tx), uniqueName("rerank-newer"))
 	for _, item := range []*entity.RerankSetting{&older, &newer} {
 		if err := repo.Create(ctx, item); err != nil {
 			t.Fatalf("创建配置失败: %v", err)

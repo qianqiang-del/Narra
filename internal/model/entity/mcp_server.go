@@ -5,7 +5,7 @@ import "time"
 // MCPServer MCP 服务配置实体。
 type MCPServer struct {
 	BaseModel
-	OwnerID          uint64        `gorm:"column:owner_id;not null;index:idx_mcp_servers_owner_id;uniqueIndex:mcp_servers_owner_server_id_key,priority:1" json:"-"`
+	OwnerID          uint64        `gorm:"column:owner_id;not null;index:idx_mcp_servers_owner_id;comment:所属用户 ID;uniqueIndex:mcp_servers_owner_server_id_key,priority:1" json:"-"`
 	Owner            *User         `gorm:"foreignKey:OwnerID;constraint:mcp_servers_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 	ServerID         string        `gorm:"column:server_id;type:varchar(64);not null;uniqueIndex:mcp_servers_owner_server_id_key,priority:2;comment:用户内唯一的服务稳定标识" json:"server_id"`
 	Name             string        `gorm:"column:name;type:varchar(128);not null;comment:服务展示名" json:"name"`

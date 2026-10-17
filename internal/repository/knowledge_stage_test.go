@@ -60,7 +60,7 @@ func TestKnowledgeStagedWritesAdvanceStage(t *testing.T) {
 	ctx := context.Background()
 	modelID := knowledgeTestModelID(t, tx)
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestKnowledgeStagedWritesRejectStaleAttempt(t *testing.T) {
 	repo := NewKnowledgeDocumentRepository(tx)
 	ctx := context.Background()
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestKnowledgeStagedEmbeddingsRollBackOnMismatch(t *testing.T) {
 	ctx := context.Background()
 	modelID := knowledgeTestModelID(t, tx)
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestKnowledgeClaimReturnsIncrementedAttempt(t *testing.T) {
 	repo := NewKnowledgeDocumentRepository(tx)
 	ctx := context.Background()
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}

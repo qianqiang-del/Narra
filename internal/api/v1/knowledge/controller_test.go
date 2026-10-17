@@ -303,7 +303,10 @@ func (s *stubSlowIngestService) IngestText(
 func TestIngestTextSurvivesServerWriteTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("jwt:\n  secret: test-secret\n  expire_hours: 1\n"), 0o600); err != nil {
+	// 存储配置要给全：本机 .env 里的 OSS 凭证会被 loadDotEnv 加载，
+	// 只填一半会撞上"要么全空、要么全满"的校验。
+	configContent := "app:\n  mode: test\nstorage:\n  oss:\n    endpoint: oss-cn-test.aliyuncs.com\n    bucket: narra-test\n    access_key_id: test-ak\n    access_key_secret: test-sk\njwt:\n  secret: test-secret\n  expire_hours: 1\n"
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := config.Load(configPath); err != nil {
