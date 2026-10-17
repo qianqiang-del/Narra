@@ -8,16 +8,15 @@ import (
 	"strings"
 	"time"
 
-	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
 	"narra/internal/repository"
+	"narra/pkg/config"
 	appcrypto "narra/pkg/crypto"
 	apperrors "narra/pkg/errors"
-	"narra/pkg/logger"
 	"narra/pkg/rerank"
 )
 
@@ -29,34 +28,53 @@ type rerankProber interface {
 	Probe(ctx context.Context) (rerank.ProbeResult, error)
 }
 
-// RerankRuntime 是检索侧的精排运行时（*pkg/rerank.Manager 满足它）。
-// 服务层只负责"什么时候换配置"，不关心"换了之后检索怎么用"。
-type RerankRuntime interface {
-	// Configure 用新配置替换当前生效的精排能力；配置非法时报错且保持原状。
-	Configure(cfg rerank.Config) error
-
-	// Disable 关闭精排（当前没有启用配置）。
-	Disable()
-}
-
 type rerankSettingService struct {
 	repo          repository.RerankSettingRepository
 	encryptionKey []byte
-	runtime       RerankRuntime
+	defaults      config.RerankConfig
 	newProber     func(cfg rerank.Config) (rerankProber, error)
 }
 
 // NewRerankSettingService 构造重排配置服务，encryptionKey 用于 API Key 的加解密，
-// runtime 是检索侧的热更新入口。
-func NewRerankSettingService(repo repository.RerankSettingRepository, encryptionKey []byte, runtime RerankRuntime) RerankSettingService {
+// defaults 是平台默认配置（config.yaml 的 rerank 段，只读、不落库）。
+//
+// 没有 runtime 参数：检索侧通过 CurrentRerank 按账号现取，保存/启停不需要向任何
+// 常驻组件推送（与 embedding 同一种装法）。
+func NewRerankSettingService(repo repository.RerankSettingRepository, encryptionKey []byte, defaults config.RerankConfig) RerankSettingService {
 	return &rerankSettingService{
 		repo:          repo,
 		encryptionKey: encryptionKey,
-		runtime:       runtime,
+		defaults:      defaults,
 		newProber: func(cfg rerank.Config) (rerankProber, error) {
 			return rerank.NewClient(cfg)
 		},
 	}
+}
+
+// CurrentRerank 返回该账号当前生效的精排连接配置：用户自己启用的配置优先，
+// 没有则回退平台默认；平台默认也没启用时返回 Enabled = false（精排关闭）。
+//
+// 它是 rag.RerankerProvider 的实现：装饰器每次检索现取一次，不持有跨请求状态。
+// ownerID 为 0（没有账号上下文）时按"没有用户配置"处理，直接回退平台默认。
+func (s *rerankSettingService) CurrentRerank(ctx context.Context, ownerID uint64) (config.RerankConfig, error) {
+	item, err := s.repo.GetEnabledByOwner(ctx, ownerID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return s.defaults, nil
+	}
+	if err != nil {
+		return config.RerankConfig{}, fmt.Errorf("查询启用的重排配置失败: %w", err)
+	}
+	apiKey, err := s.decrypt(item.APIKeyEncrypted)
+	if err != nil {
+		return config.RerankConfig{}, fmt.Errorf("解密重排 API Key 失败: %w", err)
+	}
+	return config.RerankConfig{
+		Enabled: true,
+		BaseURL: item.BaseURL,
+		APIKey:  apiKey,
+		Model:   item.Model,
+		Timeout: time.Duration(item.TimeoutSeconds) * time.Second,
+	}, nil
 }
 
 // List 返回全部配置，含未测试和已停用的，供设置页展示。
@@ -143,10 +161,6 @@ func (s *rerankSettingService) Update(ctx context.Context, id uint64, input requ
 	if err := s.repo.Update(ctx, item); err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeConflict, "更新重排配置失败", err)
 	}
-	// 关键字段变动会把生效配置打回停用；无论改的是不是启用中的那条，都重载一次。
-	if len(ownerIDs) == 0 {
-		s.reload(ctx)
-	}
 	dto := toRerankResponse(*item)
 	return &dto, nil
 }
@@ -165,10 +179,6 @@ func (s *rerankSettingService) Delete(ctx context.Context, id uint64, ownerIDs .
 	}
 	if err != nil {
 		return apperrors.NewWithErr(apperrors.CodeInternalError, "删除重排配置失败", err)
-	}
-	// 删掉的正好是启用中的那条时，重载会把精排关掉。
-	if len(ownerIDs) == 0 {
-		s.reload(ctx)
 	}
 	return nil
 }
@@ -202,20 +212,12 @@ func (s *rerankSettingService) Test(ctx context.Context, id uint64, ownerIDs ...
 		if err := s.repo.Update(ctx, item); err != nil {
 			return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "保存测试结果失败", err)
 		}
-		// 失败会停用配置：如果它正生效，运行时必须跟着关掉。
-		if len(ownerIDs) == 0 {
-			s.reload(ctx)
-		}
 		return nil, apperrors.New(apperrors.CodeBadRequest, message)
 	}
 
 	item.TestStatus, item.LastTestError = entity.RerankTestStatusSuccess, nil
 	if err := s.repo.Update(ctx, item); err != nil {
 		return nil, apperrors.NewWithErr(apperrors.CodeInternalError, "保存测试结果失败", err)
-	}
-	// 测试成功不改变启用状态，重载只是取最新（配置内容没变，代价可忽略）。
-	if len(ownerIDs) == 0 {
-		s.reload(ctx)
 	}
 	return &responsedto.RerankSettingTestResult{
 		Success: true,
@@ -245,67 +247,8 @@ func (s *rerankSettingService) SetEnabled(ctx context.Context, id uint64, enable
 		return nil, apperrors.New(apperrors.CodeNotFound, "重排配置不存在")
 	}
 	item.IsEnabled = enabled
-	// 启用/停用立即反映到检索侧：这是"设置页点一下开关，排序就变"的那根线。
-	if len(ownerIDs) == 0 {
-		s.reload(ctx)
-	}
 	dto := toRerankResponse(*item)
 	return &dto, nil
-}
-
-// LoadActive 在启动时把持久化的启用配置灌进检索侧运行时。
-// 没有启用记录时关闭精排并返回 nil —— "还没配过重排"不该让进程起不来。
-func (s *rerankSettingService) LoadActive(ctx context.Context) error {
-	item, err := s.repo.GetEnabled(ctx)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		s.runtime.Disable()
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("读取已保存的重排配置失败: %w", err)
-	}
-	apiKey, err := s.decrypt(item.APIKeyEncrypted)
-	if err != nil {
-		return fmt.Errorf("解密重排 API Key 失败: %w", err)
-	}
-	if err := s.runtime.Configure(rerank.Config{
-		BaseURL: item.BaseURL,
-		APIKey:  apiKey,
-		Model:   item.Model,
-		Timeout: time.Duration(item.TimeoutSeconds) * time.Second,
-	}); err != nil {
-		return fmt.Errorf("应用重排配置失败: %w", err)
-	}
-	return nil
-}
-
-// reload 把"当前启用配置"同步给检索侧运行时，供写操作落库后调用。
-//
-// 失败只告警、不上抛：配置已经保存成功，把请求判失败会让用户以为没存上；而重载
-// 只是"让运行中的检索立刻用上新配置"，下一次写操作或重启都会再对齐。
-func (s *rerankSettingService) reload(ctx context.Context) {
-	item, err := s.repo.GetEnabled(ctx)
-	switch {
-	case errors.Is(err, gorm.ErrRecordNotFound):
-		s.runtime.Disable()
-		return
-	case err != nil:
-		logger.Warn("读取启用的重排配置失败，精排保持当前状态", zap.Error(err))
-		return
-	}
-	apiKey, err := s.decrypt(item.APIKeyEncrypted)
-	if err != nil {
-		logger.Warn("解密重排 API Key 失败，精排保持当前状态", zap.Uint64("id", item.ID), zap.Error(err))
-		return
-	}
-	if err := s.runtime.Configure(rerank.Config{
-		BaseURL: item.BaseURL,
-		APIKey:  apiKey,
-		Model:   item.Model,
-		Timeout: time.Duration(item.TimeoutSeconds) * time.Second,
-	}); err != nil {
-		logger.Warn("应用重排配置失败，精排保持当前状态", zap.Uint64("id", item.ID), zap.Error(err))
-	}
 }
 
 // find 按 ID 取配置，取不到就是 404 语义。

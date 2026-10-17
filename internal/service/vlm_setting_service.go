@@ -14,6 +14,7 @@ import (
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
 	"narra/internal/repository"
+	"narra/pkg/config"
 	appcrypto "narra/pkg/crypto"
 	"narra/pkg/documentparser"
 	apperrors "narra/pkg/errors"
@@ -31,17 +32,20 @@ type vlmProber interface {
 type vlmSettingService struct {
 	repo          repository.VLMSettingRepository
 	encryptionKey []byte
+	defaults      config.VLMConfig
 	newProber     func(cfg vlm.Config) (vlmProber, error)
 }
 
-// NewVLMSettingService 构造视觉模型配置服务，encryptionKey 用于 API Key 的加解密。
+// NewVLMSettingService 构造视觉模型配置服务，encryptionKey 用于 API Key 的加解密，
+// defaults 是平台默认配置（config.yaml 的 vlm 段，只读、不落库）。
 //
-// 与重排配置不同，这里没有 runtime 参数：解析侧（rag.Ingester）每次解析时现读
-// "启用中的配置"，所以保存与启停不需要向任何常驻组件推送。
-func NewVLMSettingService(repo repository.VLMSettingRepository, encryptionKey []byte) VLMSettingService {
+// 与重排配置同一种装法：解析侧（rag.Ingester）每次解析时现读"启用中的配置"，
+// 所以保存与启停不需要向任何常驻组件推送。
+func NewVLMSettingService(repo repository.VLMSettingRepository, encryptionKey []byte, defaults config.VLMConfig) VLMSettingService {
 	return &vlmSettingService{
 		repo:          repo,
 		encryptionKey: encryptionKey,
+		defaults:      defaults,
 		newProber: func(cfg vlm.Config) (vlmProber, error) {
 			return vlm.NewClient(cfg)
 		},
@@ -49,7 +53,10 @@ func NewVLMSettingService(repo repository.VLMSettingRepository, encryptionKey []
 }
 
 // CurrentVision 返回当前启用的视觉模型配置（含解密后的 API Key），供收录链路在
-// 解析时下发给 Python 脚本。没有启用项时 ok = false —— 那是"视觉理解关闭"，不是错误；
+// 解析时下发给 Python 脚本。
+//
+// 解析顺序：该账号启用的配置 → 平台默认（config.yaml 的 vlm 段）→ 未启用。
+// 没有可用配置时 ok = false —— 那是"视觉理解关闭"（解析只走 OCR），不是错误；
 // 查库或解密失败才返回 error（调用方应降级为纯 OCR 并留日志，而不是让文档失败）。
 func (s *vlmSettingService) CurrentVision(ctx context.Context, ownerIDs ...uint64) (documentparser.VLMConfig, bool, error) {
 	var item *entity.VLMSetting
@@ -60,7 +67,7 @@ func (s *vlmSettingService) CurrentVision(ctx context.Context, ownerIDs ...uint6
 		item, err = s.repo.GetEnabled(ctx)
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return documentparser.VLMConfig{}, false, nil
+		return s.defaultVision(), s.defaults.Enabled, nil
 	}
 	if err != nil {
 		return documentparser.VLMConfig{}, false, err
@@ -75,6 +82,17 @@ func (s *vlmSettingService) CurrentVision(ctx context.Context, ownerIDs ...uint6
 		Model:      item.Model,
 		Timeout:    time.Duration(item.TimeoutSeconds) * time.Second,
 	}, true, nil
+}
+
+// defaultVision 把平台默认配置转成解析脚本要的结构。
+// 只在 defaults.Enabled 为真时被采用（调用处直接拿它当 ok 返回）。
+func (s *vlmSettingService) defaultVision() documentparser.VLMConfig {
+	return documentparser.VLMConfig{
+		APIBaseURL: s.defaults.BaseURL,
+		APIKey:     s.defaults.APIKey,
+		Model:      s.defaults.Model,
+		Timeout:    s.defaults.Timeout,
+	}
 }
 
 // List 返回全部配置，含未测试和已停用的，供设置页展示。

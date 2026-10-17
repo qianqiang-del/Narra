@@ -30,7 +30,6 @@ import (
 	"narra/pkg/documentparser"
 	"narra/pkg/logger"
 	"narra/pkg/objectstorage"
-	"narra/pkg/rerank"
 	"narra/pkg/sms"
 	"narra/pkg/tts"
 
@@ -262,8 +261,6 @@ func (a *App) initDependencies() error {
 	llmProviderRepo := repository.NewLLMProviderRepository(a.postgresDB)
 	rerankSettingRepo := repository.NewRerankSettingRepository(a.postgresDB)
 	vlmSettingRepo := repository.NewVLMSettingRepository(a.postgresDB)
-	// 私人重排配置不能加载到进程级 manager；检索侧接入用户上下文后按用户选用。
-	rerankManager := rerank.NewManager()
 	classroomRepo := repository.NewClassroomRepository(a.postgresDB)
 	folderRepo := repository.NewFolderRepository(a.postgresDB)
 	classroomAgentRepo := repository.NewClassroomAgentRepository(a.postgresDB)
@@ -323,9 +320,14 @@ func (a *App) initDependencies() error {
 	}
 
 	// 视觉模型（VLM）配置：设置页维护"多存一条、同时只启用一条"，收录解析时
-	// 按需读取启用中的那条下发给 Python 脚本（见 rag.IngestOptions.Vision）。
-	// 与重排/嵌入不同，这里没有常驻运行时需要推送：解析是按次读库的。
-	vlmSettingSvc := service.NewVLMSettingService(vlmSettingRepo, encryptionKey)
+	// 按文档归属账号读取启用中的那条（缺失回退 config.yaml 的 vlm 平台默认）下发给
+	// Python 脚本（见 rag.IngestOptions.Vision）。解析是按次读库的，没有常驻运行时。
+	vlmSettingSvc := service.NewVLMSettingService(vlmSettingRepo, encryptionKey, a.cfg.VLM)
+
+	// 重排配置同样是"多存一条、只启用一条"，检索时按请求账号解析
+	// （用户启用项优先，缺失回退 config.yaml 的 rerank 平台默认）。
+	// 没有常驻运行时需要推送：rag.Reranked 每次检索现取一次。
+	rerankSettingSvc := service.NewRerankSettingService(rerankSettingRepo, encryptionKey, a.cfg.Rerank)
 
 	// ========== 创建 Router ==========
 	// 收录链路归 internal/rag，服务层只做 DTO 映射与文档查询。与 MCP 同一种装法：
@@ -420,15 +422,10 @@ func (a *App) initDependencies() error {
 		return fmt.Errorf("创建多查询检索失败: %w", err)
 	}
 	// 精排装饰器包在最外层：两层 RRF 融合后只精排一次、在截断到 top_k 之前完成。
-	// 是否生效由 rerankManager 决定（设置页保存/启停即时生效）；关闭时原样透传，
-	// 行为与"没包这一层"完全一致。
+	// 是否生效由 rerankSettingSvc 按账号解析（设置页保存/启停即时生效）；关闭时
+	// 原样透传，行为与"没包这一层"完全一致。
 	var knowledgeRetrieval rag.Searcher = multiRetrieval
-	reranked, err := rag.NewReranked(knowledgeRetrieval, func() rag.Reranker {
-		if client := rerankManager.Current(); client != nil {
-			return client
-		}
-		return nil
-	})
+	reranked, err := rag.NewReranked(knowledgeRetrieval, rerankSettingSvc)
 	if err != nil {
 		return fmt.Errorf("创建精排装饰器失败: %w", err)
 	}
@@ -469,8 +466,6 @@ func (a *App) initDependencies() error {
 	}
 
 	llmProviderSvc := service.NewLLMProviderService(llmProviderRepo, encryptionKey, a.mcpManager, a.cfg.DefaultLLM)
-	// 设置页保存的重排配置按用户存储，不在启动时覆盖共享运行时。
-	rerankSettingSvc := service.NewRerankSettingService(rerankSettingRepo, encryptionKey, rerankManager)
 	audioDir := a.cfg.Storage.AudioDir
 	if audioDir == "" {
 		audioDir = "data/audio"

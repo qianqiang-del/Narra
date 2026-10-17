@@ -5,6 +5,7 @@ import (
 
 	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
+	"narra/pkg/config"
 )
 
 // RerankSettingService 是重排服务配置的 HTTP 面。
@@ -12,6 +13,9 @@ import (
 // 与「大模型」配置同一种形态：表里可以留多条，同一时间只有一条启用（由 is_enabled 上的
 // 部分唯一索引在数据库层保证），检索精排只使用启用中的那条。启用前必须先测试连接——
 // 让精排拿着一个必然失败的配置上线，比不精排更糟。
+//
+// 配置分两层：用户自己的（落库、按账号生效）与平台默认（config.yaml 的 rerank 段，
+// 只读）。检索时按账号解析：用户启用项优先，缺失回退平台默认（见 CurrentRerank）。
 type RerankSettingService interface {
 	// List 返回全部配置，含未测试与已停用的，供设置页展示。
 	List(ctx context.Context, ownerID ...uint64) ([]responsedto.RerankSetting, error)
@@ -30,11 +34,11 @@ type RerankSettingService interface {
 	Test(ctx context.Context, id uint64, ownerID ...uint64) (*responsedto.RerankSettingTestResult, error)
 
 	// SetEnabled 切换启用状态；未测试通过的配置不允许启用。
-	// 启用一条会取消其它配置的启用状态（同事务完成）。
+	// 启用一条会取消该账号其它配置的启用状态（同事务完成）。
 	SetEnabled(ctx context.Context, id uint64, enabled bool, ownerID ...uint64) (*responsedto.RerankSetting, error)
 
-	// LoadActive 在启动时把持久化的"启用配置"灌进检索侧运行时；没有启用记录时
-	// 关闭精排并返回 nil。读到记录却还原失败（密钥解不开、参数非法）才返回错误，
-	// 那是真的配置损坏，启动时就暴露比运行时才炸好。
-	LoadActive(ctx context.Context) error
+	// CurrentRerank 返回该账号当前生效的连接配置：用户启用项优先，缺失回退平台默认
+	// （可能 Enabled = false，表示精排关闭）。它是 rag.RerankerProvider 的实现，
+	// 装饰器每次检索现取一次。
+	CurrentRerank(ctx context.Context, ownerID uint64) (config.RerankConfig, error)
 }

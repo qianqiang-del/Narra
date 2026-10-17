@@ -11,6 +11,7 @@ import (
 
 	requestdto "narra/internal/model/dto/request"
 	"narra/internal/model/entity"
+	"narra/pkg/config"
 	appcrypto "narra/pkg/crypto"
 	"narra/pkg/rerank"
 )
@@ -76,6 +77,16 @@ func (f *fakeRerankRepo) SetEnabledForOwner(ctx context.Context, id, ownerID uin
 func (f *fakeRerankRepo) GetEnabled(context.Context) (*entity.RerankSetting, error) {
 	for index := range f.items {
 		if f.items[index].IsEnabled {
+			item := f.items[index]
+			return &item, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (f *fakeRerankRepo) GetEnabledByOwner(_ context.Context, ownerID uint64) (*entity.RerankSetting, error) {
+	for index := range f.items {
+		if f.items[index].IsEnabled && f.items[index].OwnerID == ownerID {
 			item := f.items[index]
 			return &item, nil
 		}
@@ -150,27 +161,14 @@ func (f *fakeRerankProber) Probe(context.Context) (rerank.ProbeResult, error) {
 	return f.result, f.err
 }
 
-// fakeRerankRuntime 是检索侧运行时的替身：记录"被配置了什么/被关了几次"。
-type fakeRerankRuntime struct {
-	configured []rerank.Config
-	disabled   int
-}
-
-func (f *fakeRerankRuntime) Configure(cfg rerank.Config) error {
-	f.configured = append(f.configured, cfg)
-	return nil
-}
-
-func (f *fakeRerankRuntime) Disable() { f.disabled++ }
-
 var rerankTestKey = []byte("0123456789abcdef0123456789abcdef")
 
-// newRerankTestService 造一个注入了替身探测器与替身运行时的服务；
-// 返回替身仓储便于断言落库结果，运行时用 impl.runtime.(*fakeRerankRuntime) 取。
+// newRerankTestService 造一个注入了替身探测器的服务；
+// 返回替身仓储便于断言落库结果。
 func newRerankTestService(t *testing.T) (RerankSettingService, *rerankSettingService, *fakeRerankRepo) {
 	t.Helper()
 	repo := newFakeRerankRepo()
-	svc := NewRerankSettingService(repo, rerankTestKey, &fakeRerankRuntime{}).(*rerankSettingService)
+	svc := NewRerankSettingService(repo, rerankTestKey, config.RerankConfig{}).(*rerankSettingService)
 	return svc, svc, repo
 }
 
@@ -439,91 +437,95 @@ func TestRerankDelete(t *testing.T) {
 	}
 }
 
-// 启用/停用即时生效：运行时被 Configure（带解密后的 Key）或被 Disable。
-func TestRerankSetEnabledHotReloadsRuntime(t *testing.T) {
-	svc, impl, repo := newRerankTestService(t)
-	runtime := impl.runtime.(*fakeRerankRuntime)
-	ctx := context.Background()
-
-	ready := seedRerankSetting(t, repo, entity.RerankTestStatusSuccess, false)
-	if _, err := svc.SetEnabled(ctx, ready.ID, true); err != nil {
-		t.Fatalf("启用失败: %v", err)
+// CurrentRerank：该账号没有启用配置且平台默认未启用 → 精排关闭。
+func TestRerankCurrentFallsBackToDisabled(t *testing.T) {
+	svc, _, _ := newRerankTestService(t)
+	cfg, err := svc.CurrentRerank(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
 	}
-	if len(runtime.configured) != 1 {
-		t.Fatalf("启用应把生效配置推给运行时，实际 %d 次", len(runtime.configured))
-	}
-	cfg := runtime.configured[0]
-	if cfg.BaseURL != ready.BaseURL || cfg.Model != ready.Model || cfg.APIKey != "sk-seed" || cfg.Timeout != 2*time.Second {
-		t.Errorf("推给运行时的配置不对: %+v", cfg)
-	}
-
-	if _, err := svc.SetEnabled(ctx, ready.ID, false); err != nil {
-		t.Fatalf("停用失败: %v", err)
-	}
-	if runtime.disabled != 1 {
-		t.Errorf("停用应关闭运行时，实际 %d 次", runtime.disabled)
+	if cfg.Enabled {
+		t.Fatalf("没有用户配置也没有平台默认时应当关闭: %+v", cfg)
 	}
 }
 
-// 删除启用中的配置：运行时跟着关闭（不自动切到别的配置）。
-func TestRerankDeleteEnabledDisablesRuntime(t *testing.T) {
-	svc, impl, repo := newRerankTestService(t)
-	runtime := impl.runtime.(*fakeRerankRuntime)
-	ctx := context.Background()
-	item := seedRerankSetting(t, repo, entity.RerankTestStatusSuccess, true)
-
-	if err := svc.Delete(ctx, item.ID); err != nil {
-		t.Fatalf("删除失败: %v", err)
+// CurrentRerank：该账号没有启用配置 → 回退平台默认（含密钥）。
+func TestRerankCurrentFallsBackToPlatformDefault(t *testing.T) {
+	repo := newFakeRerankRepo()
+	defaults := config.RerankConfig{
+		Enabled: true, BaseURL: "https://api.siliconflow.cn/v1", APIKey: "sk-default",
+		Model: "BAAI/bge-reranker-v2-m3", Timeout: 5 * time.Second,
 	}
-	if runtime.disabled != 1 {
-		t.Errorf("删除启用中的配置后应关闭运行时，实际 %d 次", runtime.disabled)
+	svc := NewRerankSettingService(repo, rerankTestKey, defaults).(*rerankSettingService)
+
+	cfg, err := svc.CurrentRerank(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if !cfg.Enabled || cfg.BaseURL != defaults.BaseURL || cfg.APIKey != "sk-default" ||
+		cfg.Model != defaults.Model || cfg.Timeout != 5*time.Second {
+		t.Fatalf("应当原样回退平台默认: %+v", cfg)
 	}
 }
 
-// 测试失败会停用配置，运行时同步关闭。
-func TestRerankTestFailureDisablesRuntime(t *testing.T) {
-	svc, impl, repo := newRerankTestService(t)
-	runtime := impl.runtime.(*fakeRerankRuntime)
-	ctx := context.Background()
-	item := seedRerankSetting(t, repo, entity.RerankTestStatusSuccess, true)
+// CurrentRerank：用户启用项优先于平台默认，密钥解密后返回；其它账号看不到它。
+func TestRerankCurrentPrefersOwnerSetting(t *testing.T) {
+	repo := newFakeRerankRepo()
+	defaults := config.RerankConfig{
+		Enabled: true, BaseURL: "https://default.example/v1", APIKey: "sk-default",
+		Model: "default-model", Timeout: 5 * time.Second,
+	}
+	svc := NewRerankSettingService(repo, rerankTestKey, defaults).(*rerankSettingService)
 
-	impl.newProber = func(rerank.Config) (rerankProber, error) {
-		return &fakeRerankProber{err: fmt.Errorf("boom")}, nil
+	item := seedRerankSetting(t, repo, entity.RerankTestStatusSuccess, true)
+	repo.items[0].OwnerID = 7
+
+	cfg, err := svc.CurrentRerank(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
 	}
-	if _, err := svc.Test(ctx, item.ID); err == nil {
-		t.Fatal("探测失败应当报错")
+	if !cfg.Enabled || cfg.BaseURL != item.BaseURL || cfg.Model != item.Model ||
+		cfg.APIKey != "sk-seed" || cfg.Timeout != 2*time.Second {
+		t.Fatalf("用户启用项应当优先: %+v", cfg)
 	}
-	if runtime.disabled != 1 {
-		t.Errorf("测试失败停用配置后应关闭运行时，实际 %d 次", runtime.disabled)
+
+	other, err := svc.CurrentRerank(context.Background(), 8)
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if other.APIKey != "sk-default" || other.Model != "default-model" {
+		t.Fatalf("其它账号应当回退平台默认: %+v", other)
 	}
 }
 
-// LoadActive：没有启用记录时关闭运行时；有记录时按解密后的配置生效；坏密钥报错。
-func TestRerankLoadActive(t *testing.T) {
-	svc, impl, repo := newRerankTestService(t)
-	runtime := impl.runtime.(*fakeRerankRuntime)
-	ctx := context.Background()
+// CurrentRerank：账号有配置但未启用 → 不算"用户配置"，回退平台默认。
+func TestRerankCurrentIgnoresDisabledOwnerSetting(t *testing.T) {
+	repo := newFakeRerankRepo()
+	defaults := config.RerankConfig{Enabled: true, BaseURL: "https://default.example/v1", Model: "default-model", Timeout: 5 * time.Second}
+	svc := NewRerankSettingService(repo, rerankTestKey, defaults).(*rerankSettingService)
 
-	if err := svc.LoadActive(ctx); err != nil {
-		t.Fatalf("没有配置时应正常关闭: %v", err)
-	}
-	if runtime.disabled != 1 || len(runtime.configured) != 0 {
-		t.Errorf("应关闭运行时: disabled=%d configured=%d", runtime.disabled, len(runtime.configured))
-	}
+	item := seedRerankSetting(t, repo, entity.RerankTestStatusSuccess, false)
 
-	item := seedRerankSetting(t, repo, entity.RerankTestStatusSuccess, true)
-	if err := svc.LoadActive(ctx); err != nil {
-		t.Fatalf("加载失败: %v", err)
+	cfg, err := svc.CurrentRerank(context.Background(), item.OwnerID)
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
 	}
-	if len(runtime.configured) != 1 || runtime.configured[0].APIKey != "sk-seed" {
-		t.Errorf("应把启用配置推给运行时: %+v", runtime.configured)
+	if cfg.Model != "default-model" {
+		t.Fatalf("未启用的用户配置不应生效: %+v", cfg)
 	}
+}
 
-	item.APIKeyEncrypted = "not-a-valid-ciphertext"
-	if err := repo.Update(ctx, item); err != nil {
-		t.Fatalf("写坏配置失败: %v", err)
-	}
-	if err := svc.LoadActive(ctx); err == nil {
-		t.Error("密钥解不开时 LoadActive 应当报错（启动时暴露配置损坏）")
+// CurrentRerank：启用项密钥解不开时报错（调用方降级为不精排），不静默回退默认。
+func TestRerankCurrentReportsBrokenKey(t *testing.T) {
+	repo := newFakeRerankRepo()
+	defaults := config.RerankConfig{Enabled: true, BaseURL: "https://default.example/v1", Model: "m", Timeout: time.Second}
+	svc := NewRerankSettingService(repo, rerankTestKey, defaults).(*rerankSettingService)
+
+	seedRerankSetting(t, repo, entity.RerankTestStatusSuccess, true)
+	repo.items[0].OwnerID = 9
+	repo.items[0].APIKeyEncrypted = "not-a-valid-ciphertext"
+
+	if _, err := svc.CurrentRerank(context.Background(), 9); err == nil {
+		t.Fatal("密钥解不开时应当报错，而不是静默回退平台默认")
 	}
 }

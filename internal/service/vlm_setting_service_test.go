@@ -11,6 +11,7 @@ import (
 
 	requestdto "narra/internal/model/dto/request"
 	"narra/internal/model/entity"
+	"narra/pkg/config"
 	appcrypto "narra/pkg/crypto"
 	"narra/pkg/vlm"
 )
@@ -166,7 +167,7 @@ var vlmTestKey = []byte("0123456789abcdef0123456789abcdef")
 func newVLMTestService(t *testing.T) (VLMSettingService, *vlmSettingService, *fakeVLMRepo) {
 	t.Helper()
 	repo := newFakeVLMRepo()
-	svc := NewVLMSettingService(repo, vlmTestKey).(*vlmSettingService)
+	svc := NewVLMSettingService(repo, vlmTestKey, config.VLMConfig{}).(*vlmSettingService)
 	return svc, svc, repo
 }
 
@@ -533,5 +534,39 @@ func TestVLMCurrentVision(t *testing.T) {
 	}
 	if _, _, err := svc.CurrentVision(ctx); err == nil {
 		t.Error("密钥解不开时应当报错（调用方据此降级为纯 OCR）")
+	}
+}
+
+// CurrentVision：账号没有启用配置 → 回退平台默认；用户启用项优先；未启用的不算数。
+func TestVLMCurrentVisionFallsBackToPlatformDefault(t *testing.T) {
+	repo := newFakeVLMRepo()
+	defaults := config.VLMConfig{
+		Enabled: true, BaseURL: "https://api.siliconflow.cn/v1", APIKey: "sk-default",
+		Model: "Qwen/Qwen3.5-35B-A3B", Timeout: 60 * time.Second,
+	}
+	svc := NewVLMSettingService(repo, vlmTestKey, defaults).(*vlmSettingService)
+	ctx := context.Background()
+
+	cfg, ok, err := svc.CurrentVision(ctx, 42)
+	if err != nil || !ok {
+		t.Fatalf("应当回退平台默认: ok=%v err=%v", ok, err)
+	}
+	if cfg.APIBaseURL != defaults.BaseURL || cfg.APIKey != "sk-default" ||
+		cfg.Model != defaults.Model || cfg.Timeout != 60*time.Second {
+		t.Fatalf("平台默认配置不对: %+v", cfg)
+	}
+
+	item := seedVLMSetting(t, repo, entity.VLMTestStatusSuccess, true)
+	repo.items[0].OwnerID = 42
+	cfg, ok, err = svc.CurrentVision(ctx, 42)
+	if err != nil || !ok || cfg.APIKey != "sk-seed" || cfg.Model != item.Model {
+		t.Fatalf("用户启用项应当优先: ok=%v err=%v cfg=%+v", ok, err, cfg)
+	}
+
+	// 未启用的用户配置不算数：回退平台默认。
+	repo.items[0].IsEnabled = false
+	cfg, ok, err = svc.CurrentVision(ctx, 42)
+	if err != nil || !ok || cfg.Model != defaults.Model {
+		t.Fatalf("未启用的用户配置不应生效: ok=%v err=%v cfg=%+v", ok, err, cfg)
 	}
 }
