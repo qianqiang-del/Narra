@@ -37,7 +37,11 @@ sms:
   code_type: 1
   case_auth_policy: 1
 embedding:
-  enabled: false
+  enabled: true
+  base_url: https://api.siliconflow.cn/v1
+  model: Qwen/Qwen3-Embedding-0.6B
+  timeout: 120s
+  dimensions: 1024
 default_llm:
   enabled: true
   name: "平台默认模型"
