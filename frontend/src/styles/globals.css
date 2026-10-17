@@ -105,10 +105,9 @@
 }
 
 :root {
-  /* Inter is loaded from @fontsource in app/layout.tsx, which declares one
-     @font-face per unicode subset. Previously this came from next/font wrapping
-     a single latin-only file, which left Cyrillic and Vietnamese text to OS
-     fallback fonts. */
+  /* Inter 由 app/layout.tsx 里的 @fontsource 加载，每个 unicode 子集声明一个
+     @font-face。此前用 next/font 只包一个 latin 文件，导致西里尔文与越南文
+     只能落到系统兜底字体。 */
   --font-sans: 'PingFang SC', 'Microsoft YaHei', 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
   --font-display: 'Noto Serif SC', 'Songti SC', 'STSong', Georgia, serif;
 
@@ -259,38 +258,33 @@
     @apply border-border outline-ring/50;
   }
   html {
-    /* Reserve the vertical scrollbar gutter so the layout doesn't shift
-       horizontally when content grows past / shrinks below one viewport
-       (e.g. expanding/collapsing recent classrooms). `scrollbar-gutter:
-       stable` alone does that job — measured on Chrome 09-21: the gutter
-       space is kept whether or not the bar is actually painted, so the
-       content box stays 1265px wide either way and nothing moves.
+    /* 预留纵向滚动条槽位：内容超过/不足一屏时（例如展开/收起最近课堂），
+       布局不会横向跳动。只靠 `scrollbar-gutter: stable` 就能做到 ——
+       Chrome 实测（09-21）：无论滚动条是否真的绘制，槽位都保留，
+       内容盒始终是 1265px 宽，不会发生任何位移。
 
-       ⚠️ Do NOT reintroduce `overflow-y: scroll` here. The body's overflow is
-       only propagated to the viewport while html's computed overflow stays
-       `visible` (CSS Overflow §3). `overflow-y: scroll` makes it non-visible,
-       which silently disabled every scroll lock in the app: reka-ui writes
-       `overflow: hidden` on body (UploadRecordDrawer does the same by hand)
-       and the page kept scrolling behind the overlay. It also misled reka-ui
-       into "compensating" for a scrollbar that never disappeared, shifting the
-       whole page sideways on open/close. See App.vue for the compensation. */
+       ⚠️ 不要在这里重新引入 `overflow-y: scroll`。只有当 html 的计算 overflow
+       保持 `visible` 时，body 的 overflow 才会传播到视口（CSS Overflow §3）。
+       `overflow-y: scroll` 会让它不再是 visible，从而悄无声息地废掉应用里
+       所有滚动锁：reka-ui 会给 body 写 `overflow: hidden`（UploadRecordDrawer
+       也手写了一份），页面却仍在遮罩后面滚动。这还会误导 reka-ui 去为一个
+       永远不会消失的滚动条做「补偿」，开关时把整页横向推歪。补偿见 App.vue。 */
     scrollbar-gutter: stable;
   }
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
   }
-  /* Modal overlays that lock body scroll normally compensate for the removed
-     page scrollbar by adding right-side spacing on <body>. This app already
-     reserves the scrollbar gutter on <html> (above), so no scrollbar is ever
-     removed and that compensation is a pure horizontal shift.
+  /* 锁定 body 滚动的弹层通常会为消失的页面滚动条补一段右侧间距。
+     本应用已在 <html> 上预留滚动条槽位（见上），滚动条从不会消失，
+     所以那份补偿只会变成纯横向位移。
 
-     reka-ui (every dialog we have) is handled at the source instead: see
-     `:scroll-body="{ padding: 0, margin: 0 }"` on the ConfigProvider in App.vue.
-     It does NOT set `data-scroll-locked` (that attribute came from the React
-     port's react-remove-scroll), so the selectors below no longer cover our
-     dialogs — they stay as a backstop for any modal mounted outside that
-     provider, since `!important` beats an inline style. */
+     reka-ui（我们所有的对话框都走它）改在源头解决：见 App.vue 中
+     ConfigProvider 的 `:scroll-body="{ padding: 0, margin: 0 }"`。
+     它不会设置 `data-scroll-locked`（那个属性来自 React 移植版的
+     react-remove-scroll），所以下面的选择器已不再覆盖我们的对话框 ——
+     它们保留作兜底，服务于任何挂在该 Provider 之外的弹层，
+     因为 `!important` 能压过内联样式。 */
   body[data-maic-editor='true'],
   body[data-scroll-locked] {
     padding-right: 0 !important;
@@ -298,7 +292,7 @@
   }
 }
 
-/* Narra visual system: shared by every route, including teammate-owned pages. */
+/* Narra 视觉系统：所有路由共用，包括队友负责的页面。 */
 .narra-shell {
   min-height: 100dvh;
   background: var(--background);
@@ -346,8 +340,8 @@
   display: none !important;
 }
 
-/* Page-level surfaces. Keeping this here means teammate pages receive the
-   same visual language without changing their data flow or route contracts. */
+/* 页面级表面。放在这里意味着队友页面无需改动数据流或路由契约，
+   就能获得同一套视觉语言。 */
 .narra-shell .narra-page {
   background-image: none !important;
   background-color: var(--background) !important;
@@ -696,8 +690,8 @@
   background-color: var(--card) !important;
 }
 
-/* Common teammate page surfaces. These selectors intentionally target named
-   application regions, not arbitrary lecture HTML or user-authored content. */
+/* 队友页面公共表面。这些选择器刻意只作用于具名的应用区域，
+   而不是任意讲义 HTML 或用户生成内容。 */
 .narra-shell [data-testid='workspace-rail'] {
   background: var(--surface-2) !important;
   border-color: var(--border) !important;
@@ -733,7 +727,7 @@
   }
 }
 
-/* Page titles should carry the editorial character; dense controls stay sans. */
+/* 页面标题保留编辑感；密集控件保持无衬线。 */
 .narra-shell .narra-home h1,
 .narra-shell .narra-generating h1,
 .narra-shell .narra-preview h1,
@@ -742,37 +736,33 @@
   font-weight: 500;
 }
 
-/* ProseMirror Editor Styles */
+/* ProseMirror 编辑器样式 */
 .prosemirror-editor {
   cursor: text;
 }
 
-/* The slide editor draws a text element's frame via the renderer's Operate
-   layer. The focused contenteditable must not also paint a UA focus ring on
-   top of it (the base `* { @apply outline-ring/50 }` rule gives every focused
-   element an outline). `.prosemirror-editor` is an editor-only class —
-   playback's BaseTextElement never carries it, so playback is unaffected. */
+/* 幻灯片编辑器通过渲染器的 Operate 层绘制文本元素的边框。获得焦点的
+   contenteditable 不能再叠画一层浏览器默认焦点环（基础规则
+   `* { @apply outline-ring/50 }` 会给每个聚焦元素描边）。`.prosemirror-editor`
+   是编辑器专属 class —— 播放态的 BaseTextElement 从不携带它，播放不受影响。 */
 .prosemirror-editor :focus,
 .prosemirror-editor :focus-visible {
   outline: none;
 }
 
-/* Tailwind's preflight resets `list-style: none` and `padding: 0` on
-   `<ul>`/`<ol>`. The text element's `bulletList` / `orderedList` commands
-   genuinely wrap content in `<ul><li>` / `<ol><li>`, but without those
-   resets undone no marker would be visible. `!important` defeats any
-   layered preflight specificity we'd otherwise have to chase.
+/* Tailwind 的 preflight 会给 `<ul>`/`<ol>` 重置 `list-style: none` 与
+   `padding: 0`。文本元素的 `bulletList` / `orderedList` 命令确实会包出
+   `<ul><li>` / `<ol><li>`，但不撤销这些重置，一个标记都看不见。
+   `!important` 用来压过分层的 preflight 特异性。
 
-   `.editable-element-text` is the PLAYBACK text wrapper, rendered for every
-   classroom/playback user — not just in the editor. So its rules MUST be
-   scoped to editor mode (`body[data-maic-editor='true']`, set by
-   EditChromeRoot while Pro mode is mounted) to keep flag-off playback
-   rendering byte-unchanged: the editor surface isn't GA yet, so playback
-   display of editor-authored lists is deferred. Scoping keeps list markers
-   visible while editing (the user needs to see their bullets) without
-   altering how the same wrapper renders during normal playback for all
-   users. `.prosemirror-editor` is an editor-only class already (playback's
-   BaseTextElement never carries it), so it stays unscoped. */
+   `.editable-element-text` 是播放态文本包裹层，每个课堂/播放用户都会渲染 ——
+   不只在编辑器里。所以它的规则必须限定在编辑器模式
+   （`body[data-maic-editor='true']`，由 EditChromeRoot 在 Pro 模式挂载时设置），
+   让关闭开关的播放态渲染保持逐字节不变：编辑器界面还没 GA，
+   编辑态列表在播放中的显示因此暂缓。限定作用域既让编辑时能看到列表标记
+   （用户需要看见自己的项目符号），又不改变同一包裹层在正常播放时对所有人的
+   渲染。`.prosemirror-editor` 本就是编辑器专属 class（播放态的 BaseTextElement
+   从不携带），所以它保持不限定。 */
 body[data-maic-editor='true'] .editable-element-text ul,
 .prosemirror-editor ul {
   list-style: disc outside !important;
@@ -788,9 +778,8 @@ body[data-maic-editor='true'] .editable-element-text li,
   display: list-item !important;
 }
 
-/* Compact react-colorful for the slide editor's color popover. Defaults are
-   a 200×200 square with a thick separator — we squeeze it tight + round it
-   so the popover feels intentional, not stock. */
+/* 为幻灯片编辑器的颜色弹层定制紧凑版 react-colorful。默认是 200×200 的
+   方块加粗分隔线 —— 我们把它收紧 + 圆角，让弹层显得是刻意设计而非原生控件。 */
 .color-picker .react-colorful {
   width: 100%;
   height: auto;
@@ -818,7 +807,7 @@ body[data-maic-editor='true'] .editable-element-text li,
     default !important;
 }
 
-/* Animation for audio visualizer */
+/* 音频可视化动画 */
 @keyframes wave {
   0%,
   100% {
@@ -829,7 +818,7 @@ body[data-maic-editor='true'] .editable-element-text li,
   }
 }
 
-/* Breathing bars for presentation speech bubbles (parent is h-3.5 = 14px) */
+/* 课堂发言气泡的呼吸条（父容器 h-3.5 = 14px） */
 @keyframes breathing-bar-1 {
   0%,
   100% {
@@ -858,7 +847,7 @@ body[data-maic-editor='true'] .editable-element-text li,
   }
 }
 
-/* Hide scrollbar by default, show on hover */
+/* 默认隐藏滚动条，悬停时显示 */
 @utility scrollbar-hide {
   &::-webkit-scrollbar {
     display: none;
@@ -867,7 +856,7 @@ body[data-maic-editor='true'] .editable-element-text li,
   scrollbar-width: none;
 }
 
-/* PBL v2 workspace scrollbars: scoped so the rest of OpenMAIC keeps native behavior. */
+/* PBL v2 工作区滚动条：限定作用域，OpenMAIC 其余部分保持原生行为。 */
 [data-pbl-workspace='true'] .pbl-v2-scrollbar,
 [data-pbl-workspace='true'] .pbl-v2-scroll-fade {
   scrollbar-color: rgb(224 231 255 / 0.44) transparent;
@@ -1088,7 +1077,7 @@ body[data-maic-editor='true'] .editable-element-text li,
   backdrop-filter: blur(12px) saturate(1.05);
 }
 
-/* Shimmer sweep for skeleton loading */
+/* 骨架屏加载的微光扫过动画 */
 @keyframes shimmer {
   0% {
     transform: translateX(-100%);
@@ -1098,7 +1087,7 @@ body[data-maic-editor='true'] .editable-element-text li,
   }
 }
 
-/* Confetti fall — classroom completion page (doc §6.9, 55 pieces) */
+/* 彩带飘落 —— 课堂完成页（文档 §6.9，55 片） */
 @keyframes confetti-fall {
   0% {
     transform: translateY(0) rotate(0deg);
@@ -1110,7 +1099,7 @@ body[data-maic-editor='true'] .editable-element-text li,
   }
 }
 
-/* Breathing animation for interactive mode button */
+/* 互动模式按钮的呼吸动画 */
 @keyframes interactive-mode-breathe {
   0%,
   100% {
@@ -1123,7 +1112,7 @@ body[data-maic-editor='true'] .editable-element-text li,
   }
 }
 
-/* PBL v2 — thinking dots pulse (wider swing for visibility on dark bg) */
+/* PBL v2 —— 思考点脉冲（深色背景上加大摆幅以提高可见性） */
 @keyframes think-dot-pulse {
   0%,
   100% {
@@ -1134,9 +1123,8 @@ body[data-maic-editor='true'] .editable-element-text li,
   }
 }
 
-/* Cursor-style "Thinking…" indicator: a bright band sweeps left→right across
-   muted text (gradient clipped to glyphs). Used by the AI sidebar while the
-   agent run streams and nothing has arrived yet. */
+/* 光标式「思考中…」指示：一条亮带在灰色文字上从左→右扫过（渐变裁切到字形）。
+   AI 侧栏在 Agent 运行流出、还没有任何内容到达时使用。 */
 @keyframes ai-thinking-shimmer {
   0% {
     background-position: 150% 0;

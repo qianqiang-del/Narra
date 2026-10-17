@@ -45,7 +45,7 @@ type Participant struct {
 	AgentKey         string // 角色池稳定标识，用于前端匹配头像与发言状态
 	Name             string // 显示名，写入 sender_snapshot / agent_snapshot
 	Role             string // teacher / student 等
-	RoleType         string // teacher / assistant / student
+	RoleType         string // 取值：teacher / assistant / student
 	Persona          string // 人设提示词
 }
 

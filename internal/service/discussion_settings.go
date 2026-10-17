@@ -86,7 +86,7 @@ func (s *discussionService) UpdateSettings(ctx context.Context, classroomID uint
 	if err := ensureClassroomAccess(ctx, s.classrooms, classroomID); err != nil {
 		return nil, err
 	}
-	// Read only for existence: a damaged previous selection must still be repairable.
+	// 这里只读出存在性：旧选择即使已损坏，也必须还能被修好。
 	classroom, err := s.classrooms.FindByID(ctx, classroomID)
 	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && classroom == nil) {
 		return nil, apperrors.New(apperrors.CodeNotFound, "课程不存在")

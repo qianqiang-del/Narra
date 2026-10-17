@@ -1,9 +1,9 @@
 -- 0004_scene_segments_ready_constraint.sql
 --
--- scene_segments.status = 'ready' now means that the narration text is ready.
--- Audio is optional when TTS is disabled, so audio_path may be NULL.
+-- scene_segments.status = 'ready' 现在表示「旁白文本已就绪」。
+-- 关闭 TTS 时音频是可选的，因此 audio_path 可以为 NULL。
 --
--- Safe to run repeatedly.
+-- 可安全重复执行。
 
 ALTER TABLE scene_segments
     DROP CONSTRAINT IF EXISTS scene_segments_ready_has_audio_check;

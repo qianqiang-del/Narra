@@ -678,7 +678,7 @@ func (a *App) initServer() {
 		// 普通接口的写死线。SSE（pkg/sse.Start）与同步的正文收录
 		// （knowledge.IngestText）会各自解除它 —— 它们单次处理可能超过 60s。
 		WriteTimeout:   60 * time.Second,
-		MaxHeaderBytes: 1 << 20, // 1 MB
+		MaxHeaderBytes: 1 << 20, // 请求头最大 1 MB
 	}
 }
 

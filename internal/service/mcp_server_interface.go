@@ -9,7 +9,7 @@ import (
 
 // MCPServerService MCP 服务配置业务。
 type MCPServerService interface {
-	// LoadRuntime loads enabled database configurations into the runtime manager.
+	// LoadRuntime 把已启用的数据库配置加载进运行期管理器。
 	LoadRuntime(ctx context.Context) error
 	// List 返回所有 MCP 服务配置。
 	List(ctx context.Context, ownerID ...uint64) ([]dto.MCPServerItem, error)

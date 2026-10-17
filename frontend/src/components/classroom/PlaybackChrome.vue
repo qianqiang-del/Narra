@@ -3,8 +3,8 @@
  * PlaybackChrome —— 文档 §6.2（课堂主界面三栏布局）。
  *
  * 尺寸常量（源码注释明确，不可臆改）：
- *   Header      80px  (h-20)
- *   Roundtable 192px  (h-[192px])
+ *   顶部 Header      80px  (h-20)
+ *   圆桌 Roundtable 192px  (h-[192px])
  *   SceneSidebar 默认 220 / min 170 / max 400
  *   ChatArea     默认 340 / min 240 / max 560
  *   舞台高度 = calc(100% - 80px - 192px)
@@ -178,7 +178,7 @@ function syncDiscussion() {
   streamingMessageIds.value = new Set(display.streamingIds)
   discussionWhiteboards.value = [...display.whiteboards]
   if (selectedWhiteboardId.value && display.whiteboards.some((item) => item.id === selectedWhiteboardId.value)) {
-    // Keep the user's selected board while new SSE events arrive.
+    // 新 SSE 事件到达期间，保留用户当前选中的看板。
   } else {
     selectedWhiteboardId.value = display.whiteboards.at(-1)?.id ?? null
   }

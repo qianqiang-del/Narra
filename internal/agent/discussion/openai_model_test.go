@@ -245,7 +245,7 @@ func TestOpenAIModelsGenerateStreamRejectsIncompleteProtocol(t *testing.T) {
 	}
 }
 
-// ---- Generate ----
+// ---- 生成 ----
 
 // TestOpenAIModelsGenerateSendsRequest 验证发言请求：地址、鉴权、模型、两条消息的内容。
 func TestOpenAIModelsGenerateSendsRequest(t *testing.T) {
@@ -376,7 +376,7 @@ func TestOpenAIModelsGenerateRejectsBadReply(t *testing.T) {
 	}
 }
 
-// ---- Summarize ----
+// ---- 摘要 ----
 
 // TestOpenAIModelsSummarizeSendsRequest 验证摘要请求带上了上一版摘要与历史，返回值去掉空白。
 func TestOpenAIModelsSummarizeSendsRequest(t *testing.T) {
@@ -430,7 +430,7 @@ func TestOpenAIModelsSummarizeRejectsEmpty(t *testing.T) {
 	}
 }
 
-// ---- Extract ----
+// ---- 提炼 ----
 
 // TestOpenAIModelsExtractParsesCandidates 验证提炼能解出候选，并按约定不再本地过滤。
 func TestOpenAIModelsExtractParsesCandidates(t *testing.T) {

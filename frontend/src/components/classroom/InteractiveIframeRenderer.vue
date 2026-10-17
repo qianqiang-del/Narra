@@ -74,7 +74,7 @@ function mountFrameWhenSized() {
 
 function onFrameLoad() {
   if (!updateScale()) return
-  // The iframe can load before its scaled layer has had a chance to paint.
+  // iframe 可能先加载完，而它的缩放层还没来得及绘制。
   paintFrame = window.requestAnimationFrame(() => {
     paintFrame = window.requestAnimationFrame(() => {
       frameReady.value = true

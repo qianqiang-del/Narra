@@ -287,7 +287,7 @@ type MCPServerConfig struct {
 type AppConfig struct {
 	Name    string `mapstructure:"name"`
 	Version string `mapstructure:"version"`
-	Mode    string `mapstructure:"mode"` // debug, release, test
+	Mode    string `mapstructure:"mode"` // 运行模式：debug / release / test
 	Port    int    `mapstructure:"port"`
 
 	// ReadTimeout 是服务器读完整请求（含 body）的时限。
@@ -551,7 +551,7 @@ type JWTConfig struct {
 	RefreshTTL  time.Duration `mapstructure:"refresh_ttl"`
 }
 
-// SMSConfig configures Alibaba Cloud SMS. Credentials are loaded from environment variables.
+// SMSConfig 阿里云短信配置。凭证从环境变量读取。
 type SMSConfig struct {
 	Enabled         bool   `mapstructure:"enabled"`
 	API             string `mapstructure:"api"`
@@ -573,7 +573,7 @@ type SMSConfig struct {
 
 // LogConfig 日志配置
 type LogConfig struct {
-	Level      string `mapstructure:"level"`       // debug, info, warn, error
+	Level      string `mapstructure:"level"`       // 日志级别：debug / info / warn / error
 	Filename   string `mapstructure:"filename"`    // 日志文件路径
 	MaxSize    int    `mapstructure:"max_size"`    // 单个日志文件最大大小(MB)
 	MaxBackups int    `mapstructure:"max_backups"` // 保留的旧日志文件数量

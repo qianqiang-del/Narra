@@ -59,8 +59,8 @@ type priceEvidenceCandidate struct {
 
 var priceNumberPattern = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
 
-// SuggestPricing searches with the configured provider model and returns a reviewable suggestion.
-// It never updates the saved provider configuration.
+// SuggestPricing 用配置的服务商模型去检索价格，返回一份可人工复核的建议；
+// 它绝不会更新已保存的服务商配置。
 func (s *llmProviderService) SuggestPricing(ctx context.Context, ownerID, id uint64, modelID string) (*responsedto.LLMPriceSuggestion, error) {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" || len([]rune(modelID)) > 160 {

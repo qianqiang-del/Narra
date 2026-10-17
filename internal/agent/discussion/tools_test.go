@@ -56,7 +56,7 @@ func TestDiscussionWhiteboardToolRoundTrip(t *testing.T) {
 					w.Header().Set("Content-Type", "text/event-stream")
 					raw, _ := json.Marshal(map[string]any{"choices": []map[string]any{{"delta": message, "finish_reason": finish}}})
 					fmt.Fprintf(w, "data: %s\n\n", raw)
-					// Providers may send usage AFTER finish_reason.
+					// 提供方可能在 finish_reason 之后才发 usage。
 					fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\ndata: [DONE]\n\n")
 				} else {
 					json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": message, "finish_reason": finish}}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}})

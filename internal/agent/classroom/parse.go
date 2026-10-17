@@ -10,9 +10,9 @@ import (
 
 // 与数据库列对应的长度上限，超长按字符截断。
 const (
-	maxClassroomTitleRunes = 200 // classrooms.title
-	maxSceneTitleRunes     = 200 // scenes.title
-	maxContentKeyRunes     = 120 // scene_segments.content_key
+	maxClassroomTitleRunes = 200 // 对应 classrooms.title 列
+	maxSceneTitleRunes     = 200 // 对应 scenes.title 列
+	maxContentKeyRunes     = 120 // 对应 scene_segments.content_key 列
 )
 
 // block 的 type 与 internal/model/entity/scene.go 的注释一一对应。

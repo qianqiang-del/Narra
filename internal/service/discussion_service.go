@@ -449,7 +449,7 @@ func (s *discussionService) modelSnapshot(ctx context.Context, classroomID uint6
 	if config.ProviderID == 0 || strings.TrimSpace(config.ModelID) == "" {
 		return modelConfig{}, apperrors.New(apperrors.CodeBadRequest, "请为这堂课选择讨论模型")
 	}
-	// Catalog is injected in production; factory-only callers can validate in Build.
+	// 生产环境会注入 Catalog；仅走工厂构建的调用方可在 Build 阶段校验。
 	if s.modelCatalog != nil {
 		settings, err := s.describeSelection(ctx, config, "")
 		if err != nil {

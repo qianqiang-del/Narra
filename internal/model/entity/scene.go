@@ -87,7 +87,7 @@ type Scene struct {
 	Classroom *Classroom `gorm:"foreignKey:ClassroomID;constraint:scenes_classroom_id_fkey,OnDelete:CASCADE" json:"-"`
 
 	// Content 场景内容，无论场景 Type 是什么都统一为 {"blocks":[...]}，例如：
-	//   {"blocks":[{"key":"intro-variable","type":"paragraph","content":"..."}]}
+	//   示例：{"blocks":[{"key":"intro-variable","type":"paragraph","content":"..."}]}
 	// 前端按每个 block 的 type 渲染，与场景的 Type 无关。block 的 type 取值是一份
 	// 前后端契约（heading、paragraph、list-item、callout、code、quiz、browser、columns），
 	// 每种 type 的 JSON schema 由后端领域层校验；同一场景内 block 的 key 不得重复，

@@ -14,7 +14,7 @@ import (
 func ensureClassroomAccess(ctx context.Context, classrooms repository.ClassroomRepository, classroomID uint64) error {
 	ownerID := ownership.FromContext(ctx)
 	if ownerID == 0 {
-		// Background jobs and legacy service callers have no HTTP identity.
+		// 后台任务与遗留的服务调用方没有 HTTP 身份，直接放行。
 		return nil
 	}
 	_, err := classrooms.FindByIDAndOwner(ctx, classroomID, ownerID)

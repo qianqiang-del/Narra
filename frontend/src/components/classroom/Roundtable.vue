@@ -148,7 +148,7 @@ function stopRecognition() {
     try {
       recognition.stop()
     } catch {
-      /* ignore */
+      /* 忽略 */
     }
     recognition = null
   }

@@ -1,6 +1,6 @@
--- Run in the narra database after the API has created users and preset_agents.
--- Seeds existing users and installs a trigger for users registered later.
--- Re-running preserves existing roles and manual edits to them.
+-- 在 API 创建好 users 与 preset_agents 之后，于 narra 数据库里执行。
+-- 为已存在的用户播种角色，并为之后注册的用户安装触发器。
+-- 重复执行会保留现有角色及用户对手工改动的结果。
 
 BEGIN;
 

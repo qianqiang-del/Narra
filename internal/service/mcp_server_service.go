@@ -35,7 +35,7 @@ func NewMCPServerService(repo repository.MCPServerRepository, app config.AppConf
 	return &mcpServerService{repo: repo, app: app, encryptionKey: encryptionKey, runtime: runtime}
 }
 
-// LoadRuntime loads enabled persisted servers and starts their runtime connections.
+// LoadRuntime 加载已启用的持久化服务，并启动它们的运行期连接。
 func (s *mcpServerService) LoadRuntime(ctx context.Context) error {
 	servers, err := s.repo.List(ctx)
 	if err != nil {

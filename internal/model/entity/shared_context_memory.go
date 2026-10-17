@@ -22,8 +22,8 @@ const (
 // 约束全部由字段上的 tag 声明，AutoMigrate 建：五个 CHECK、五条外键
 // （课堂与会话级联删除，来源消息/回合/取代者置 NULL，取代者是自引用）。
 // 两个复合索引的列序与字段声明顺序不一致，所以用显式 priority 固定：
-// idx_shared_memories_classroom (classroom_id, scope, status, importance DESC)、
-// idx_shared_memories_conversation (conversation_id, status, importance DESC)。
+// 课堂级索引：idx_shared_memories_classroom (classroom_id, scope, status, importance DESC)、
+// 会话级索引：idx_shared_memories_conversation (conversation_id, status, importance DESC)。
 type SharedContextMemory struct {
 	BaseModel
 

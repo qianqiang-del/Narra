@@ -16,7 +16,7 @@ import (
 //
 // 只登记当前进行中的课（进程内、用后即删）：它要对付的是「删课堂」这一个动作，
 // 不是跨进程的任务状态——那种状态该落库（如 scenes.lease_owner），不该放这里。
-var runningCancels sync.Map // map[uint64]context.CancelFunc
+var runningCancels sync.Map // 映射：课堂 ID -> context.CancelFunc
 
 // registerCancel 登记一堂课的取消入口，返回注销函数。
 func registerCancel(classroomID uint64, cancel context.CancelFunc) func() {

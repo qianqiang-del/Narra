@@ -26,7 +26,7 @@ func TestDiscussionToolsOnlyExposeReadOnlyRemoteTools(t *testing.T) {
 			t.Fatalf("enabled=%v got=%d", enabled, len(tools))
 		}
 	}
-	// The teammates' API is deliberately unchanged.
+	// 团队成员共用的 API 刻意保持不变。
 	tools, err := manager.EinoTools(context.Background(), true)
 	if err != nil || len(tools) != 2 {
 		t.Fatalf("shared behavior changed: %d %v", len(tools), err)

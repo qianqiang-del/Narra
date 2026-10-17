@@ -174,7 +174,7 @@ onUnmounted(() => eventController?.abort())
 
 <template>
   <div class="narra-page narra-classroom flex h-screen flex-col overflow-hidden">
-    <!-- loading -->
+    <!-- 加载中 -->
     <div
       v-if="phase === 'loading'"
       class="flex flex-1 items-center justify-center bg-gray-50 dark:bg-gray-900"
@@ -185,7 +185,7 @@ onUnmounted(() => eventController?.abort())
       </div>
     </div>
 
-    <!-- error -->
+    <!-- 错误 -->
     <div
       v-else-if="phase === 'error'"
       class="flex flex-1 items-center justify-center bg-gray-50 dark:bg-gray-900"

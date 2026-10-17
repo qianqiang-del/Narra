@@ -261,7 +261,7 @@ async function saveTimeouts(id: number) {
 async function toggleEnabled(id: number, current: boolean) {
   try {
     await mcpStore.edit(id, { enabled: !current })
-  } catch { /* ignore */ }
+  } catch { /* 忽略 */ }
 }
 
 async function confirmDelete(id: number) {
@@ -270,7 +270,7 @@ async function confirmDelete(id: number) {
       await mcpStore.remove(id)
       deleteConfirmId.value = null
       if (testResult.value?.id === id) testResult.value = null
-    } catch { /* ignore */ }
+    } catch { /* 忽略 */ }
   } else {
     deleteConfirmId.value = id
     setTimeout(() => { if (deleteConfirmId.value === id) deleteConfirmId.value = null }, 3000)

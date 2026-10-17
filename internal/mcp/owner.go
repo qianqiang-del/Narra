@@ -9,7 +9,7 @@ import (
 
 type ownerContextKey struct{}
 
-// WithOwner scopes remote MCP tools to one account. Unprefixed servers are public defaults.
+// WithOwner 把远端 MCP 工具限定到某个账号；不带前缀的服务是公共默认。
 func WithOwner(ctx context.Context, ownerID uint64) context.Context {
 	return ownership.WithOwner(context.WithValue(ctx, ownerContextKey{}, ownerID), ownerID)
 }
