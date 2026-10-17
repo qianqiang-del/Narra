@@ -36,6 +36,8 @@ services:
       MALLOC_ARENA_MAX: "2"
     volumes:
       - /opt/narra/data:/app/data
+      - /opt/narra/backend/releases/${APP_RELEASE_SHA:?APP_RELEASE_SHA is required}/narra-api:/app/narra-api:ro
+      - /opt/narra/backend/releases/${APP_RELEASE_SHA:?APP_RELEASE_SHA is required}/config.production.yaml:/app/configs/config.production.yaml:ro
     ports:
       - "127.0.0.1:8080:8080"
     mem_limit: 1280m

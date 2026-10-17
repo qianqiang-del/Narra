@@ -18,6 +18,7 @@ jobs:
     outputs:
       backend: ${{ steps.detect.outputs.backend }}
       frontend: ${{ steps.detect.outputs.frontend }}
+      runtime: ${{ steps.detect.outputs.runtime }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,20 +30,28 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
             backend=true
             frontend=true
+            runtime=true
           else
             backend=false
             frontend=false
+            runtime=false
             if ! git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- . \
               ':(exclude)frontend/**' ':(exclude)docs/**' ':(exclude)README.md' \
-              ':(exclude)LICENSE' ':(exclude)deploy/README.md'; then
+              ':(exclude)LICENSE' ':(exclude)deploy/README.md' \
+              ':(exclude).github/workflows/**'; then
               backend=true
             fi
             if ! git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- frontend/; then
               frontend=true
             fi
+            if ! git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- Dockerfile pkg/documentparser/python/; then
+              runtime=true
+              backend=true
+            fi
           fi
           echo "backend=$backend" >> "$GITHUB_OUTPUT"
           echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          echo "runtime=$runtime" >> "$GITHUB_OUTPUT"
 
   backend:
     needs: changes
@@ -50,8 +59,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build backend binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o narra-api ./cmd/server
+          tar -czf narra-backend.tar.gz narra-api -C configs config.production.yaml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: narra-backend
+          path: narra-backend.tar.gz
+          retention-days: 1
+          compression-level: 0
       - uses: docker/setup-buildx-action@v3
+        if: needs.changes.outputs.runtime == 'true'
       - uses: docker/build-push-action@v6
+        if: needs.changes.outputs.runtime == 'true'
         with:
           context: .
           file: Dockerfile
@@ -61,8 +86,10 @@ jobs:
           cache-from: type=gha,scope=narra-api
           cache-to: type=gha,scope=narra-api,mode=max
       - name: Export backend image
+        if: needs.changes.outputs.runtime == 'true'
         run: docker save "narra-api:$GITHUB_SHA" | gzip -1 > narra-api.tar.gz
       - uses: actions/upload-artifact@v4
+        if: needs.changes.outputs.runtime == 'true'
         with:
           name: narra-api-image
           path: narra-api.tar.gz
@@ -104,6 +131,10 @@ jobs:
       - uses: actions/download-artifact@v4
         if: needs.changes.outputs.backend == 'true'
         with:
+          name: narra-backend
+      - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.runtime == 'true'
+        with:
           name: narra-api-image
       - name: Configure SSH
         env:
@@ -114,33 +145,68 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
-      - name: Copy release files
+      - name: Prepare release directories
         env:
           SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
-          DEPLOY_BACKEND: ${{ needs.changes.outputs.backend }}
-          DEPLOY_FRONTEND: ${{ needs.changes.outputs.frontend }}
         run: |
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
-            'mkdir -p /opt/narra/deploy /opt/narra/data /opt/narra/web/incoming /opt/narra/web/releases /opt/narra/images/incoming'
+            'mkdir -p /opt/narra/deploy /opt/narra/data /opt/narra/web/incoming /opt/narra/web/releases /opt/narra/images/incoming /opt/narra/backend/incoming /opt/narra/backend/releases'
+      - name: Copy release script
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
           scp -o StrictHostKeyChecking=yes deploy/release.sh \
             "$SSH_USER@$SSH_HOST:/opt/narra/deploy/"
-          if [[ "$DEPLOY_BACKEND" == "true" ]]; then
-            scp -o StrictHostKeyChecking=yes deploy/compose.app.yml deploy/nginx.conf \
-              "$SSH_USER@$SSH_HOST:/opt/narra/deploy/"
-            scp -o StrictHostKeyChecking=yes narra-api.tar.gz \
-              "$SSH_USER@$SSH_HOST:/opt/narra/images/incoming/$GITHUB_SHA.tar.gz"
-          fi
-          if [[ "$DEPLOY_FRONTEND" == "true" ]]; then
-            scp -o StrictHostKeyChecking=yes web.tar.gz \
-              "$SSH_USER@$SSH_HOST:/opt/narra/web/incoming/$GITHUB_SHA.tar.gz"
-          fi
+      - name: Copy backend config
+        if: needs.changes.outputs.backend == 'true'
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          scp -o StrictHostKeyChecking=yes deploy/compose.app.yml deploy/nginx.conf \
+            "$SSH_USER@$SSH_HOST:/opt/narra/deploy/"
+      - name: Upload backend image
+        if: needs.changes.outputs.runtime == 'true'
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          du -h narra-api.tar.gz
+          started=$SECONDS
+          scp -o StrictHostKeyChecking=yes narra-api.tar.gz \
+            "$SSH_USER@$SSH_HOST:/opt/narra/images/incoming/$GITHUB_SHA.tar.gz"
+          echo "Backend image uploaded in $((SECONDS - started))s"
+      - name: Upload backend binary
+        if: needs.changes.outputs.backend == 'true'
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          du -h narra-backend.tar.gz
+          started=$SECONDS
+          scp -o StrictHostKeyChecking=yes narra-backend.tar.gz \
+            "$SSH_USER@$SSH_HOST:/opt/narra/backend/incoming/$GITHUB_SHA.tar.gz"
+          echo "Backend binary uploaded in $((SECONDS - started))s"
+      - name: Upload frontend assets
+        if: needs.changes.outputs.frontend == 'true'
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          du -h web.tar.gz
+          started=$SECONDS
+          scp -o StrictHostKeyChecking=yes web.tar.gz \
+            "$SSH_USER@$SSH_HOST:/opt/narra/web/incoming/$GITHUB_SHA.tar.gz"
+          echo "Frontend assets uploaded in $((SECONDS - started))s"
       - name: Deploy and verify
         env:
           SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
           DEPLOY_BACKEND: ${{ needs.changes.outputs.backend }}
           DEPLOY_FRONTEND: ${{ needs.changes.outputs.frontend }}
+          DEPLOY_RUNTIME: ${{ needs.changes.outputs.runtime }}
         run: |
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$SSH_USER@$SSH_HOST" "bash /opt/narra/deploy/release.sh $GITHUB_SHA $DEPLOY_BACKEND $DEPLOY_FRONTEND"
+            "$SSH_USER@$SSH_HOST" "bash /opt/narra/deploy/release.sh $GITHUB_SHA $DEPLOY_BACKEND $DEPLOY_FRONTEND $DEPLOY_RUNTIME"
