@@ -60,6 +60,19 @@ if [[ "$backend" == true ]]; then
   fi
 
   if [[ "$runtime" == true ]]; then
+    # A 2G host cannot reliably load the runtime image alongside OCR's Python process.
+    runtime_stopped=false
+    restart_previous_runtime() {
+      if [[ "$runtime_stopped" == true ]]; then
+        echo "Restarting previous API container after runtime load failure" >&2
+        docker start narra-api >&2 || true
+      fi
+    }
+    trap restart_previous_runtime EXIT
+    if [ -n "$previous_image" ]; then
+      docker stop --time 90 narra-api
+      runtime_stopped=true
+    fi
     gzip -dc "$archive" | docker load
     rm -f "$archive"
   else
@@ -82,6 +95,8 @@ if [[ "$backend" == true ]]; then
     restore_previous
     exit 1
   fi
+  runtime_stopped=false
+  trap - EXIT
 
   ready=0
   for i in $(seq 1 40); do
