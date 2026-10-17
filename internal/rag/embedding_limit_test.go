@@ -9,6 +9,7 @@ import (
 	einoembedding "github.com/cloudwego/eino/components/embedding"
 
 	"narra/internal/model/entity"
+	"narra/pkg/config"
 )
 
 // blockingEmbedder 是一个会停在闸门前的向量桩：每次进入 EmbedStrings 都发信号并记录
@@ -81,7 +82,9 @@ func TestEmbeddingLimitSerializesDocuments(t *testing.T) {
 	embedder := newBlockingEmbedder()
 	ingester := newIngesterWithOptions(store, newFakeModels(), nil, testEmbeddingConfig(),
 		IngestOptions{Tx: testTx{}, EmbeddingConcurrency: 1})
-	ingester.newEmbedder = func(*entity.EmbeddingModel) (Embedder, error) { return embedder, nil }
+	ingester.newEmbedder = func(config.EmbeddingConfig, *entity.EmbeddingModel) (Embedder, error) {
+		return embedder, nil
+	}
 
 	stage := entity.KnowledgeDocumentStageEmbed
 	document := &entity.KnowledgeDocument{

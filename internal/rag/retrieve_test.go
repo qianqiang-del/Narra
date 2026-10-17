@@ -14,7 +14,6 @@ import (
 
 	"narra/internal/model/entity"
 	"narra/pkg/config"
-	"narra/pkg/embedding"
 )
 
 // 与 ingest_test.go 同一个立场：不连数据库、不调向量服务。检索链路真正需要真环境的
@@ -70,8 +69,8 @@ func newRetrieverWith(
 	embedder Embedder,
 	cfg config.EmbeddingConfig,
 ) *Retriever {
-	retriever := NewRetriever(search, models, embedding.NewManager(cfg))
-	retriever.newEmbedder = func(model *entity.EmbeddingModel) (Embedder, error) {
+	retriever := NewRetriever(search, models, &fakeEmbeddingProvider{cfg: cfg})
+	retriever.newEmbedder = func(cfg config.EmbeddingConfig, model *entity.EmbeddingModel) (Embedder, error) {
 		if embedder == nil {
 			return nil, fmt.Errorf("用例没有提供向量桩")
 		}
@@ -304,7 +303,7 @@ func TestRetrieveEmbedsQueryWithDefaultModel(t *testing.T) {
 	search := &fakeChunkSearcher{}
 	var askedModel *entity.EmbeddingModel
 	retriever := newRetrieverWith(search, newFakeModels(), &stubEmbedder{dimension: testVectorDims}, testEmbeddingConfig())
-	retriever.newEmbedder = func(model *entity.EmbeddingModel) (Embedder, error) {
+	retriever.newEmbedder = func(cfg config.EmbeddingConfig, model *entity.EmbeddingModel) (Embedder, error) {
 		askedModel = model
 		return &stubEmbedder{dimension: int(model.Dimensions)}, nil
 	}

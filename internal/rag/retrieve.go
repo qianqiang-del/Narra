@@ -13,7 +13,8 @@ import (
 	"gorm.io/gorm"
 
 	"narra/internal/model/entity"
-	"narra/pkg/embedding"
+	"narra/internal/ownership"
+	"narra/pkg/config"
 	"narra/pkg/logger"
 )
 
@@ -155,7 +156,7 @@ type RetrieveResult struct {
 type Retriever struct {
 	search      ChunkSearcher
 	models      ModelRegistry
-	embedding   *embedding.Manager
+	embedding   EmbeddingProvider
 	newEmbedder embedderFactory
 
 	// vectorCensusChecked 记录体检过的模型 ID（无论结果如何）：那是"默认模型下有没有
@@ -166,18 +167,18 @@ type Retriever struct {
 
 // NewRetriever 创建检索器。
 //
-// embeddingManager 只用来取"当前生效的连接配置"（地址、密钥、超时）；向量化用哪个模型
-// 以库里的默认模型为准，见 embedderFactory 与 newModelEmbedderFactory。
+// embedding 是"按账号解析连接配置"的入口（见 EmbeddingProvider）：向量化用哪个模型
+// 以该账号库里的默认模型为准，连哪个地址、用什么密钥、超时多久来自它的生效配置。
 func NewRetriever(
 	search ChunkSearcher,
 	models ModelRegistry,
-	embeddingManager *embedding.Manager,
+	embedding EmbeddingProvider,
 ) *Retriever {
 	return &Retriever{
 		search:      search,
 		models:      models,
-		embedding:   embeddingManager,
-		newEmbedder: newModelEmbedderFactory(embeddingManager),
+		embedding:   embedding,
+		newEmbedder: newModelEmbedderFactory(),
 	}
 }
 
@@ -202,29 +203,44 @@ func (r *Retriever) Retrieve(ctx context.Context, input RetrieveInput) (Retrieve
 	result := RetrieveResult{Terms: lexicalTermTexts(plan.Terms)}
 	var failures []error
 
-	// 向量路的准入条件是模型行：没有它就不知道该用哪个模型向量化查询串。
-	// 取不到模型按"这一路不可用"记账，词法路照常跑。
+	// 向量路的准入条件是"该账号有生效配置"：连接信息与模型身份都从这里推导。
+	// ownerID 来自请求上下文（HTTP 中间件与 MCP 工具包装都会注入），没有它时
+	// EmbeddingProvider 回退平台默认；取不到配置或模型都按"这一路不可用"记账，
+	// 词法路照常跑。
 	var vectorHits []entity.KnowledgeChunkView
-	model, err := r.models.GetDefault(ctx)
+	ownerID := ownership.FromContext(ctx)
+
+	cfg, cfgErr := r.embedding.CurrentEmbedding(ctx, ownerID)
+	var model *entity.EmbeddingModel
 	switch {
-	case errors.Is(err, gorm.ErrRecordNotFound):
-		err = fmt.Errorf("%w：请先在设置页保存一次向量服务配置", ErrNoEmbeddingModel)
-		failures = append(failures, err)
-		logger.Warn("向量召回不可用，本次检索只走词法路", zap.Error(err))
-	case err != nil:
-		err = fmt.Errorf("查询默认向量模型失败: %w", err)
-		failures = append(failures, err)
-		logger.Warn("向量召回不可用，本次检索只走词法路", zap.Error(err))
+	case cfgErr != nil:
+		cfgErr = fmt.Errorf("读取向量服务配置失败: %w", cfgErr)
+	case !cfg.Enabled:
+		cfgErr = fmt.Errorf("%w：请先在设置页保存向量服务配置，或由管理员配置平台默认向量服务", ErrEmbeddingDisabled)
 	default:
+		var modelErr error
+		model, modelErr = r.models.GetDefault(ctx, ownerID)
+		switch {
+		case errors.Is(modelErr, gorm.ErrRecordNotFound):
+			model, cfgErr = nil, fmt.Errorf("%w：当前账号还没有向量模型，请先保存配置或收录一份文档", ErrNoEmbeddingModel)
+		case modelErr != nil:
+			model, cfgErr = nil, fmt.Errorf("查询默认向量模型失败: %w", modelErr)
+		}
+	}
+	if cfgErr != nil {
+		failures = append(failures, cfgErr)
+		logger.Warn("向量召回不可用，本次检索只走词法路", zap.Error(cfgErr))
+	} else {
 		result.Model = model.Name
-		vectorHits, err = r.vectorRecall(ctx, model, plan.EmbedText, limit, input.Filter)
-		if err != nil {
-			failures = append(failures, err)
-			logger.Warn("向量召回不可用，本次检索只走词法路", zap.Error(err))
+		var recallErr error
+		vectorHits, recallErr = r.vectorRecall(ctx, cfg, model, plan.EmbedText, limit, input.Filter)
+		if recallErr != nil {
+			failures = append(failures, recallErr)
+			logger.Warn("向量召回不可用，本次检索只走词法路", zap.Error(recallErr))
 		} else if len(vectorHits) == 0 {
 			// 零命中不一定是故障（可能就是没搜到），但"默认模型下没有向量"的形态
 			// 会让向量路静默归零 —— 体检一次，见 vector_census.go。
-			r.warnOnEmptyVectorRecall(ctx, model)
+			r.warnOnEmptyVectorRecall(ctx, ownerID, model)
 		}
 	}
 
@@ -253,17 +269,18 @@ func (r *Retriever) Retrieve(ctx context.Context, input RetrieveInput) (Retrieve
 }
 
 // vectorRecall 向量路：向量化查询串，再按余弦相似度召回候选。
+//
+// cfg 与 model 都由调用方先解析好：配置的启用状态与模型是否存在是"这一路可不可用"
+// 的判定，属于 Retrieve 的账；这里只负责把查询串变成向量并取回候选。
 func (r *Retriever) vectorRecall(
 	ctx context.Context,
+	cfg config.EmbeddingConfig,
 	model *entity.EmbeddingModel,
 	query string,
 	limit int,
 	filter entity.KnowledgeChunkFilter,
 ) ([]entity.KnowledgeChunkView, error) {
-	if cfg := r.embedding.Config(); !cfg.Enabled {
-		return nil, fmt.Errorf("%w：请先在设置页配置向量服务", ErrEmbeddingDisabled)
-	}
-	embedder, err := r.newEmbedder(model)
+	embedder, err := r.newEmbedder(cfg, model)
 	if err != nil {
 		return nil, err
 	}
@@ -305,11 +322,11 @@ func (r *Retriever) vectorRecall(
 //
 // 默认模型下有向量时什么都不做 —— 零命中就是一次正常的空结果；体检结果无论有没有
 // 问题都记账，避免频繁的空结果把这条统计查询反复带进来。
-func (r *Retriever) warnOnEmptyVectorRecall(ctx context.Context, model *entity.EmbeddingModel) {
+func (r *Retriever) warnOnEmptyVectorRecall(ctx context.Context, ownerID uint64, model *entity.EmbeddingModel) {
 	if _, checked := r.vectorCensusChecked.Load(model.ID); checked {
 		return
 	}
-	counts, err := r.models.CountVectorsByModel(ctx)
+	counts, err := r.models.CountVectorsByModel(ctx, ownerID)
 	if err != nil {
 		// 体检失败不喧哗：它只是排障辅助，不该让日志盖过检索本身的问题。
 		return

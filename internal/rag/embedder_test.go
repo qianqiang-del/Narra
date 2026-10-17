@@ -174,17 +174,16 @@ func TestEmbedInBatchesDoesNotRetryCountMismatch(t *testing.T) {
 	}
 }
 
-// TestModelEmbedderConfigUsesModelIdentityAndGlobalConnection 校验"模型身份以模型行为准、
-// 连接信息以全局配置为准"。
+// TestModelEmbedderConfigUsesModelIdentityAndConnection 校验"模型身份以模型行为准、
+// 连接信息以调用方解析出的生效配置为准"。
 //
 // 这条判断是收录与检索共用的命门：模型行与配置一旦漂移而这里没对齐，查询向量会落到
 // 另一个语义空间 —— 相似度照样算得出来、不报任何错，只是排序全是噪声。
-func TestModelEmbedderConfigUsesModelIdentityAndGlobalConnection(t *testing.T) {
-	global := testEmbeddingConfig()
-	global.BaseURL = "https://global.example.test/v1"
-	manager := embedding.NewManager(global)
+func TestModelEmbedderConfigUsesModelIdentityAndConnection(t *testing.T) {
+	connection := testEmbeddingConfig()
+	connection.BaseURL = "https://gateway.example.test/v1"
 
-	cfg := modelEmbedderConfig(manager, &entity.EmbeddingModel{
+	cfg := modelEmbedderConfig(connection, &entity.EmbeddingModel{
 		Name:       "bge-m3",
 		Dimensions: 1024,
 	})
@@ -192,14 +191,14 @@ func TestModelEmbedderConfigUsesModelIdentityAndGlobalConnection(t *testing.T) {
 	if cfg.Model != "bge-m3" || cfg.Dimensions != 1024 {
 		t.Fatalf("模型身份应当以模型行为准: %+v", cfg)
 	}
-	if cfg.BaseURL != global.BaseURL || cfg.APIKey != global.APIKey || cfg.Timeout != global.Timeout || !cfg.Enabled {
-		t.Fatalf("地址、密钥与超时都应当来自全局配置: %+v", cfg)
+	if cfg.BaseURL != connection.BaseURL || cfg.APIKey != connection.APIKey || cfg.Timeout != connection.Timeout || !cfg.Enabled {
+		t.Fatalf("地址、密钥与超时都应该来自解析出的生效配置: %+v", cfg)
 	}
 
-	// 没有模型行时原样退回全局配置。
-	fallback := modelEmbedderConfig(manager, nil)
-	if fallback.Model != global.Model || fallback.Dimensions != global.Dimensions || fallback.BaseURL != global.BaseURL {
-		t.Fatalf("没有模型行时应当原样退回全局配置: %+v", fallback)
+	// 没有模型行时原样退回生效配置。
+	fallback := modelEmbedderConfig(connection, nil)
+	if fallback.Model != connection.Model || fallback.Dimensions != connection.Dimensions || fallback.BaseURL != connection.BaseURL {
+		t.Fatalf("没有模型行时应当原样退回生效配置: %+v", fallback)
 	}
 }
 
@@ -207,8 +206,7 @@ func TestModelEmbedderConfigUsesModelIdentityAndGlobalConnection(t *testing.T) {
 // 且配置不合法时**在构造期**就报错 —— 收录与检索各自还有一道 Enabled 检查，
 // 这里是最后一道：真等到调用才发现，前面已经白解析了一份文档。
 func TestNewModelEmbedderFactoryBuildsEinoEmbedder(t *testing.T) {
-	factory := newModelEmbedderFactory(embedding.NewManager(testEmbeddingConfig()))
-	embedder, err := factory(&entity.EmbeddingModel{Name: testModelName, Dimensions: testVectorDims})
+	embedder, err := newModelEmbedderFactory()(testEmbeddingConfig(), &entity.EmbeddingModel{Name: testModelName, Dimensions: testVectorDims})
 	if err != nil {
 		t.Fatalf("合法配置应当能建出向量化能力: %v", err)
 	}
@@ -219,7 +217,7 @@ func TestNewModelEmbedderFactoryBuildsEinoEmbedder(t *testing.T) {
 	disabled := testEmbeddingConfig()
 	disabled.Enabled = false
 	model := &entity.EmbeddingModel{Name: testModelName, Dimensions: testVectorDims}
-	if _, err := newModelEmbedderFactory(embedding.NewManager(disabled))(model); err == nil {
+	if _, err := newModelEmbedderFactory()(disabled, model); err == nil {
 		t.Fatal("向量服务未启用时应当在构造期报错")
 	}
 }

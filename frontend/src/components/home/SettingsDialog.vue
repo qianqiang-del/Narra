@@ -300,6 +300,7 @@ const embeddingForm = ref<EmbeddingForm>({
 })
 const embeddingLoaded = ref(false)
 const apiKeyConfigured = ref(false)
+const usingPlatformDefault = ref(false)
 const embeddingMessage = ref('')
 const embeddingError = ref(false)
 const loadingEmbedding = ref(false)
@@ -315,6 +316,7 @@ interface EmbeddingSettingDTO {
   timeout: string
   dimensions: number
   api_key_configured: boolean
+  using_platform_default: boolean
 }
 
 async function embeddingRequest(path: string, options: RequestInit = {}) {
@@ -365,6 +367,7 @@ async function loadEmbeddingConfig() {
       api_key: '',
     }
     apiKeyConfigured.value = data.api_key_configured
+    usingPlatformDefault.value = data.using_platform_default
     embeddingLoaded.value = true
     showEmbeddingMessage(t('settings.embeddingLoaded'))
   } catch (error) {
@@ -399,6 +402,7 @@ async function saveEmbeddingConfig() {
       body: JSON.stringify(embeddingPayload()),
     })
     apiKeyConfigured.value = data.api_key_configured
+    usingPlatformDefault.value = data.using_platform_default
     embeddingForm.value.api_key = ''
     showEmbeddingMessage(t('settings.embeddingSaved'))
   } catch (error) {
@@ -527,6 +531,13 @@ function openEmbedding() {
                 {{ t('settings.embeddingDesc') }}
               </DialogDescription>
             </div>
+
+            <p
+              v-if="usingPlatformDefault"
+              class="rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-800 dark:border-brand-900 dark:bg-brand-600/10 dark:text-brand-200"
+            >
+              {{ t('settings.embeddingUsingDefault') }}
+            </p>
 
             <form class="space-y-4" @submit.prevent="saveEmbeddingConfig">
               <label class="block text-sm font-medium">

@@ -47,14 +47,18 @@ func seedSearchDocumentWith(
 ) uint64 {
 	t.Helper()
 
+	// owner_id 是 NOT NULL + 指向 users 的外键：检索用例的文档也要有归属账号。
+	// 不给它时按 0 走不过外键，先在这里立一个测试用户。
+	ownerID := testOwnerID(t, tx)
+
 	var document struct {
 		ID uint64
 	}
 	err := tx.Raw(`
-		INSERT INTO knowledge_documents (created_at, updated_at, title, content, source_type, enabled, status, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, '{}'::jsonb)
+		INSERT INTO knowledge_documents (created_at, updated_at, owner_id, title, content, source_type, enabled, status, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}'::jsonb)
 		RETURNING id`,
-		createdAt, createdAt, title, "原文正文", sourceType, enabled, status).Scan(&document).Error
+		createdAt, createdAt, ownerID, title, "原文正文", sourceType, enabled, status).Scan(&document).Error
 	if err != nil {
 		t.Fatalf("插入测试文档失败: %v", err)
 	}

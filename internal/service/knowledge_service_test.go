@@ -260,7 +260,7 @@ type fakeEmbeddingModels struct {
 
 var _ embeddingModels = (*fakeEmbeddingModels)(nil)
 
-func (m *fakeEmbeddingModels) GetDefault(ctx context.Context) (*entity.EmbeddingModel, error) {
+func (m *fakeEmbeddingModels) GetDefault(ctx context.Context, ownerID uint64) (*entity.EmbeddingModel, error) {
 	if m.err != nil {
 		return nil, m.err
 	}

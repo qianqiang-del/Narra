@@ -24,7 +24,7 @@ import (
 func uploadRecordTestDocument(t *testing.T, tx *gorm.DB, status string) *entity.KnowledgeDocument {
 	t.Helper()
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	document.Status = status
 	if err := NewKnowledgeDocumentRepository(tx).Create(context.Background(), document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
@@ -36,7 +36,14 @@ func uploadRecordTestDocument(t *testing.T, tx *gorm.DB, status string) *entity.
 func uploadRecordTestRecord(t *testing.T, tx *gorm.DB, documentID uint64) *entity.KnowledgeUploadRecord {
 	t.Helper()
 
+	// 上传记录的 owner_id 是外键，必须指向文档的归属账号。
+	var ownerID uint64
+	if err := tx.Raw("SELECT owner_id FROM knowledge_documents WHERE id = ?", documentID).Scan(&ownerID).Error; err != nil {
+		t.Fatalf("查询测试文档归属失败: %v", err)
+	}
+
 	record := &entity.KnowledgeUploadRecord{
+		OwnerID:      ownerID,
 		DocumentID:   &documentID,
 		OriginalName: "设计文档.md",
 		SizeBytes:    4096,

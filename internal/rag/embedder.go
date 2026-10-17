@@ -33,25 +33,37 @@ type Embedder = einoembedding.Embedder
 // 编译期确认生产实现满足本模块的依赖面；上游接口签名变动时这里先编译失败。
 var _ Embedder = (*embedding.EinoEmbedder)(nil)
 
-// embedderFactory 按"这次要用哪个模型"现建一个 Embedder。
+// EmbeddingProvider 提供某个账号当前生效的向量服务连接配置。
+//
+// 解析顺序由实现方保证：该账号自己的启用配置 → 平台默认配置（config.yaml）→
+// 未配置（Enabled = false）。返回 error 表示读取或解密失败，与"未配置"是两回事。
+//
+// 它与 VisionProvider 是同一种装法：收录与检索在每次使用前现取一次，避免把
+// "某一份配置快照"长期持有 —— 设置页改过配置之后，下一次调用必须用新的。
+type EmbeddingProvider interface {
+	CurrentEmbedding(ctx context.Context, ownerID uint64) (config.EmbeddingConfig, error)
+}
+
+// embedderFactory 按"这次要用哪份连接配置、哪个模型"现建一个 Embedder。
 //
 // 三个约束叠在一起才长成这样：
 //
 //   - **现建而不是持有**：Client 是配置快照（base_url 与 model 在构造时就固化了），
 //     启动时建一个长期持有，设置页改了地址或模型之后它不会跟着变，会静默把向量写到
 //     错误的模型下（见 pkg/embedding/eino.go 的提醒）。
-//   - **收模型行而不是只读全局配置**：查询串与切片必须用**库里向量所属的那个模型**去
-//     向量化。两者一旦漂移（改了设置却没重建切片），相似度照样算得出来、不报任何错，
+//   - **连接信息与模型身份分开传入**：连接信息来自 CurrentEmbedding（账号配置或平台
+//     默认），模型身份来自库里的模型行。查询串与切片必须用**库里向量所属的那个模型**
+//     去向量化，两者一旦漂移（改了设置却没重建切片），相似度照样算得出来、不报任何错，
 //     只是排序全是噪声 —— 这类静默劣化最难查。
 //   - **可换成桩**：它是本包唯一的注入点，测试用它把向量化变成确定性实现。
-type embedderFactory func(model *entity.EmbeddingModel) (Embedder, error)
+type embedderFactory func(cfg config.EmbeddingConfig, model *entity.EmbeddingModel) (Embedder, error)
 
-// newModelEmbedderFactory 是生产路径的工厂：按模型行 + 当前生效的连接配置现建 Eino 适配器。
+// newModelEmbedderFactory 是生产路径的工厂：按连接配置 + 模型行现建 Eino 适配器。
 //
 // 收录与检索共用它，"用哪个模型、连哪个地址、超时多久"因此只有一处判断。
-func newModelEmbedderFactory(manager *embedding.Manager) embedderFactory {
-	return func(model *entity.EmbeddingModel) (Embedder, error) {
-		client, err := embedding.NewClient(modelEmbedderConfig(manager, model))
+func newModelEmbedderFactory() embedderFactory {
+	return func(cfg config.EmbeddingConfig, model *entity.EmbeddingModel) (Embedder, error) {
+		client, err := embedding.NewClient(modelEmbedderConfig(cfg, model))
 		if err != nil {
 			return nil, fmt.Errorf("向量服务配置不可用: %w", err)
 		}
@@ -59,15 +71,14 @@ func newModelEmbedderFactory(manager *embedding.Manager) embedderFactory {
 	}
 }
 
-// modelEmbedderConfig 把"库里的模型行"与"当前生效的连接配置"拼成一份向量化配置。
+// modelEmbedderConfig 把"当前生效的连接配置"与"库里的模型行"拼成一份向量化配置。
 //
-// 连接信息（地址、密钥、超时）全部来自当前生效配置；模型行只提供身份（名字、维度）——
+// 连接信息（地址、密钥、超时）来自调用方解析出的配置；模型行只提供身份（名字、维度）——
 // 模型行曾经允许带自己的 base_url，2026-09-30 清理冗余列时删除：那个字段一直只是
-// 配置的镜像、没有任何入口能单独改它，"连哪个网关"归 embedding_settings 一处说了算。
+// 配置的镜像、没有任何入口能单独改它，"连哪个网关"归生效配置一处说了算。
 //
 // 包级可见是为了能被单测直接验（纯函数，不建客户端、不发请求）。
-func modelEmbedderConfig(manager *embedding.Manager, model *entity.EmbeddingModel) config.EmbeddingConfig {
-	cfg := manager.Config()
+func modelEmbedderConfig(cfg config.EmbeddingConfig, model *entity.EmbeddingModel) config.EmbeddingConfig {
 	if model == nil {
 		return cfg
 	}

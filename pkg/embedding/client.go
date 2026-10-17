@@ -14,6 +14,19 @@ import (
 	"narra/pkg/config"
 )
 
+// Test 用给定配置真实请求一次向量化服务，验证连通性与返回是否可用。
+//
+// 只发一条固定文本：它能同时验证地址是否可达、密钥是否被接受、模型名是否有效，
+// 以及返回条数与维度是否与配置一致（那些校验由 Client.Embed 完成）。
+func Test(ctx context.Context, cfg config.EmbeddingConfig) error {
+	client, err := NewClient(cfg)
+	if err != nil {
+		return err
+	}
+	_, err = client.Embed(ctx, []string{"向量化服务连接测试"})
+	return err
+}
+
 // maxErrorBodyLength 出错时最多回显多少字节的响应体。
 //
 // 上游的错误响应里常常带着真正的原因（额度用完、模型名写错、鉴权失败），

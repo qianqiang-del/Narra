@@ -16,6 +16,7 @@ import (
 	requestdto "narra/internal/model/dto/request"
 	responsedto "narra/internal/model/dto/response"
 	"narra/internal/model/entity"
+	"narra/internal/ownership"
 	"narra/internal/rag"
 	"narra/pkg/logger"
 )
@@ -109,11 +110,11 @@ type fileRetrier interface {
 
 // embeddingModels 是本服务对向量模型登记的最小依赖面。
 //
-// 只有 GetDefault：重新向量化的对象与"缺哪个模型的向量"都以当前默认模型为准 ——
-// 与收录、检索两条链路认的是同一个默认模型（embedding_models.is_default）。
+// 只有 GetDefault：重新向量化的对象与"缺哪个模型的向量"都以该账号的默认模型为准 ——
+// 与收录、检索两条链路认的是同一个默认模型（embedding_models 每账号一条 is_default）。
 type embeddingModels interface {
-	// GetDefault 返回当前默认模型；库里一条都没有时返回 gorm.ErrRecordNotFound。
-	GetDefault(ctx context.Context) (*entity.EmbeddingModel, error)
+	// GetDefault 返回该账号的默认模型；一条都没有时返回 gorm.ErrRecordNotFound。
+	GetDefault(ctx context.Context, ownerID uint64) (*entity.EmbeddingModel, error)
 }
 
 // retriever 是本服务对检索能力的最小依赖面。
@@ -336,7 +337,7 @@ func (s *knowledgeService) resolveRecoveryStage(ctx context.Context, document *e
 // "还没配置默认模型"返回零值而不是错误：提示条据此不出现 —— 该做的是去设置页，
 // 不是点"重新向量化"。其余查询失败照常上抛（接口层翻 500）。
 func (s *knowledgeService) EmbeddingStatus(ctx context.Context) (responsedto.KnowledgeEmbeddingStatus, error) {
-	model, err := s.models.GetDefault(ctx)
+	model, err := s.models.GetDefault(ctx, ownership.FromContext(ctx))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return responsedto.KnowledgeEmbeddingStatus{}, nil
@@ -373,7 +374,7 @@ func (s *knowledgeService) EmbeddingStatus(ctx context.Context) (responsedto.Kno
 // 起点阶段传 embed：能进这个列表的文档必然有切片（判据见仓储的 EXISTS 谓词），
 // 后台开始处理前还会按现实材料再算一次恢复点，切片若中途被动过会自己回退。
 func (s *knowledgeService) Reembed(ctx context.Context) (responsedto.KnowledgeReembedResult, error) {
-	model, err := s.models.GetDefault(ctx)
+	model, err := s.models.GetDefault(ctx, ownership.FromContext(ctx))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return responsedto.KnowledgeReembedResult{}, ErrNoEmbeddingModel

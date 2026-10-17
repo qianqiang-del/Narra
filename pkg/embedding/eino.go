@@ -29,8 +29,8 @@ var _ embedding.Embedder = (*EinoEmbedder)(nil)
 // NewEinoEmbedder 用已配置好的 Client 创建适配器。
 //
 // 注意 Client 是「某个时刻的配置快照」：base_url / model 在构造时就固化了。
-// 接入 Eino 时请在使用点用 embedding.Manager 的当前配置现建现用，
-// 不要在启动时建一个长期持有，否则设置页改了配置它不会跟着变。
+// 接入 Eino 时请在使用点按"该账号当前生效的配置"现建现用（见 internal/rag 的
+// embedderFactory），不要在启动时建一个长期持有，否则设置页改了配置它不会跟着变。
 func NewEinoEmbedder(client *Client) (*EinoEmbedder, error) {
 	if client == nil {
 		return nil, fmt.Errorf("Eino 向量化适配器需要非空的 Client")

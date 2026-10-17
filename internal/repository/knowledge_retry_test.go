@@ -69,7 +69,7 @@ func TestKnowledgeRetryMarkFailedMergesMetadata(t *testing.T) {
 	repo := NewKnowledgeDocumentRepository(tx)
 	ctx := context.Background()
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestKnowledgeRetrySetUploadPathKeepsFailureDetail(t *testing.T) {
 	repo := NewKnowledgeDocumentRepository(tx)
 	ctx := context.Background()
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestKnowledgeRetrySetUploadPathRejectsStaleLease(t *testing.T) {
 	repo := NewKnowledgeDocumentRepository(tx)
 	ctx := context.Background()
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestKnowledgeRetryRequeueResetsFailedDocumentAndRecord(t *testing.T) {
 	records := NewKnowledgeUploadRecordRepository(tx)
 	ctx := context.Background()
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -242,6 +242,7 @@ func TestKnowledgeRetryRequeueResetsFailedDocumentAndRecord(t *testing.T) {
 	}
 
 	record := &entity.KnowledgeUploadRecord{
+		OwnerID:      document.OwnerID,
 		DocumentID:   &document.ID,
 		OriginalName: "test.md",
 		Status:       entity.KnowledgeUploadRecordStatusPending,
@@ -316,7 +317,7 @@ func TestKnowledgeMarkFailedRejectsDocumentNotProcessing(t *testing.T) {
 	repo := NewKnowledgeDocumentRepository(tx)
 	ctx := context.Background()
 
-	document := knowledgeTestDocument() // 停在 pending
+	document := knowledgeTestDocument(t, tx) // 停在 pending
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}

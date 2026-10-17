@@ -17,7 +17,7 @@ const (
 // 但换模型不需要重跑历史文档）。
 type VLMSetting struct {
 	BaseModel
-	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_vlm_settings_owner_id;uniqueIndex:vlm_settings_owner_name_key,priority:1;uniqueIndex:vlm_settings_one_enabled_idx,priority:1,where:is_enabled" json:"-"`
+	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_vlm_settings_owner_id;comment:所属用户 ID;uniqueIndex:vlm_settings_owner_name_key,priority:1;uniqueIndex:vlm_settings_one_enabled_idx,priority:1,where:is_enabled" json:"-"`
 	Owner   *User  `gorm:"foreignKey:OwnerID;constraint:vlm_settings_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 
 	Name            string  `gorm:"column:name;type:varchar(120);not null;uniqueIndex:vlm_settings_owner_name_key,priority:2;comment:用户内唯一的配置名称" json:"name"`

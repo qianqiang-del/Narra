@@ -5,7 +5,7 @@ package entity
 // 部分唯一索引（WHERE is_active）在数据库层保证，运行中的向量化请求只使用这条配置。
 type EmbeddingSetting struct {
 	BaseModel
-	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_embedding_settings_owner_id;uniqueIndex:embedding_settings_owner_name_key,priority:1;uniqueIndex:embedding_settings_one_active_idx,priority:1,where:is_active" json:"-"`
+	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_embedding_settings_owner_id;comment:所属用户 ID;uniqueIndex:embedding_settings_owner_name_key,priority:1;uniqueIndex:embedding_settings_one_active_idx,priority:1,where:is_active" json:"-"`
 	Owner   *User  `gorm:"foreignKey:OwnerID;constraint:embedding_settings_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 
 	Name            string `gorm:"column:name;type:varchar(120);not null;uniqueIndex:embedding_settings_owner_name_key,priority:2;comment:用户内唯一的配置名称" json:"name"`

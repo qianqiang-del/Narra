@@ -332,7 +332,8 @@ export default {
     embeddingAPIKeyConfigured: '已配置，留空则保持不变',
     embeddingAPIKeyPlaceholder: '可选：测试或替换当前密钥',
     embeddingLoaded: 'Embedding 配置已加载。',
-    embeddingSaved: 'Embedding 配置已保存到当前服务进程。',
+    embeddingUsingDefault: '当前使用平台默认配置；填写并保存后将切换为你自己的配置。',
+    embeddingSaved: 'Embedding 配置已保存，立即生效。',
     embeddingTestSuccess: '连接成功，服务返回 {dimensions} 维向量。',
     embeddingRequestFailed: 'Embedding 设置请求失败。',
     embeddingNativeHint: {

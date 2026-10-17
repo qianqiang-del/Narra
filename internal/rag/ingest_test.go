@@ -21,9 +21,9 @@ import (
 	einoembedding "github.com/cloudwego/eino/components/embedding"
 
 	"narra/internal/model/entity"
+	"narra/internal/ownership"
 	"narra/pkg/config"
 	"narra/pkg/documentparser"
-	"narra/pkg/embedding"
 )
 
 // 这些用例故意不连数据库、不调向量服务：收录链路的编排逻辑（状态怎么推进、
@@ -479,12 +479,12 @@ type fakeModelRegistry struct {
 
 var _ ModelRegistry = (*fakeModelRegistry)(nil)
 
-func (r *fakeModelRegistry) DeleteUnusedModels(ctx context.Context) ([]string, error) {
+func (r *fakeModelRegistry) DeleteUnusedModels(ctx context.Context, ownerID uint64) ([]string, error) {
 	r.cleanupCalls++
 	return nil, r.cleanupErr
 }
 
-func (r *fakeModelRegistry) CountVectorsByModel(ctx context.Context) ([]entity.ModelVectorCount, error) {
+func (r *fakeModelRegistry) CountVectorsByModel(ctx context.Context, ownerID uint64) ([]entity.ModelVectorCount, error) {
 	r.censusCalls++
 	return r.census, nil
 }
@@ -496,7 +496,7 @@ func (r *fakeModelRegistry) EnsureDefault(ctx context.Context, model entity.Embe
 	return &model, nil
 }
 
-func (r *fakeModelRegistry) GetDefault(ctx context.Context) (*entity.EmbeddingModel, error) {
+func (r *fakeModelRegistry) GetDefault(ctx context.Context, ownerID uint64) (*entity.EmbeddingModel, error) {
 	if r.findErr != nil {
 		return nil, r.findErr
 	}
@@ -504,6 +504,24 @@ func (r *fakeModelRegistry) GetDefault(ctx context.Context) (*entity.EmbeddingMo
 		return nil, gorm.ErrRecordNotFound
 	}
 	return r.model, nil
+}
+
+// fakeEmbeddingProvider 是 EmbeddingProvider 的内存替身：对任何账号都回答同一份配置。
+//
+// 单账号语义的用例不需要按 owner 分叉；要覆盖"用户配置优先、缺失回退默认"的解析顺序，
+// 那是 service 层 CurrentEmbedding 的职责。
+type fakeEmbeddingProvider struct {
+	cfg config.EmbeddingConfig
+	err error
+}
+
+var _ EmbeddingProvider = (*fakeEmbeddingProvider)(nil)
+
+func (p *fakeEmbeddingProvider) CurrentEmbedding(ctx context.Context, ownerID uint64) (config.EmbeddingConfig, error) {
+	if p.err != nil {
+		return config.EmbeddingConfig{}, p.err
+	}
+	return p.cfg, nil
 }
 
 // stubEmbedder 是 Embedder 的确定性替身。
@@ -575,8 +593,8 @@ func newIngesterWithOptions(
 	if options.Tx == nil {
 		options.Tx = testTx{}
 	}
-	ingester := NewIngester(store, &fakeUploadRecordStore{}, models, embedding.NewManager(cfg), nil, options)
-	ingester.newEmbedder = func(model *entity.EmbeddingModel) (Embedder, error) {
+	ingester := NewIngester(store, &fakeUploadRecordStore{}, models, &fakeEmbeddingProvider{cfg: cfg}, nil, options)
+	ingester.newEmbedder = func(cfg config.EmbeddingConfig, model *entity.EmbeddingModel) (Embedder, error) {
 		if embedder == nil {
 			return nil, fmt.Errorf("用例没有提供向量桩")
 		}
@@ -1053,8 +1071,8 @@ func (p *stubParser) Status(context.Context) documentparser.Status {
 // newIngesterWithParser 造的收录器只在解析这一步与 newIngesterWith 不同：
 // 解析器换成给定的桩，向量化仍走确定的桩，整条链路不碰外部世界。
 func newIngesterWithParser(store DocumentStore, parser documentparser.Parser) *Ingester {
-	ingester := NewIngester(store, &fakeUploadRecordStore{}, newFakeModels(), embedding.NewManager(testEmbeddingConfig()), parser, IngestOptions{Tx: testTx{}})
-	ingester.newEmbedder = func(*entity.EmbeddingModel) (Embedder, error) {
+	ingester := NewIngester(store, &fakeUploadRecordStore{}, newFakeModels(), &fakeEmbeddingProvider{cfg: testEmbeddingConfig()}, parser, IngestOptions{Tx: testTx{}})
+	ingester.newEmbedder = func(cfg config.EmbeddingConfig, model *entity.EmbeddingModel) (Embedder, error) {
 		return &stubEmbedder{dimension: testVectorDims}, nil
 	}
 	return ingester
@@ -1384,22 +1402,27 @@ func TestIngestFailsWhenEmbeddingDisabled(t *testing.T) {
 	}
 }
 
-// TestIngestFailsWhenNoEmbeddingModel 一条模型都没有时要指向设置页而不是抛原始错误。
-func TestIngestFailsWhenNoEmbeddingModel(t *testing.T) {
+// TestIngestRegistersModelWhenMissing 一条模型都没有时要惰性登记：吃平台默认、
+// 或刚保存完配置还没登记的账号，第一次收录不该失败，登记出来的行归该账号所有。
+func TestIngestRegistersModelWhenMissing(t *testing.T) {
 	store := &fakeDocumentStore{}
-	ingester := newIngesterWith(store, &fakeModelRegistry{}, &stubEmbedder{dimension: testVectorDims},
-		testEmbeddingConfig())
+	models := &fakeModelRegistry{}
+	ingester := newIngesterWith(store, models, &stubEmbedder{dimension: testVectorDims}, testEmbeddingConfig())
 
-	path := writeTempFile(t, "x.md", "正文。")
-	_, err := runFileTask(t, ingester, store, FileInput{Path: path})
-	if err == nil {
-		t.Fatal("没有可用向量模型时必须报错")
+	// 收录链路从文档行取 owner；给 ctx 一个归属账号，模拟真实请求。
+	ctx := ownership.WithOwner(context.Background(), 42)
+	result, err := ingester.IngestText(ctx, TextInput{Content: "# 惰性登记\n\n正文。"})
+	if err != nil {
+		t.Fatalf("没有模型时应当惰性登记而不是失败: %v", err)
 	}
-	if !errors.Is(err, ErrNoEmbeddingModel) {
-		t.Errorf("错误应当能被 errors.Is 判成 ErrNoEmbeddingModel，实际: %v", err)
+	if models.ensureCall != 1 {
+		t.Fatalf("应当登记一次模型行，实际 %d 次", models.ensureCall)
 	}
-	if !strings.Contains(err.Error(), "设置页") {
-		t.Errorf("错误信息应当指向设置页，实际: %v", err)
+	if models.model == nil || models.model.OwnerID != 42 || models.model.Name != testModelName {
+		t.Fatalf("登记的模型行不对: %+v", models.model)
+	}
+	if result.Document.Status != entity.KnowledgeDocumentStatusReady {
+		t.Fatalf("收录应当完成，实际状态 %q", result.Document.Status)
 	}
 }
 

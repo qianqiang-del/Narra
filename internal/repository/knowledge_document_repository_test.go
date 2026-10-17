@@ -24,11 +24,12 @@ import (
 const knowledgeTestDimensions = 4
 
 // knowledgeTestModelID 登记一个测试专用向量模型，返回它的 ID。
-// 向量表的外键指向 embedding_models，没有它插不进向量。
+// 向量表的外键指向 embedding_models，没有它插不进向量；模型行还要求一个归属账号。
 func knowledgeTestModelID(t *testing.T, tx *gorm.DB) uint64 {
 	t.Helper()
 
 	model, err := NewEmbeddingModelRepository(tx).EnsureDefault(context.Background(), entity.EmbeddingModel{
+		OwnerID:    testOwnerID(t, tx),
 		Name:       uniqueName("kb"),
 		Dimensions: knowledgeTestDimensions,
 	})
@@ -38,9 +39,12 @@ func knowledgeTestModelID(t *testing.T, tx *gorm.DB) uint64 {
 	return model.ID
 }
 
-func knowledgeTestDocument() *entity.KnowledgeDocument {
+func knowledgeTestDocument(t *testing.T, tx *gorm.DB) *entity.KnowledgeDocument {
+	t.Helper()
+
 	uri := "test.md"
 	return &entity.KnowledgeDocument{
+		OwnerID:    testOwnerID(t, tx),
 		Title:      "测试文档",
 		SourceType: entity.KnowledgeDocumentSourceImport,
 		SourceURI:  &uri,
@@ -102,7 +106,7 @@ func TestKnowledgeReplaceChunksWritesThreeTables(t *testing.T) {
 	ctx := context.Background()
 
 	modelID := knowledgeTestModelID(t, tx)
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -182,7 +186,7 @@ func TestKnowledgeReplaceChunksRemovesPreviousChunksAndVectors(t *testing.T) {
 	ctx := context.Background()
 
 	modelID := knowledgeTestModelID(t, tx)
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -222,7 +226,7 @@ func TestKnowledgeReplaceChunksRollsBackOnVectorCountMismatch(t *testing.T) {
 	ctx := context.Background()
 
 	modelID := knowledgeTestModelID(t, tx)
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -253,7 +257,7 @@ func TestKnowledgeReplaceChunksRejectsEmptyChunks(t *testing.T) {
 	repo := NewKnowledgeDocumentRepository(tx)
 	ctx := context.Background()
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -282,7 +286,7 @@ func TestKnowledgeReplaceChunksRejectsDocumentNotProcessing(t *testing.T) {
 	ctx := context.Background()
 
 	modelID := knowledgeTestModelID(t, tx)
-	document := knowledgeTestDocument() // 停在 pending
+	document := knowledgeTestDocument(t, tx) // 停在 pending
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -316,7 +320,7 @@ func TestKnowledgeStatusUpdatesBumpUpdatedAt(t *testing.T) {
 	repo := NewKnowledgeDocumentRepository(tx)
 	ctx := context.Background()
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -367,7 +371,7 @@ func TestKnowledgeSetEnabledTogglesFlag(t *testing.T) {
 	repo := NewKnowledgeDocumentRepository(tx)
 	ctx := context.Background()
 
-	document := knowledgeTestDocument()
+	document := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, document); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -417,7 +421,7 @@ func TestKnowledgeListAndCountChunks(t *testing.T) {
 	modelID := knowledgeTestModelID(t, tx)
 	var ids []uint64
 	for index := 0; index < 3; index++ {
-		document := knowledgeTestDocument()
+		document := knowledgeTestDocument(t, tx)
 		document.Title = uniqueName("list")
 		if err := repo.Create(ctx, document); err != nil {
 			t.Fatalf("创建文档失败: %v", err)
@@ -473,7 +477,7 @@ func TestKnowledgeListFiltersByStatusAndKeyword(t *testing.T) {
 	// 否则括号写错也照样是 0 条，测不出问题。
 	failedURI := marker + ".md"
 
-	percent := knowledgeTestDocument()
+	percent := knowledgeTestDocument(t, tx)
 	percent.Title = marker + "-100%手记"
 	if err := repo.Create(ctx, percent); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
@@ -482,7 +486,7 @@ func TestKnowledgeListFiltersByStatusAndKeyword(t *testing.T) {
 		t.Fatalf("推进状态失败: %v", err)
 	}
 
-	letter := knowledgeTestDocument()
+	letter := knowledgeTestDocument(t, tx)
 	letter.Title = marker + "-100x手记"
 	if err := repo.Create(ctx, letter); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
@@ -491,7 +495,7 @@ func TestKnowledgeListFiltersByStatusAndKeyword(t *testing.T) {
 		t.Fatalf("推进状态失败: %v", err)
 	}
 
-	failed := knowledgeTestDocument()
+	failed := knowledgeTestDocument(t, tx)
 	failed.Title = marker + "-另一份"
 	failed.SourceURI = &failedURI
 	if err := repo.Create(ctx, failed); err != nil {
@@ -582,7 +586,7 @@ func TestKnowledgeCountActiveExcludesFinished(t *testing.T) {
 		t.Fatalf("统计活跃任务失败: %v", err)
 	}
 
-	pending := knowledgeTestDocument()
+	pending := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, pending); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -594,7 +598,7 @@ func TestKnowledgeCountActiveExcludesFinished(t *testing.T) {
 		t.Errorf("新建 pending 后活跃数 = %d，期望 %d", afterPending, base+1)
 	}
 
-	failed := knowledgeTestDocument()
+	failed := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, failed); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}
@@ -612,7 +616,7 @@ func TestKnowledgeCountActiveExcludesFinished(t *testing.T) {
 		t.Errorf("failed 不该算忙: %d → %d", afterPending, afterFailed)
 	}
 
-	processing := knowledgeTestDocument()
+	processing := knowledgeTestDocument(t, tx)
 	if err := repo.Create(ctx, processing); err != nil {
 		t.Fatalf("创建文档失败: %v", err)
 	}

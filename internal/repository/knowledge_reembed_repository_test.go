@@ -122,7 +122,14 @@ func TestKnowledgeReembedRequeueOnlyFromReady(t *testing.T) {
 		t.Fatalf("写入 metadata 失败: %v", err)
 	}
 
+	// 上传记录的 owner_id 是外键，必须指向文档的归属账号。
+	var ownerID uint64
+	if err := tx.Raw("SELECT owner_id FROM knowledge_documents WHERE id = ?", ready).Scan(&ownerID).Error; err != nil {
+		t.Fatalf("查询测试文档归属失败: %v", err)
+	}
+
 	record := &entity.KnowledgeUploadRecord{
+		OwnerID:      ownerID,
 		DocumentID:   &ready,
 		OriginalName: "smoke.md",
 		Status:       entity.KnowledgeUploadRecordStatusReady,
