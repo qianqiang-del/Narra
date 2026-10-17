@@ -15,8 +15,10 @@ import (
 // 唯一索引在数据库层保证），文档解析只使用启用中的那条。启用前必须先测试连接 ——
 // 让解析拿着一个必然失败的配置上线，只会让每份含图文档都白等一次超时。
 //
-// 与重排的差异：这里没有需要热更新的常驻运行时（真正的调用发生在解析子进程里，
-// 配置在每次解析时按需读取），所以启停与编辑天然即时生效，也没有 LoadActive 这一步。
+// 配置分两层：用户自己的（落库、按账号生效）与平台默认（config.yaml 的 vlm 段，
+// 只读）。解析时按账号解析：用户启用项优先，缺失回退平台默认（见 CurrentVision）。
+// 这里没有需要热更新的常驻运行时（真正的调用发生在解析子进程里，配置在每次解析时
+// 按需读取），所以启停与编辑天然即时生效，也没有 LoadActive 这一步。
 type VLMSettingService interface {
 	// List 返回全部配置，含未测试与已停用的，供设置页展示。
 	List(ctx context.Context, ownerID ...uint64) ([]responsedto.VLMSetting, error)
@@ -42,8 +44,9 @@ type VLMSettingService interface {
 	// 启用一条会取消其它配置的启用状态（同事务完成）。
 	SetEnabled(ctx context.Context, id uint64, enabled bool, ownerID ...uint64) (*responsedto.VLMSetting, error)
 
-	// CurrentVision 返回当前启用的运行时视觉配置（含解密后的 API Key），
-	// 供收录解析链路使用（满足 rag.VisionProvider）。没有启用项时 ok = false ——
+	// CurrentVision 返回该账号当前生效的视觉配置（含解密后的 API Key）：
+	// 用户启用项优先，缺失回退平台默认（config.yaml 的 vlm 段）。供收录解析链路
+	// 使用（满足 rag.VisionProvider）。没有任何可用配置时 ok = false ——
 	// 那是"视觉理解关闭"，不是错误。
 	CurrentVision(ctx context.Context, ownerID ...uint64) (documentparser.VLMConfig, bool, error)
 }

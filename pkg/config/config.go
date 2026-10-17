@@ -12,6 +12,8 @@ type Config struct {
 	App             AppConfig             `mapstructure:"app"`
 	Database        DatabaseConfig        `mapstructure:"database"`
 	Embedding       EmbeddingConfig       `mapstructure:"embedding"`
+	Rerank          RerankConfig          `mapstructure:"rerank"`
+	VLM             VLMConfig             `mapstructure:"vlm"`
 	DefaultLLM      DefaultLLMConfig      `mapstructure:"default_llm"`
 	TTS             TTSConfig             `mapstructure:"tts"`
 	DocumentParser  DocumentParserConfig  `mapstructure:"document_parser"`
@@ -352,6 +354,70 @@ func (c EmbeddingConfig) Validate() error {
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("向量服务请求超时必须大于 0")
+	}
+
+	return nil
+}
+
+// RerankConfig 是平台默认的重排服务配置（OpenAI 兼容的 POST /rerank）。
+//
+// 用户没在设置页启用任何重排配置时回退到这份；只读、不落库，密钥用环境变量
+// RERANK_API_KEY 注入，不会写进用户自己的配置。
+type RerankConfig struct {
+	Enabled bool          `mapstructure:"enabled"`  // 是否启用平台默认重排
+	APIKey  string        `mapstructure:"api_key"`  // 服务密钥；自建服务可为空，环境变量优先级更高
+	BaseURL string        `mapstructure:"base_url"` // 服务根地址（不含 /rerank 路径），启用时必填
+	Model   string        `mapstructure:"model"`    // 重排模型 ID，如 BAAI/bge-reranker-v2-m3
+	Timeout time.Duration `mapstructure:"timeout"`  // 单次请求超时；启用时必须大于 0
+}
+
+// Validate 校验平台默认的重排配置，只在 enabled 为真时校验服务参数。
+func (c RerankConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.Model) == "" {
+		return fmt.Errorf("重排模型名称不能为空")
+	}
+	baseURL, err := url.Parse(strings.TrimSpace(c.BaseURL))
+	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" ||
+		(baseURL.Scheme != "http" && baseURL.Scheme != "https") {
+		return fmt.Errorf("重排服务地址必须是有效的 HTTP 或 HTTPS 地址")
+	}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("重排服务请求超时必须大于 0")
+	}
+
+	return nil
+}
+
+// VLMConfig 是平台默认的视觉模型配置（OpenAI 兼容的 POST /chat/completions）。
+//
+// 用户没在设置页启用任何视觉配置时回退到这份；只读、不落库，密钥用环境变量
+// VLM_API_KEY 注入。
+type VLMConfig struct {
+	Enabled bool          `mapstructure:"enabled"`  // 是否启用平台默认视觉理解
+	APIKey  string        `mapstructure:"api_key"`  // 服务密钥；自建服务可为空，环境变量优先级更高
+	BaseURL string        `mapstructure:"base_url"` // 服务根地址（不含 /chat/completions 路径），启用时必填
+	Model   string        `mapstructure:"model"`    // 视觉模型 ID，如 Qwen/Qwen3.5-35B-A3B
+	Timeout time.Duration `mapstructure:"timeout"`  // 单张图片的调用超时；启用时必须大于 0
+}
+
+// Validate 校验平台默认的视觉模型配置，只在 enabled 为真时校验服务参数。
+func (c VLMConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.Model) == "" {
+		return fmt.Errorf("视觉模型名称不能为空")
+	}
+	baseURL, err := url.Parse(strings.TrimSpace(c.BaseURL))
+	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" ||
+		(baseURL.Scheme != "http" && baseURL.Scheme != "https") {
+		return fmt.Errorf("视觉模型服务地址必须是有效的 HTTP 或 HTTPS 地址")
+	}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("视觉模型请求超时必须大于 0")
 	}
 
 	return nil

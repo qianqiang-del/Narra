@@ -42,6 +42,16 @@ embedding:
   model: Qwen/Qwen3-Embedding-0.6B
   timeout: 120s
   dimensions: 1024
+rerank:
+  enabled: true
+  base_url: https://api.siliconflow.cn/v1
+  model: BAAI/bge-reranker-v2-m3
+  timeout: 120s
+vlm:
+  enabled: true
+  base_url: https://api.siliconflow.cn/v1
+  model: Qwen/Qwen3.5-35B-A3B
+  timeout: 120s
 default_llm:
   enabled: true
   name: "平台默认模型"

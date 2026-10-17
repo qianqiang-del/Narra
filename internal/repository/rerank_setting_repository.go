@@ -45,6 +45,16 @@ func (r *rerankSettingRepository) GetEnabled(ctx context.Context) (*entity.Reran
 	return &setting, nil
 }
 
+// GetEnabledByOwner 查该账号启用的配置；该账号没有启用项时透传 gorm.ErrRecordNotFound
+// （上层据此回退平台默认）。名字在账号内唯一，查询必须带 owner_id。
+func (r *rerankSettingRepository) GetEnabledByOwner(ctx context.Context, ownerID uint64) (*entity.RerankSetting, error) {
+	var setting entity.RerankSetting
+	if err := r.db.WithContext(ctx).Where("owner_id = ? AND is_enabled = ?", ownerID, true).First(&setting).Error; err != nil {
+		return nil, err
+	}
+	return &setting, nil
+}
+
 // FindByID 按主键取配置。
 func (r *rerankSettingRepository) FindByID(ctx context.Context, id uint64) (*entity.RerankSetting, error) {
 	var setting entity.RerankSetting

@@ -41,6 +41,10 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("jwt.refresh_ttl", "168h")
 	// Embedding 默认不启用。模型与向量维度因服务商而异，启用时必须显式配置。
 	v.SetDefault("embedding.timeout", "120s")
+	// Rerank / VLM 的平台默认同理：默认不启用，超时先给客户端兜底值
+	// （pkg/rerank 缺省 5 秒、pkg/vlm 缺省 120 秒，这里显式写出来便于运维调整）。
+	v.SetDefault("rerank.timeout", "5s")
+	v.SetDefault("vlm.timeout", "60s")
 	v.SetDefault("default_llm.timeout", "60s")
 	v.SetDefault("sms.region_id", "cn-hangzhou")
 	// TTS 同理。provider 故意不给默认值：它决定客户端走哪种协议，写错了要到合成那一步才炸。
@@ -130,6 +134,12 @@ func Load(configPath string) (*Config, error) {
 	if val := os.Getenv("EMBEDDING_API_KEY"); val != "" {
 		config.Embedding.APIKey = val
 	}
+	if val := os.Getenv("RERANK_API_KEY"); val != "" {
+		config.Rerank.APIKey = val
+	}
+	if val := os.Getenv("VLM_API_KEY"); val != "" {
+		config.VLM.APIKey = val
+	}
 	if val := os.Getenv("NARRA_DEFAULT_LLM_API_KEY"); val != "" {
 		config.DefaultLLM.APIKey = val
 	}
@@ -161,6 +171,12 @@ func Load(configPath string) (*Config, error) {
 
 	if err := config.Embedding.Validate(); err != nil {
 		return nil, fmt.Errorf("向量服务配置无效: %w", err)
+	}
+	if err := config.Rerank.Validate(); err != nil {
+		return nil, fmt.Errorf("重排服务配置无效: %w", err)
+	}
+	if err := config.VLM.Validate(); err != nil {
+		return nil, fmt.Errorf("视觉模型配置无效: %w", err)
 	}
 	if err := config.DefaultLLM.Validate(); err != nil {
 		return nil, fmt.Errorf("平台大模型配置无效: %w", err)

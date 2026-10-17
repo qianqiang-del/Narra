@@ -20,6 +20,10 @@ type RerankSettingRepository interface {
 	// 由上层决定是"精排关闭"还是"查库失败"。
 	GetEnabled(ctx context.Context) (*entity.RerankSetting, error)
 
+	// GetEnabledByOwner 返回该账号启用的配置；该账号没有启用项时同样透传
+	// gorm.ErrRecordNotFound（上层回退平台默认）。
+	GetEnabledByOwner(ctx context.Context, ownerID uint64) (*entity.RerankSetting, error)
+
 	// FindByID 按主键取配置，查不到返回 gorm.ErrRecordNotFound。
 	FindByID(ctx context.Context, id uint64) (*entity.RerankSetting, error)
 	FindByIDAndOwner(ctx context.Context, id, ownerID uint64) (*entity.RerankSetting, error)

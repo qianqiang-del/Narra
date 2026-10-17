@@ -9,7 +9,10 @@ import (
 
 	"go.uber.org/zap"
 
+	"narra/internal/ownership"
+	"narra/pkg/config"
 	"narra/pkg/logger"
+	"narra/pkg/rerank"
 )
 
 // rerank.go 精排装饰器：两层 RRF 融合之后、截断到 top_k 之前，把候选交给重排模型重新打分。
@@ -44,17 +47,32 @@ type Reranker interface {
 	Rerank(ctx context.Context, query string, documents []string) ([]float64, error)
 }
 
-// RerankerProvider 返回当前生效的精排能力；返回 nil 表示精排关闭（按原样检索）。
+// 编译期确认生产实现满足本模块的依赖面；上游接口签名变动时这里先编译失败。
+var _ Reranker = (*rerank.Client)(nil)
+
+// RerankerProvider 按账号解析当前生效的精排连接配置。
 //
-// 做成函数而不是接口：精排配置可以在运行时切换（设置页保存/启停即时生效），装饰器
-// 每次检索都重新取一次；*pkg/rerank.Manager 的 Current() 返回具体类型 *rerank.Client，
-// 由装配处用一个闭包适配（接口方法的返回类型必须精确匹配，闭包最省事）。
-type RerankerProvider func() Reranker
+// 解析顺序由实现方保证：该账号启用的配置 → 平台默认（config.yaml 的 rerank 段）→
+// 未启用（Enabled = false）。返回 error 表示读取或解密失败，与"未启用"是两回事；
+// 两者都只影响精排，不影响检索本身。
+//
+// 与 embedding 的 EmbeddingProvider 同一种装法：装饰器每次检索现取一次，
+// 所以设置页保存/启停之后下一次检索就用新配置，不需要热更新任何共享状态。
+type RerankerProvider interface {
+	CurrentRerank(ctx context.Context, ownerID uint64) (config.RerankConfig, error)
+}
+
+// rerankerFactory 按连接配置现建精排客户端。
+//
+// Client 是配置快照（base_url / model 在构造时固化），必须现建现用；
+// 测试把它换成返回桩的工厂，装饰器逻辑就能完全离线跑。
+type rerankerFactory func(cfg config.RerankConfig) (Reranker, error)
 
 // Reranked 是精排装饰器：实现与内层相同的 Retrieve 签名，可直接替换给服务层使用。
 type Reranked struct {
-	inner    Searcher
-	provider RerankerProvider
+	inner       Searcher
+	provider    RerankerProvider
+	newReranker rerankerFactory
 }
 
 // NewReranked 构造精排装饰器。
@@ -65,7 +83,18 @@ func NewReranked(inner Searcher, provider RerankerProvider) (*Reranked, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("精排装饰器需要非空的重排能力来源")
 	}
-	return &Reranked{inner: inner, provider: provider}, nil
+	return &Reranked{
+		inner:    inner,
+		provider: provider,
+		newReranker: func(cfg config.RerankConfig) (Reranker, error) {
+			return rerank.NewClient(rerank.Config{
+				BaseURL: cfg.BaseURL,
+				APIKey:  cfg.APIKey,
+				Model:   cfg.Model,
+				Timeout: cfg.Timeout,
+			})
+		},
+	}, nil
 }
 
 // Retrieve 先让内层多取一些候选，再精排、截断到调用方要的条数。
@@ -74,10 +103,19 @@ func NewReranked(inner Searcher, provider RerankerProvider) (*Reranked, error) {
 // 都只留一条告警日志并按融合顺序返回 —— 用户可能感觉不到这次没有精排，但绝不能
 // 因为精排挂了就搜不出东西。内层失败则原样上抛（那是检索真的坏了）。
 func (r *Reranked) Retrieve(ctx context.Context, input RetrieveInput) (RetrieveResult, error) {
-	// 精排关闭：原样透传（连候选深度都不改）。这样"没配精排"与"没包装饰器"
-	// 在行为上完全一致，不会因为多包了一层就悄悄加深召回、多查库。
-	reranker := r.provider()
-	if reranker == nil {
+	// 精排关闭或配置不可用：原样透传（连候选深度都不改）。这样"没配精排"与
+	// "没包装饰器"在行为上完全一致，不会因为多包了一层就悄悄加深召回、多查库。
+	cfg, err := r.provider.CurrentRerank(ctx, ownership.FromContext(ctx))
+	if err != nil {
+		logger.Warn("读取精排配置失败，本次检索不做精排", zap.Error(err))
+		return r.inner.Retrieve(ctx, input)
+	}
+	if !cfg.Enabled {
+		return r.inner.Retrieve(ctx, input)
+	}
+	reranker, err := r.newReranker(cfg)
+	if err != nil {
+		logger.Warn("构建精排客户端失败，本次检索不做精排", zap.Error(err))
 		return r.inner.Retrieve(ctx, input)
 	}
 
