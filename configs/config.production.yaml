@@ -37,7 +37,7 @@ sms:
   code_type: 1
   case_auth_policy: 1
 embedding:
-  enabled: true
+  enabled: false
 default_llm:
   enabled: true
   name: "平台默认模型"
