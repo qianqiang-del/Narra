@@ -60,7 +60,7 @@ if [[ "$backend" == true ]]; then
   fi
 
   if [[ "$runtime" == true ]]; then
-    # A 2G host cannot reliably load the runtime image alongside OCR's Python process.
+    # 2G 主机同时加载运行镜像与 OCR 的 Python 进程并不可靠。
     runtime_stopped=false
     restart_previous_runtime() {
       if [[ "$runtime_stopped" == true ]]; then

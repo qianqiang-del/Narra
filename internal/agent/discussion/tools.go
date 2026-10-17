@@ -19,7 +19,7 @@ import (
 	"narra/internal/toolcall"
 )
 
-// WhiteboardArtifact contains public teaching material, never hidden reasoning.
+// WhiteboardArtifact 只承载公开的教学材料，绝不包含隐藏推理。
 type WhiteboardArtifact struct {
 	Title   string `json:"title"`
 	Kind    string `json:"kind"`
@@ -76,7 +76,7 @@ func (s *generationToolsState) totals() (int32, int32, string) {
 	return input, output, source
 }
 
-// EnableTeachingTools is called once on a newly built, run-local adapter.
+// EnableTeachingTools 在一个刚构建、运行期专属的适配器上只调用一次。
 func (m *OpenAIModels) EnableTeachingTools(source DiscussionToolSource) {
 	m.toolsEnabled = true
 	m.toolSource = source
@@ -196,7 +196,7 @@ func (t *boundedDiscussionTool) InvokableRun(ctx context.Context, args string, o
 	return result, nil
 }
 
-// Each model call has independent usage, including intermediate tool decisions.
+// 每次模型调用都有独立的 usage 统计，包括中间的工具决策调用。
 type usageChatModel struct {
 	inner model.ToolCallingChatModel
 	state *generationToolsState

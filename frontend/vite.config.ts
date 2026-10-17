@@ -7,7 +7,7 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
-  // Multiple local dev servers must not overwrite each other's optimized dependencies.
+  // 多个本地开发服务器不能互相覆盖对方的依赖优化缓存。
   cacheDir: `node_modules/.vite-${process.pid}`,
   resolve: {
     alias: {

@@ -221,7 +221,7 @@ func newDiscussionFixture(t *testing.T) *discussionFixture {
 		t.Fatalf("建测试对话失败: %v", err)
 	}
 
-	byRole := map[uint64]uint64{} // preset_agents.id → classroom_agents.id
+	byRole := map[uint64]uint64{} // 映射：preset_agents.id → classroom_agents.id
 	for _, link := range links {
 		byRole[link.AgentID] = link.ID
 	}

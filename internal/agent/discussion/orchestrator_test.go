@@ -810,8 +810,8 @@ func TestOrchestratorMarksFailure(t *testing.T) {
 	}
 }
 
-// TestOrchestratorRecoversAfterRunStarted verifies a panic cannot leave a run
-// stuck in running without a terminal event for the SSE consumer.
+// TestOrchestratorRecoversAfterRunStarted 验证 panic 不会让一次运行一直卡在 running、
+// 不给 SSE 消费端发终态事件。
 func TestOrchestratorRecoversAfterRunStarted(t *testing.T) {
 	f := newFixture(t)
 	defer f.cleanup()

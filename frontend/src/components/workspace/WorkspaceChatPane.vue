@@ -196,7 +196,7 @@ watch(
       </div>
     </div>
 
-    <!-- Composer -->
+    <!-- 输入区 -->
     <div class="shrink-0 p-3">
       <div
         ref="composerRef"

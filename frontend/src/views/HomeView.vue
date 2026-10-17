@@ -471,7 +471,7 @@ function openClassroom(id: string) {
 
         <!-- 底部工具行 -->
         <div class="flex items-end gap-2 px-3 pb-3">
-          <!-- §5.6 GenerationToolbar -->
+          <!-- §5.6 生成工具栏 -->
           <div class="min-w-0 flex-1">
             <GenerationToolbar
               v-model:provider-id="providerId"

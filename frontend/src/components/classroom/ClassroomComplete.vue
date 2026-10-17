@@ -65,7 +65,7 @@ const statCards = computed(() => [
       class="absolute inset-0 bg-gradient-to-br from-gold-50 via-white to-orange-50 dark:from-gold-900/20 dark:via-gray-900 dark:to-gold-900/30"
     />
 
-    <!-- confetti -->
+    <!-- 彩带 -->
     <div class="pointer-events-none absolute inset-0 overflow-hidden">
       <span
         v-for="c in confetti"
@@ -92,7 +92,7 @@ const statCards = computed(() => [
         <Trophy class="size-20 text-gold-500 drop-shadow-lg md:size-24" />
       </div>
 
-      <!-- Ribbon -->
+      <!-- 绶带 -->
       <span
         class="rounded-full bg-gradient-to-r from-gold-400 via-orange-400 to-gold-500 px-4 py-1.5 text-xs font-bold tracking-wider text-white uppercase shadow-lg shadow-gold-500/30"
       >

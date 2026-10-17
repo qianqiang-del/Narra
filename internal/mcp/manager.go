@@ -62,8 +62,8 @@ func NewManager(app config.AppConfig) *Manager {
 	}
 }
 
-// Load replaces the runtime server configuration without opening connections.
-// Call Start after Load during application startup.
+// Load 替换运行期的服务配置，但不建立连接。
+// 应用启动期间在 Load 之后调用 Start。
 func (m *Manager) Load(servers []config.MCPServerConfig) error {
 	next := make(map[string]*serverState, len(servers))
 	for _, server := range servers {
@@ -90,7 +90,7 @@ func (m *Manager) Load(servers []config.MCPServerConfig) error {
 	return nil
 }
 
-// Upsert applies one server configuration and refreshes the runtime tool registry.
+// Upsert 应用一条服务配置并刷新运行期工具注册表。
 func (m *Manager) Upsert(ctx context.Context, server config.MCPServerConfig) error {
 	if !server.Enabled {
 		return m.Remove(ctx, server.ID)
@@ -119,7 +119,7 @@ func (m *Manager) Upsert(ctx context.Context, server config.MCPServerConfig) err
 	return err
 }
 
-// Remove disconnects and removes one server from the runtime configuration.
+// Remove 断开并从运行期配置中移除一台服务。
 func (m *Manager) Remove(ctx context.Context, id string) error {
 	var client managedClient
 	m.mu.Lock()

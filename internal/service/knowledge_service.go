@@ -1157,7 +1157,7 @@ func parserName(metadata json.RawMessage) string {
 }
 
 // failureStage 从 metadata 里取出失败卡在哪一步（细粒度：select_parser / parse /
-// chunk / model / vector / store / worker / status）。
+// chunk / model / vector / store / worker / status 等环节）。
 //
 // 它与粗粒度的 ingest_stage 分工不同：阶段回答"失败后从哪一步恢复"，这里回答
 // "具体是哪一环失败" —— 两者都带出去，前端才不会把"向量已算好、写库失败"

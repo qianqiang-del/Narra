@@ -13,7 +13,7 @@ import (
 	"narra/pkg/config"
 )
 
-// Raw responses need room for search results before the agent-facing compaction runs.
+// 原始响应要为搜索结果留足空间，之后才轮到面向 Agent 的压缩。
 const maxToolResultBytes = 8 * 1024 * 1024
 
 type session interface {

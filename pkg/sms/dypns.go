@@ -33,7 +33,7 @@ func NewDypnsSender(cfg config.SMSConfig) (*DypnsSender, error) {
 	return &DypnsSender{client: client, cfg: cfg}, nil
 }
 
-// Dypnsapi generates the code itself; the code argument is used only by Dysmsapi.
+// 验证码由 Dypnsapi 自己生成；code 参数只有 Dysmsapi 会用到。
 func (s *DypnsSender) Send(ctx context.Context, phone, _ string) error {
 	if err := ctx.Err(); err != nil {
 		return err

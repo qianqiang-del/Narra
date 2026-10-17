@@ -179,7 +179,7 @@ func (p *PlainTextParser) Parse(ctx context.Context, req Request) (*Result, erro
 func decodeText(raw []byte, path string) (string, error) {
 	switch {
 	case bytes.HasPrefix(raw, []byte{0xEF, 0xBB, 0xBF}):
-		return string(raw[3:]), nil // UTF-8 BOM
+		return string(raw[3:]), nil // 跳过 UTF-8 BOM
 	case bytes.HasPrefix(raw, []byte{0xFF, 0xFE}):
 		return decodeUTF16(raw[2:], binary.LittleEndian), nil
 	case bytes.HasPrefix(raw, []byte{0xFE, 0xFF}):

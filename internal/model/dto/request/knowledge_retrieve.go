@@ -5,7 +5,7 @@ import "time"
 // KnowledgeRetrieve 是一次知识库检索的请求。
 //
 // 它是 MCP 契约 rag_retrieve 的 HTTP 形态（见 docs/modules/agent-mcp-tools.md）：
-// { query, queries?, top_k, filters? } → { results: [{content, source, score}] }。
+// 契约形态：{ query, queries?, top_k, filters? } → { results: [{content, source, score}] }。
 // 契约里的 classroom_id 没有实现（知识库不关联课程），filters 只在 HTTP 面提供 ——
 // MCP 工具暂不暴露过滤参数，理由同 classroom_id：模型手里没有文档的来源分类，
 // 给它一个没有语义的参数只会诱导它乱填。

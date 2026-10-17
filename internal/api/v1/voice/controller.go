@@ -33,7 +33,7 @@ func (c *Controller) List(ctx *gin.Context) {
 	response.Success(ctx, items)
 }
 
-// GET /api/v1/voices/:id/preview
+// Preview 试听指定音色：GET /api/v1/voices/:id/preview
 func (c *Controller) Preview(ctx *gin.Context) {
 	voiceID := ctx.Param("id")
 

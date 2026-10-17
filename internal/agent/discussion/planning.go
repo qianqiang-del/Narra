@@ -60,8 +60,8 @@ func discussionStyleLabel(style string) string {
 	return "常规回答：只有确实需要不同视角时才安排多人，其余问题由最合适的一位角色直接回答。"
 }
 
-// The switch only promotes questions the planner explicitly identified as having
-// useful complementary viewpoints. Missing/unknown classifications stay single-speaker.
+// 这个开关只把规划器明确判定为「有互补视角」的问题升级为多人研讨；
+// 缺失或未知的分类保持单发言人。
 func promoteMultiPerspective(plan ResponsePlan, topic string, participants []Participant) ResponsePlan {
 	if plan.Safety == "refuse" || plan.Mode == "redirect" || plan.Mode == "round" || plan.Mode == "clarify" {
 		return plan

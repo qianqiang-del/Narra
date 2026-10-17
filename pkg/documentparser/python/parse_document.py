@@ -365,8 +365,8 @@ def _convert_with_docling(
     doc = converted.document
     markdown = doc.export_to_markdown()
     if recognizer is None:
-        # PDF routing must not OCR extracted images or let their placeholders
-        # turn an otherwise empty Docling result into visible content.
+        # PDF 路由不能去 OCR 提取出的图片，也不能让它们的占位符
+        # 把本已为空的 Docling 结果变成可见内容。
         return re.sub(r"<!--\s*image\s*-->", "", markdown)
 
     if not (hasattr(doc, "pictures") and doc.pictures):

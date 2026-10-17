@@ -473,8 +473,7 @@ export default {
         note: 'For a record that has not been ingested yet, deleting it also removes that document and its temporary files. Ingested knowledge bases are unaffected.',
       },
     },
-    // After switching embedding models: banner + one-click re-embed
-    // (GET /documents/embedding-status, POST /documents/reembed).
+    // 换过向量模型后的存量修复：提示条 + 一键重新向量化（GET /documents/embedding-status、POST /documents/reembed）。
     reembed: {
       title: '{count} document(s) still use vectors from an old model',
       desc: 'Retrieval only searches vectors of the current model ({model}), so these documents can only be matched lexically for now. Re-embedding reuses existing chunks — no re-parsing.',
@@ -530,8 +529,8 @@ export default {
       disabled: 'Disabled',
       failed: 'Failed',
     },
-    // Coarse failure stage, prefixed to the specific error ("Embedding failed: upstream 429").
-    // "store" is its own group: the vectors were computed but not persisted.
+    // 粗粒度的失败阶段，会作为前缀拼在具体错误之前（如 "Embedding failed: upstream 429"）。
+    // "store" 单独成组：向量已算好，但没能写库。
     stage: {
       parse: 'Parsing failed',
       chunk: 'Chunking failed',

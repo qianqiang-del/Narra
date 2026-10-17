@@ -43,7 +43,7 @@ const lexicalIndexName = "knowledge_chunks_lexical_idx"
 // 检索 SQL 里的同义表达式带上表别名（规划器按解析后的表达式树匹配，别名不影响；
 // 两者的等价性由 EXPLAIN 用例钉住，见 TestSearchLexicalCanUseIndex）：
 //
-//	(c.content || ' ' || coalesce(c.heading, ''))
+//	示例：(c.content || ' ' || coalesce(c.heading, ''))
 const lexicalIndexExpression = `(content || ' ' || coalesce(heading, ''))`
 
 // lexicalIndexKind 是词法索引所用的扩展。

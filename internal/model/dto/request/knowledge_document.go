@@ -22,8 +22,7 @@ type KnowledgeIngestFile struct {
 	// 收录链路本身不用它；0 表示调用方没提供。
 	SizeBytes int64 `json:"size_bytes"`
 	// Purpose 是入库用途标记。空 = 普通知识库文档；取值 material 表示这是课程材料：
-	// 未关联课堂时带 expires_at，到期由后台清理；关联后长期保留。取值见
-	// entity.KnowledgeDocumentKindXxx。
+	// 未关联课堂时带 expires_at，到期由后台清理；关联后长期保留。取值见 entity.KnowledgeDocumentKindXxx。
 	Purpose string `json:"purpose"`
 }
 

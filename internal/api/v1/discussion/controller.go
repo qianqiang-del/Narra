@@ -23,7 +23,7 @@ func NewController(svc service.DiscussionService) *Controller {
 	return &Controller{svc: svc}
 }
 
-// Settings reads the effective model selection for one classroom.
+// Settings 读取某堂课生效的模型选择。
 func (c *Controller) Settings(ctx *gin.Context) {
 	id, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
 	if err != nil || id == 0 {
@@ -38,7 +38,7 @@ func (c *Controller) Settings(ctx *gin.Context) {
 	response.Success(ctx, result)
 }
 
-// UpdateSettings applies to subsequent discussions only, not running ones.
+// UpdateSettings 只对后续的讨论生效，不影响正在运行的讨论。
 func (c *Controller) UpdateSettings(ctx *gin.Context) {
 	id, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
 	if err != nil || id == 0 {

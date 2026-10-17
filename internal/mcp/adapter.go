@@ -69,9 +69,9 @@ type einoTool struct {
 	info    *schema.ToolInfo
 }
 
-// DiscussionTools narrows permissions without changing the classroom worker API.
-// MCP annotations are trusted only for user-configured servers; unannotated or
-// writable tools are not exposed to discussion agents.
+// DiscussionTools 在不改变课堂 Worker API 的前提下收窄权限：
+// MCP 注解只信任用户自行配置的服务；没有注解或可写型的工具
+// 不会暴露给讨论 Agent。
 func (m *Manager) DiscussionTools(ctx context.Context, webSearch bool) ([]tool.BaseTool, error) {
 	result := m.localToolList()
 	result = bindKnowledgeOwner(result, ownership.FromContext(ctx))
