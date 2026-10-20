@@ -594,7 +594,7 @@ func (a *App) initDependencies() error {
 
 	sceneSvc := service.NewSceneService(sceneSegmentRepo, sceneRepo, classroomRepo)
 	traceSvc := service.NewTraceService(runRepo, turnRepo, traceSpanRepo, conversationRepo, classroomRepo)
-	a.router = api.NewRouter(authSvc, roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, vlmSettingSvc, classroomSvc, folderSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, traceSvc, uploadDir, parser, knowledgeIngest)
+	a.router = api.NewRouter(authSvc, roleSvc, embeddingSettingSvc, voiceSvc, mcpServerSvc, llmProviderSvc, rerankSettingSvc, vlmSettingSvc, classroomSvc, folderSvc, sceneSvc, knowledgeSvc, conversationSvc, discussionSvc, traceSvc, uploadDir, knowledgeIngest)
 	return nil
 }
 

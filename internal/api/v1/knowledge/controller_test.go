@@ -21,7 +21,6 @@ import (
 	"narra/internal/ownership"
 	"narra/internal/service"
 	"narra/pkg/config"
-	"narra/pkg/documentparser"
 	apperrors "narra/pkg/errors"
 	"narra/pkg/jwt"
 )
@@ -47,26 +46,10 @@ func (s *stubDocumentService) Get(context.Context, uint64) (responsedto.Knowledg
 	return s.frames[index], nil
 }
 
-// stubParser 依次返回 statuses；用完之后重复最后一帧。
-type stubParser struct {
-	documentparser.Parser
-	statuses []documentparser.Status
-	calls    int
-}
-
-func (p *stubParser) Status(context.Context) documentparser.Status {
-	index := p.calls
-	p.calls++
-	if index >= len(p.statuses) {
-		index = len(p.statuses) - 1
-	}
-	return p.statuses[index]
-}
-
 // newEventsController 把秒级的推送节奏压到毫秒级，否则一条状态流转要等两三秒。
-func newEventsController(t *testing.T, svc service.KnowledgeService, parser documentparser.Parser) *Controller {
+func newEventsController(t *testing.T, svc service.KnowledgeService) *Controller {
 	t.Helper()
-	controller := NewController(svc, t.TempDir(), parser, config.KnowledgeIngestConfig{})
+	controller := NewController(svc, t.TempDir(), config.KnowledgeIngestConfig{})
 	controller.eventsQueryInterval = 5 * time.Millisecond
 	controller.eventsHeartbeatInterval = time.Minute
 	controller.eventsMaxDuration = time.Minute
@@ -137,16 +120,6 @@ func documentStatuses(t *testing.T, events []streamEvent) []string {
 	return statuses
 }
 
-func countEvents(events []streamEvent, name string) int {
-	count := 0
-	for _, event := range events {
-		if event.name == name {
-			count++
-		}
-	}
-	return count
-}
-
 // 主路径：pending → processing → ready 各推一帧，ready 之后流必须停。
 func TestEventsStreamsUntilReady(t *testing.T) {
 	svc := &stubDocumentService{frames: []responsedto.KnowledgeDocument{
@@ -154,7 +127,7 @@ func TestEventsStreamsUntilReady(t *testing.T) {
 		documentFrame(7, entity.KnowledgeDocumentStatusProcessing),
 		{ID: 7, Status: entity.KnowledgeDocumentStatusReady, Chunks: 12},
 	}}
-	controller := newEventsController(t, svc, &stubParser{statuses: []documentparser.Status{{Enabled: true, Ready: true}}})
+	controller := newEventsController(t, svc)
 	ctx, recorder := eventsContext(t, "7")
 
 	controller.Events(ctx)
@@ -167,10 +140,6 @@ func TestEventsStreamsUntilReady(t *testing.T) {
 	if got, want := documentStatuses(t, events), []string{"pending", "processing", "ready"}; !slices.Equal(got, want) {
 		t.Fatalf("document 事件状态 = %v，期望 %v", got, want)
 	}
-	// parser 状态整段没变，只在开头推一帧 —— 每秒一次的空查询不该变成每秒一条事件。
-	if got := countEvents(events, eventParser); got != 1 {
-		t.Errorf("parser 事件 %d 帧，期望 1（只在变化时推）", got)
-	}
 	last := events[len(events)-1]
 	if last.name != eventDocument || !strings.Contains(last.data, `"status":"ready"`) {
 		t.Errorf("最后一帧 = %s %s，期望 ready 的 document", last.name, last.data)
@@ -182,49 +151,17 @@ func TestEventsClosesWhenAlreadySettled(t *testing.T) {
 	svc := &stubDocumentService{frames: []responsedto.KnowledgeDocument{
 		{ID: 7, Status: entity.KnowledgeDocumentStatusFailed, Error: "上游 429"},
 	}}
-	controller := newEventsController(t, svc, nil)
+	controller := newEventsController(t, svc)
 	ctx, recorder := eventsContext(t, "7")
 
 	controller.Events(ctx)
 
 	events := parseStream(recorder.Body.String())
-	if len(events) != 2 {
-		t.Fatalf("事件数 = %d，期望 2（document + parser 各一帧）", len(events))
+	if len(events) != 1 {
+		t.Fatalf("事件数 = %d，期望 1（终态文档只补一帧）", len(events))
 	}
 	if events[0].name != eventDocument || !strings.Contains(events[0].data, "上游 429") {
 		t.Errorf("首帧 = %s %s，期望带上失败原因的 document", events[0].name, events[0].data)
-	}
-}
-
-// 解析环境准备进度也会进流：只在 progress 变化时推新帧，而不是整段准备期反复推同一帧。
-func TestEventsPushesParserProgressOnChange(t *testing.T) {
-	svc := &stubDocumentService{frames: []responsedto.KnowledgeDocument{
-		documentFrame(7, entity.KnowledgeDocumentStatusPending),
-		documentFrame(7, entity.KnowledgeDocumentStatusPending),
-		documentFrame(7, entity.KnowledgeDocumentStatusPending),
-		documentFrame(7, entity.KnowledgeDocumentStatusReady),
-	}}
-	controller := newEventsController(t, svc, &stubParser{statuses: []documentparser.Status{
-		{Enabled: true, Preparing: true, Progress: "下载解释器"},
-		{Enabled: true, Preparing: true, Progress: "下载解释器"},
-		{Enabled: true, Ready: true},
-	}})
-	ctx, recorder := eventsContext(t, "7")
-
-	controller.Events(ctx)
-
-	events := parseStream(recorder.Body.String())
-	if got := countEvents(events, eventParser); got != 2 {
-		t.Fatalf("parser 事件 %d 帧，期望 2（初始一帧 + 变化一帧）", got)
-	}
-	lastParser := ""
-	for _, event := range events {
-		if event.name == eventParser {
-			lastParser = event.data
-		}
-	}
-	if !strings.Contains(lastParser, `"ready":true`) {
-		t.Errorf("最后一帧 parser = %s，期望 ready = true", lastParser)
 	}
 }
 
@@ -234,7 +171,7 @@ func TestEventsReportsErrorWhenGetFails(t *testing.T) {
 		frames: []responsedto.KnowledgeDocument{documentFrame(7, entity.KnowledgeDocumentStatusPending)},
 		errs:   []error{nil, errors.New("知识文档 7 不存在")},
 	}
-	controller := newEventsController(t, svc, nil)
+	controller := newEventsController(t, svc)
 	ctx, recorder := eventsContext(t, "7")
 
 	controller.Events(ctx)
@@ -252,7 +189,7 @@ func TestEventsRejectsMissingDocumentWithJSON(t *testing.T) {
 		frames: []responsedto.KnowledgeDocument{{}},
 		errs:   []error{errors.New("知识文档 9 不存在")},
 	}
-	controller := newEventsController(t, svc, nil)
+	controller := newEventsController(t, svc)
 	ctx, recorder := eventsContext(t, "9")
 
 	controller.Events(ctx)
@@ -316,7 +253,6 @@ func TestIngestTextSurvivesServerWriteTimeout(t *testing.T) {
 	controller := NewController(
 		svc,
 		t.TempDir(),
-		nil,
 		config.KnowledgeIngestConfig{},
 	)
 	engine := gin.New()

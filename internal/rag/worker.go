@@ -70,6 +70,8 @@ const (
 // 批次屏障：一个慢任务只占它自己那一份并发，不会让另一个空出来的并发位停工。
 // 多实例部署时靠 ClaimAndReturnAttempt 的乐观更新保证同一行只被一个执行者拿到，
 // 租约编号保证旧执行者的迟到写入会被挡掉。
+//
+// 按调用顺序整理、逐个解释相关函数的阅读地图见 docs/文件上传任务抢占.md。
 type Worker struct {
 	store       FileTaskStore
 	ingester    *Ingester

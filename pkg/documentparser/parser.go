@@ -302,14 +302,13 @@ type Request struct {
 	VLM *VLMConfig
 }
 
-// Status 描述解析能力的就绪状态。
+// Status 描述解析能力的就绪状态，供内部诊断与日志使用。
 //
-// Enabled 与 Ready 是两件事，前端要分开读：
+// Enabled 与 Ready 是两件事：
 //   - Enabled=false：配置里就没开解析能力，PDF / Office 这类文件根本没有解析器可走；
-//   - Enabled=true 且 Ready=false：能力开着，但环境还没备好 —— 首次上传时后端会现场
-//     用 uv 下载解释器与依赖（分钟级），Preparing/Progress 说的就是这段时间。
-//
-// 不分开的话，前端只能把"没启用"和"正在装"说成同一句话，而用户该做的事完全不同。
+//   - Enabled=true 且 Ready=false：能力开着，但运行环境还没备好 —— 解析时会现场准备
+//     （未配置 python_path 时用 uv 下载解释器与依赖，分钟级），Preparing/Progress
+//     说的就是这段时间。
 type Status struct {
 	Enabled   bool   `json:"enabled"`
 	Ready     bool   `json:"ready"`
@@ -339,9 +338,9 @@ type PythonParser struct {
 
 	// prepareMu 只串行化"准备环境"这件事，不保护状态读取。
 	//
-	// 准备是分钟级的（首次要下载解释器与依赖），而 /parser/status 会被前端在上传
-	// 期间反复调用 —— 两者共用一把锁的话，状态接口会跟着挂满整个准备时长，而前端
-	// 恰恰要靠它显示"正在准备环境"。所以状态读写走独立的 stateMu，且只做快照。
+	// 准备是分钟级的（首次要下载解释器与依赖），而 Status 查询只读一份快照 ——
+	// 两者共用一把锁的话，读状态会跟着挂满整个准备时长。所以状态读写走独立的
+	// stateMu，且只做快照。
 	prepareMu sync.Mutex
 
 	stateMu   sync.RWMutex // 保护下面三个字段
@@ -382,7 +381,7 @@ func (p *PythonParser) Prepare(ctx context.Context, onProgress func(string)) err
 		return nil
 	}
 
-	// 进度无论调用方要不要都先记进状态里：/parser/status 靠它回答"装到哪一步了"。
+	// 进度无论调用方要不要都先记进状态里：Status 靠它回答"装到哪一步了"。
 	// onProgress 是给同一个进程内的其他调用方（例如日志）用的。
 	report := func(message string) {
 		p.setProgress(true, message)
@@ -418,10 +417,10 @@ func (p *PythonParser) Prepare(ctx context.Context, onProgress func(string)) err
 	}
 }
 
-// Status 返回就绪状态，供健康检查与前端提示使用。
+// Status 返回就绪状态，供内部诊断与日志使用。
 //
-// 它永远秒回：准备过程跑在 prepareMu 后面，这里只读一份快照 —— 否则首次上传的
-// 十几分钟里，前端连"正在准备"都问不出来。
+// 它永远秒回：准备过程跑在 prepareMu 后面，这里只读一份快照 —— 否则准备期间
+// 连"正在准备"都读不出来。
 func (p *PythonParser) Status(context.Context) Status {
 	runtime, preparing, progress := p.snapshot()
 	if runtime == nil {

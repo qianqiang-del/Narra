@@ -41,7 +41,7 @@ func (s *stubReembedService) Reembed(context.Context) (responsedto.KnowledgeReem
 // newReembedController 造一个只服务这两个接口的控制器。
 func newReembedController(t *testing.T, svc service.KnowledgeService) *Controller {
 	t.Helper()
-	return NewController(svc, t.TempDir(), nil, config.KnowledgeIngestConfig{})
+	return NewController(svc, t.TempDir(), config.KnowledgeIngestConfig{})
 }
 
 // reembedContext 造一个方法固定的测试上下文；两个接口都不收请求体。

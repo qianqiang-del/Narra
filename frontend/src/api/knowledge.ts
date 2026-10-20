@@ -206,22 +206,6 @@ export const SUPPORTED_EXTENSIONS = [
 ] as const
 
 /**
- * 由内置纯文本解析器直读的扩展名。
- *
- * 其余受支持的格式（PDF / Office / 图片）要走后端的 Python 解析器 —— 只有它们会在
- * **首次使用时触发环境准备**（现场下载解释器与依赖，分钟级）。所以"首次上传会慢一点"
- * 的提示必须按这条边界判断，别对着 .md 也说。
- */
-export const PLAIN_TEXT_EXTENSIONS = ['.md', '.markdown', '.txt'] as const
-
-/** 这份文件是否需要 Python 解析器（即首次上传时可能要等环境准备） */
-export function needsDocumentParser(fileName: string): boolean {
-  const name = fileName.toLowerCase()
-  if (PLAIN_TEXT_EXTENSIONS.some((ext) => name.endsWith(ext))) return false
-  return SUPPORTED_EXTENSIONS.some((ext) => name.endsWith(ext))
-}
-
-/**
  * 批量上传的限制值，由后端下发（GET /knowledge/documents/upload-limits）。
  * 服务端始终是唯一裁判：这些值用于选择文件时的预检，不是校验规则的复刻。
  */
@@ -247,57 +231,6 @@ export async function fetchKnowledgeUploadLimits(): Promise<KnowledgeUploadLimit
     maxFiles: d.max_files,
     maxFileBytes: d.max_file_bytes,
     maxBatchBytes: d.max_batch_bytes,
-  }
-}
-
-/** 后端 `documentparser.Status` 的原样形状 */
-interface KnowledgeParserStatusDTO {
-  enabled: boolean
-  ready: boolean
-  source?: string
-  python?: string
-  reason?: string
-  preparing?: boolean
-  progress?: string
-}
-
-/**
- * 解析环境状态。
- *
- * 两个布尔要分开读：
- * - `enabled=false`：配置里没开解析能力，PDF / Office 传上去必然失败；
- * - `enabled=true && ready=false`：能力开着但环境还没备好 —— 首次上传这类文件时，
- *   后端会现场用 uv 下载解释器与依赖，`preparing` / `progress` 描述的就是这段时间。
- *
- * `ready` 在同一个进程内一旦为真就不会再变回假，所以"首次上传"的提示天然只出现一次；
- * 依赖清单升级导致的重建是唯一例外。
- */
-export interface KnowledgeParserStatus {
-  enabled: boolean
-  ready: boolean
-  /** 是否正在准备环境（首次上传会触发） */
-  preparing: boolean
-  /** 当前准备步骤的说明；未在准备时为空串 */
-  progress: string
-  /** 后端给的原因，未就绪时才有意义 */
-  reason: string
-}
-
-/**
- * 取解析环境状态。它永远秒回：准备过程在后台跑，不会被这个接口等住
- * （见后端 PythonParser 的 stateMu 说明）。
- */
-export async function fetchKnowledgeParserStatus(): Promise<KnowledgeParserStatus> {
-  return toParserStatus(await request<KnowledgeParserStatusDTO>('/knowledge/documents/parser/status'))
-}
-
-function toParserStatus(d: KnowledgeParserStatusDTO): KnowledgeParserStatus {
-  return {
-    enabled: d.enabled === true,
-    ready: d.ready === true,
-    preparing: d.preparing === true,
-    progress: d.progress ?? '',
-    reason: d.reason ?? '',
   }
 }
 
@@ -402,16 +335,13 @@ export async function fetchKnowledgeDocument(id: number): Promise<KnowledgeDocum
   return toDocument(await request<KnowledgeDocumentDTO>(`/knowledge/documents/${id}`))
 }
 
-/** 进度流上的事件名，与后端 controller 的 eventDocument / eventParser / eventError 对齐 */
+/** 进度流上的事件名，与后端 controller 的 eventDocument / eventError 对齐 */
 const STREAM_DOCUMENT = 'document'
-const STREAM_PARSER = 'parser'
 const STREAM_ERROR = 'error'
 
 export interface KnowledgeDocumentStreamHandlers {
   /** 文档快照，形状与 fetchKnowledgeDocument 相同；有变化才推 */
   onDocument?: (document: KnowledgeDocument) => void
-  /** 解析环境状态，形状与 fetchKnowledgeParserStatus 相同；有变化才推 */
-  onParser?: (status: KnowledgeParserStatus) => void
 }
 
 /**
@@ -430,9 +360,6 @@ export async function watchKnowledgeDocument(
     switch (message.event) {
       case STREAM_DOCUMENT:
         handlers.onDocument?.(toDocument(JSON.parse(message.data) as KnowledgeDocumentDTO))
-        break
-      case STREAM_PARSER:
-        handlers.onParser?.(toParserStatus(JSON.parse(message.data) as KnowledgeParserStatusDTO))
         break
       case STREAM_ERROR: {
         const payload = JSON.parse(message.data) as { message?: string }

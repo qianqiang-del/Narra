@@ -10,8 +10,7 @@ import (
 // （谁在什么时候传了什么文件），而文档是那次投递的成果。两者弱关联、各自删除 ——
 // 删记录不动已收录的文档，删文档也不会让记录消失（那条记录会显示成"已收录后删除"）。
 //
-// 注意 /parser/status 与 /:id/preview 都是两段路径：gin 的路由树里静态段优先于参数段，
-// 所以 "parser" 不会被当成一个文档 ID，两个接口可以共存，注册顺序也不影响。
+// 注意 /:id/preview 是两段路径，gin 的路由树里静态段优先于参数段；
 // /upload-limits 同理，它是上传契约而不是某一篇文档的子资源。
 func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	g = g.Group("", middleware.Auth())
@@ -21,7 +20,7 @@ func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	// 上传限制由状态接口下发，前端据此做选择文件时的预检（服务端仍是唯一裁判）。
 	documents.GET("/upload-limits", c.UploadLimits)
 	// 向量体检：仍缺当前默认模型向量的 ready 文档数，给知识库页的提示条用。
-	// 静态段优先于参数段，不会被 /:id 吃掉（与 /parser/status 同理）。
+	// 静态段优先于参数段，不会被 /:id 吃掉。
 	documents.GET("/embedding-status", c.EmbeddingStatus)
 	// 重新向量化是整库动作：换过默认模型后，把仍缺新模型向量的文档批量重新排队。
 	// 它不是对某一篇的操作，所以不挂 /:id；收录进度仍由各文档自己的 SSE/列表查询收敛。
@@ -33,7 +32,6 @@ func RegisterRoutes(g *gin.RouterGroup, c *Controller) {
 	// 启停是"改这一篇的一个字段"，所以是文档的子资源式路径 + PATCH：只动 enabled，
 	// 不重传正文、也不新建资源（与 LLM provider 的 /:id/enabled 同一种写法）。
 	documents.PATCH("/:id/enabled", c.SetEnabled)
-	documents.GET("/parser/status", c.ParserStatus)
 	// 收录进度走 SSE：上传/重试返回后前端订阅这条流，直到文档到终态。
 	// 它挂在文档下面而不是另开一组资源 —— 推的就是这一篇的状态变化。
 	documents.GET("/:id/events", c.Events)

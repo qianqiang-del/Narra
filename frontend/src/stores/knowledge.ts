@@ -28,9 +28,7 @@ import {
 import {
   createSettleClock,
   isIngestSettled,
-  parserStatusNeedsRefresh,
   pollDocumentUntilSettled,
-  useIngestParserStatus,
 } from '@/lib/ingest-wait'
 
 /**
@@ -157,15 +155,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const togglingIds = ref<Set<number>>(new Set())
 
   /**
-   * 解析环境状态，供"首次上传需要先准备环境"的提示使用。
-   *
-   * 状态本体与刷新逻辑在 lib/ingest-wait 里（首页材料等待读的是同一份）：
-   * 两边各持一个 ref 会出现"知识库说环境好了、首页还在按没准备好等"的分裂。
-   * 失败静默：探测不到就当不知道，不该因为一次状态探测失败把上传拦住。
-   */
-  const { parserStatus, refreshParserStatus: loadParserStatus } = useIngestParserStatus()
-
-  /**
    * 取一次批量上传限制（选择文件时的预检用）。
    *
    * 失败静默并保留 DEFAULT_UPLOAD_LIMITS：预检只影响"早一点还是晚一点看到超限"，
@@ -182,8 +171,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   /**
    * 向量体检结果：仍缺当前默认模型向量的 ready 文档数。
    *
-   * 失败静默（与 parserStatus 同一种兜底）：它只驱动一条提示，探测不到就当不知道，
-   * 不该因为一次状态探测失败影响整页。
+   * 失败静默：它只驱动一条提示，探测不到就当不知道，不该因为一次状态探测失败影响整页。
    */
   const embeddingStatus = ref<KnowledgeEmbeddingStatus | null>(null)
 
@@ -332,9 +320,9 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    * 只有重试走这条路（一篇文档、一条流），批量上传不共用它：批量用上传记录列表
    * 轮询收敛，避免一批文件占满浏览器对同源的连接数（见 trackUploadTasks）。
    *
-   * 主路是 SSE：服务端在有变化时推 document / parser 两帧，正常情况下一次连接
-   * 跑到终态，前端不再每秒发一次请求。流不可用（代理不支持长连接、服务重启、
-   * 接口没部署）时回退 pollUntilSettled —— 两条路共用同一个 clock，超时口径一致。
+   * 主路是 SSE：服务端只在文档有变化时推 document 帧，正常情况下一次连接跑到
+   * 终态，前端不再每秒发一次请求。流不可用（代理不支持长连接、服务重启、接口没
+   * 部署）时回退 pollUntilSettled —— 两条路共用同一个 clock，超时口径一致。
    */
   async function watchUntilSettled(document: KnowledgeDocument): Promise<KnowledgeDocument> {
     const clock = createSettleClock()
@@ -343,7 +331,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     let clockError: Error | null = null
 
     // SSE 只在有变化时才有事件；安静期必须靠本地时钟兜底（worker 挂了就没有事件了），
-    // 所以这里按秒查超时/卡住，而不是等下一个事件。
+    // 所以这里按秒查超时，而不是等下一个事件。
     const timer = window.setInterval(() => {
       try {
         clock.check()
@@ -360,14 +348,11 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
           onDocument: (frame) => {
             current = frame
           },
-          onParser: (status) => {
-            parserStatus.value = status
-          },
         },
         controller.signal,
       )
     } catch (error) {
-      // 时钟判定的超时/卡住不是"流不可用"，直接抛；其余情况退回轮询。
+      // 时钟判定的超时不是"流不可用"，直接抛；其余情况退回轮询。
       if (clockError) throw clockError
       // 降级不影响界面，但要能在控制台看见原因（后端没重启、接口没部署、
       // 代理不支持长连接都会走到这里）—— 否则表现成"怎么还在每秒发请求"，
@@ -471,10 +456,9 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
    * HTTP/1.1 连接（6 条），连列表刷新都会被排队。上传记录接口本来就是为"看投递
    * 结果"准备的，一次请求覆盖整批，逐项状态再从记录映射回 uploadTasks。
    *
-   * 超时口径与单篇进度流共用 lib/ingest-wait 的秒表：首次上传时后端在准备解析
-   * 环境（分钟级），这段时间不催、只看进度；准备结束才重新计 15 分钟。真到点
-   * （或准备长时间无进展）时把还没收敛的任务标成失败并带上原因 —— 停更让界面
-   * 一直转圈是最糟的收场，用户既看不到结果也没有重试入口。
+   * 超时口径与单篇进度流共用 lib/ingest-wait 的秒表：自上传起 15 分钟还没收敛
+   * 就把任务标成失败并带上原因 —— 停更让界面一直转圈是最糟的收场，用户既看不到
+   * 结果也没有重试入口。
    *
    * 网络抖动只跳过本轮；下一轮继续。
    */
@@ -484,12 +468,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
     while (remaining.size > 0) {
       await new Promise((resolve) => setTimeout(resolve, BATCH_POLL_INTERVAL_MS))
-
-      // 与单篇轮询同一套判据：还没探测过、或能力开着但环境没好时，问一次状态。
-      // 秒表靠它识别"正在准备解析环境"，准备期间不判文档超时。
-      if (parserStatusNeedsRefresh(parserStatus.value)) {
-        await loadParserStatus()
-      }
 
       try {
         const records = await fetchUploadRecords({ page: 1, size: RECORD_PAGE_SIZE })
@@ -751,7 +729,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     recordTotal,
     recordAlerts,
     lastFailedRecord,
-    parserStatus,
     uploadTasks,
     uploadLimits,
     embeddingStatus,
@@ -770,7 +747,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     load,
     loadRecords,
     loadMore,
-    loadParserStatus,
     loadUploadLimits,
     loadEmbeddingStatus,
     uploadBatch,

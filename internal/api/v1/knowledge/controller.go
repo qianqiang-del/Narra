@@ -2,7 +2,6 @@ package knowledge
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +22,6 @@ import (
 	"narra/internal/model/entity"
 	"narra/internal/service"
 	"narra/pkg/config"
-	"narra/pkg/documentparser"
 	"narra/pkg/logger"
 	"narra/pkg/response"
 	"narra/pkg/sse"
@@ -46,7 +44,6 @@ const (
 	// 收录进度流（GET /knowledge/documents/:id/events）上的事件名，
 	// 与前端 api/knowledge.ts 的 watchKnowledgeDocument 一一对应。
 	eventDocument = "document" // 文档快照，形状同 GET /knowledge/documents/:id
-	eventParser   = "parser"   // 解析环境状态，形状同 GET /knowledge/documents/parser/status
 	eventError    = "error"    // 流中途失败（例如文档被删），推完即关流
 
 	// eventsQueryInterval 是进度流内部查库的节奏，与前端原来的轮询一致：
@@ -69,8 +66,7 @@ const (
 // 把服务层结果装进统一响应体。收录本身的编排在 service 与 rag 里。
 type Controller struct {
 	svc       service.KnowledgeService
-	uploadDir string                // 上传根目录；每次上传在此新建一个单独的暂存子目录
-	parser    documentparser.Parser // 可以为 nil，表示文档解析能力未启用
+	uploadDir string // 上传根目录；每次上传在此新建一个单独的暂存子目录
 	limits    config.KnowledgeIngestConfig
 
 	// 进度流（Events）的节奏参数。零值由 NewController 补成 events* 默认值；
@@ -86,37 +82,15 @@ type Controller struct {
 // upload_path 是否可信（只清理自己目录下的），传错会让删除时的清理失效。
 //
 // limits 是批量上传与队列的上限，直接来自配置；零值会被补成默认值，见 WithDefaults。
-func NewController(svc service.KnowledgeService, uploadDir string, parser documentparser.Parser, limits config.KnowledgeIngestConfig) *Controller {
+func NewController(svc service.KnowledgeService, uploadDir string, limits config.KnowledgeIngestConfig) *Controller {
 	return &Controller{
 		svc:                     svc,
 		uploadDir:               uploadDir,
-		parser:                  parser,
 		limits:                  limits.WithDefaults(),
 		eventsQueryInterval:     eventsQueryInterval,
 		eventsHeartbeatInterval: eventsHeartbeatInterval,
 		eventsMaxDuration:       eventsMaxDuration,
 	}
-}
-
-// ParserStatus 返回文档解析能力的可用状态，供前端提示"当前能不能传 PDF"。
-//
-// parser 为 nil 是"配置上就没启用"的确定状态，直接答一个 ready = false；
-// 非 nil 时交给解析器自己探测（例如 Python 运行时和依赖是否就绪）。
-func (c *Controller) ParserStatus(ctx *gin.Context) {
-	response.Success(ctx, c.parserSnapshot(ctx.Request.Context()))
-}
-
-// parserSnapshot 取解析能力状态快照，parser 未启用时给出确定状态。
-//
-// ParserStatus 与进度流共用它：两边对"没启用"的说法必须是同一句，
-// 否则同一个界面会从接口和流里拿到两种解释。
-func (c *Controller) parserSnapshot(ctx context.Context) documentparser.Status {
-	if c.parser == nil {
-		// Enabled=false 与"没准备好"是两件事：前者是配置里就没开，
-		// 前端据此提示的是"这类文件暂时没法解析"，而不是"首次上传要等一会儿"。
-		return documentparser.Status{Enabled: false, Ready: false, Reason: "document parser is disabled"}
-	}
-	return c.parser.Status(ctx)
 }
 
 // Upload 接收 1..N 个文件，逐个登记为待收录文档后立即返回。
@@ -418,8 +392,8 @@ func (c *Controller) UploadLimits(ctx *gin.Context) {
 // 将来若升级成事件驱动，这个接口对外的契约（事件名与帧的形状）可以保持不变。
 //
 // 契约（与前端 watchKnowledgeDocument 对齐）：
-//   - 连上先推当前帧：一帧 document、一帧 parser；
-//   - 之后有变化才推：文档变了推 document，解析环境进度变了推 parser；
+//   - 连上先推当前帧：一帧 document；
+//   - 之后有变化才推：文档变了推 document；
 //   - document 到终态（ready / failed）时推完最后一帧就关流；
 //   - 中途取不到文档（例如用户删了这条记录）时推一帧 error 再关流。
 //
@@ -445,9 +419,7 @@ func (c *Controller) Events(ctx *gin.Context) {
 	// 推帧用"序列化后比对"：progress 的 payload 就是写上线的那份字节，
 	// 不依赖 DTO 字段的可比较性，以后加字段也不会漏推。
 	lastDocument, _ := json.Marshal(document)
-	lastParser, _ := json.Marshal(c.parserSnapshot(requestCtx))
 	_ = sse.EventJSON(ctx, eventDocument, lastDocument)
-	_ = sse.EventJSON(ctx, eventParser, lastParser)
 	if isSettled(document.Status) {
 		return
 	}
@@ -485,12 +457,6 @@ func (c *Controller) Events(ctx *gin.Context) {
 			}
 			if isSettled(document.Status) {
 				return
-			}
-			if payload, _ := json.Marshal(c.parserSnapshot(requestCtx)); !bytes.Equal(payload, lastParser) {
-				lastParser = payload
-				if sse.EventJSON(ctx, eventParser, payload) != nil {
-					return
-				}
 			}
 		}
 	}
