@@ -194,10 +194,9 @@ let materialWaitPromise: Promise<void> | null = null
 /**
  * 后台轮询待收录材料直到终态（ready / failed），把状态实时刷到列表上。
  *
- * 与知识库页共用 lib/ingest-wait 的等待口径：首次上传 PDF 等文件时后端在准备
- * 解析环境（分钟级），这段时间不算"材料处理超时"，准备结束才重新计时。不用等
- * 用户点生成，材料自己从「处理中」收敛到「已就绪 / 失败」；失败项由用户重试
- * （有文档的原地重排，没有的退回 queued 重新上传）。
+ * 与知识库页共用 lib/ingest-wait 的等待口径：自上传起 15 分钟还没收敛才算超时。
+ * 不用等用户点生成，材料自己从「处理中」收敛到「已就绪 / 失败」；失败项由用户
+ * 重试（有文档的原地重排，没有的退回 queued 重新上传）。
  */
 async function runMaterialWait(): Promise<void> {
   for (;;) {
@@ -218,7 +217,7 @@ async function runMaterialWait(): Promise<void> {
           }
         } catch (error) {
           material.status = 'failed'
-          // 超时/准备卡住带的是具体原因（见 lib/ingest-wait），原样展示。
+          // 超时带的是具体原因（见 lib/ingest-wait），原样展示。
           material.error = error instanceof Error ? error.message : t('toolbar.materialTimeout')
         }
       }),

@@ -19,7 +19,6 @@ import (
 	"narra/internal/middleware"
 	"narra/internal/service"
 	"narra/pkg/config"
-	"narra/pkg/documentparser"
 
 	"github.com/gin-gonic/gin"
 )
@@ -44,7 +43,7 @@ type Router struct {
 }
 
 // NewRouter 创建路由
-func NewRouter(authSvc service.AuthService, roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, rerankSvc service.RerankSettingService, vlmSvc service.VLMSettingService, classroomSvc service.ClassroomService, folderSvc service.FolderService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, traceSvc service.TraceService, uploadDir string, parser documentparser.Parser, knowledgeLimits config.KnowledgeIngestConfig) *Router {
+func NewRouter(authSvc service.AuthService, roleSvc service.RoleService, embeddingSvc service.EmbeddingSettingService, voiceSvc service.VoiceService, mcpSvc service.MCPServerService, llmSvc service.LLMProviderService, rerankSvc service.RerankSettingService, vlmSvc service.VLMSettingService, classroomSvc service.ClassroomService, folderSvc service.FolderService, sceneSvc service.SceneService, knowledgeSvc service.KnowledgeService, conversationSvc service.ConversationService, discussionSvc service.DiscussionService, traceSvc service.TraceService, uploadDir string, knowledgeLimits config.KnowledgeIngestConfig) *Router {
 	return &Router{
 		authCtrl:         authv1.NewController(authSvc),
 		roleCtrl:         role.NewController(roleSvc),
@@ -56,7 +55,7 @@ func NewRouter(authSvc service.AuthService, roleSvc service.RoleService, embeddi
 		vlmCtrl:          vlm.NewController(vlmSvc),
 		classroomCtrl:    classroomv1.NewController(classroomSvc),
 		folderCtrl:       folderv1.NewController(folderSvc),
-		knowledgeCtrl:    knowledgev1.NewController(knowledgeSvc, uploadDir, parser, knowledgeLimits),
+		knowledgeCtrl:    knowledgev1.NewController(knowledgeSvc, uploadDir, knowledgeLimits),
 		conversationCtrl: conversationv1.NewController(conversationSvc),
 		sceneCtrl:        scenev1.NewController(sceneSvc),
 		discussionCtrl:   discussionv1.NewController(discussionSvc),

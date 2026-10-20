@@ -62,7 +62,7 @@ type uploadTestFile struct {
 func newUploadController(t *testing.T, svc service.KnowledgeService, limits config.KnowledgeIngestConfig) (*Controller, string) {
 	t.Helper()
 	root := t.TempDir()
-	return NewController(svc, root, nil, limits), root
+	return NewController(svc, root, limits), root
 }
 
 // uploadRequest 构造一次 multipart 上传请求。

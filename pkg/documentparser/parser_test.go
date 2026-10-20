@@ -800,8 +800,7 @@ func newBlockedPrepareParser(t *testing.T, prepareTimeout time.Duration) (*Pytho
 
 // 准备环境期间 Status 必须立刻给出"正在准备"，而不是跟在 Prepare 后面一起挂住。
 //
-// 这是前端"首次上传需先配置环境"提示的数据来源：那段时间可能十几分钟，若状态接口
-// 被同一个锁顶住，前端连这句话都问不出来。
+// 准备可能持续十几分钟，若状态读取被同一个锁顶住，这段时间里连"正在准备"都读不出来。
 func TestStatusReportsPreparingWithoutBlocking(t *testing.T) {
 	parser, blocker := newBlockedPrepareParser(t, 0) // 0 走默认 20 分钟
 

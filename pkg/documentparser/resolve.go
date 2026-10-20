@@ -62,7 +62,7 @@ func NewResolver(cfg Config) *Resolver {
 
 // Resolve 返回可用的运行时，必要时在此处完成环境准备（首次可能耗时数分钟）。
 //
-// onProgress 可以为 nil；准备过程的关键步骤都会通过它上报，便于前端展示进度。
+// onProgress 可以为 nil；准备过程的关键步骤都会通过它上报，便于调用方记录进度。
 func (r *Resolver) Resolve(ctx context.Context, onProgress func(string)) (*Runtime, error) {
 	report := func(message string) {
 		if onProgress != nil {

@@ -501,9 +501,6 @@ export default {
       tooMany: 'You can select at most {limit} files at a time.',
       batchTooLarge: 'These files exceed the {limit} MB total limit.',
       remove: 'Remove the selected file',
-      parserSetup:
-        'Parsing this file type needs a one-time parser environment setup (downloading the interpreter and dependencies), which can take several minutes. You can close this window — it keeps running in the background.',
-      parserPreparing: 'Preparing the parser environment: {progress}',
     },
     text: {
       placeholder: 'Paste or type content here (Markdown supported)…',

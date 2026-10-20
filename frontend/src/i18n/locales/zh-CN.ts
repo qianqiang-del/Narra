@@ -497,9 +497,6 @@ export default {
       tooMany: '一次最多选择 {limit} 份文件。',
       batchTooLarge: '这批文件合计超过 {limit} MB 上限。',
       remove: '移除已选文件',
-      parserSetup:
-        '首次解析这类文件需要先准备解析环境（下载解释器与依赖），可能需要几分钟到十几分钟。上传后可以关掉这个窗口，处理会在后台继续。',
-      parserPreparing: '正在准备解析环境：{progress}',
     },
     text: {
       placeholder: '在这里粘贴或输入正文（支持 Markdown）…',
