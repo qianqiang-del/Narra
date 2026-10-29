@@ -622,6 +622,7 @@ func newDocumentParser(cfg *config.Config) documentparser.Parser {
 		ParseTimeout:   cfg.DocumentParser.Timeout,
 		PrepareTimeout: cfg.DocumentParser.PrepareTimeout,
 		MaxOCRPages:    cfg.DocumentParser.MaxOCRPages,
+		PDFTableMode:   cfg.DocumentParser.PDFTableMode,
 		MaxVLMCalls:    cfg.DocumentParser.MaxVLMCalls,
 		OCREngine:      cfg.DocumentParser.OCREngine,
 		OCRAPIBaseURL:  cfg.DocumentParser.OCRAPIBaseURL,

@@ -175,6 +175,9 @@ func TestConfigWithDefaultsDerivesRequirementsFromScript(t *testing.T) {
 	if cfg.OCREngine != OCREngineRapidOCR {
 		t.Fatalf("OCR 引擎默认应为本地: %q", cfg.OCREngine)
 	}
+	if cfg.PDFTableMode != PDFTableModeOff {
+		t.Fatalf("PDF 表格模式默认应关闭: %q", cfg.PDFTableMode)
+	}
 	if cfg.ParseTimeout != defaultParseTimeout {
 		t.Fatalf("超时默认值不对: %s", cfg.ParseTimeout)
 	}
@@ -198,6 +201,14 @@ func TestConfigValidateRejectsIncompleteOCREngine(t *testing.T) {
 	cfg := Config{ScriptPath: script, Requirements: requirements, OCREngine: OCREngineAPI}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("选 API OCR 却没填地址与模型时应当报错")
+	}
+}
+
+func TestConfigValidateRejectsInvalidPDFTableMode(t *testing.T) {
+	script, requirements := fakeScript(t, "print('noop')\n")
+	cfg := Config{ScriptPath: script, Requirements: requirements, PDFTableMode: "docling"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("未支持的 PDF 表格模式应当报错")
 	}
 }
 
@@ -580,6 +591,23 @@ func generatePDF(t *testing.T, python string, out string, body string) {
 	}
 }
 
+// generateTablePDF 造一页 3 行 2 列的带框线表格，供 find_tables() 用例使用。
+func generateTablePDF(t *testing.T, python string, out string) {
+	t.Helper()
+	generatePDF(t, python, out,
+		"p = doc.new_page()\n"+
+			"for x in (72, 172, 272):\n"+
+			"    p.draw_line((x, 72), (x, 152), color=(0, 0, 0), width=1)\n"+
+			"for y in (72, 100, 126, 152):\n"+
+			"    p.draw_line((72, y), (272, y), color=(0, 0, 0), width=1)\n"+
+			"p.insert_text((80, 90), 'name')\n"+
+			"p.insert_text((180, 90), 'score')\n"+
+			"p.insert_text((80, 118), 'alice')\n"+
+			"p.insert_text((180, 118), '90')\n"+
+			"p.insert_text((80, 145), 'a|b')\n"+
+			"p.insert_text((180, 145), '85')")
+}
+
 // countTempParseDirs 数系统临时目录里残留的 narra-parse-* 目录。
 func countTempParseDirs(t *testing.T) int {
 	t.Helper()
@@ -661,7 +689,12 @@ func TestPythonScriptKeepsTextLayerWhenOnlyBlankPagesFollow(t *testing.T) {
 			"p.insert_text((72, 72), 'text layer page')\n"+
 			"doc.new_page()")
 
-	parser, err := NewPythonParser(Config{PythonPath: python, ScriptPath: script, Requirements: requirements})
+	parser, err := NewPythonParser(Config{
+		PythonPath:   python,
+		ScriptPath:   script,
+		Requirements: requirements,
+		PDFTableMode: PDFTableModePymupdf,
+	})
 	if err != nil {
 		t.Fatalf("构造解析器失败: %v", err)
 	}
@@ -757,6 +790,86 @@ func TestPythonScriptOCRsScannedPagesInMixedPDF(t *testing.T) {
 	}
 	if result.Pages[1].Number != 2 || !strings.Contains(result.Pages[1].Text, "scanned page two") {
 		t.Fatalf("第 2 页应当带上 OCR 文本: %+v", result.Pages[1])
+	}
+}
+
+func TestPythonScriptExtractsPDFTableAsMarkdown(t *testing.T) {
+	python := testPython(t)
+	requirePyMuPDF(t, python)
+	allowImportProbe(t)
+
+	script, requirements := realScript(t)
+	pdfPath := filepath.Join(t.TempDir(), "table.pdf")
+	generateTablePDF(t, python, pdfPath)
+
+	parser, err := NewPythonParser(Config{
+		PythonPath:   python,
+		ScriptPath:   script,
+		Requirements: requirements,
+		PDFTableMode: PDFTableModePymupdf,
+	})
+	if err != nil {
+		t.Fatalf("构造解析器失败: %v", err)
+	}
+
+	result, err := parser.Parse(context.Background(), Request{Path: pdfPath})
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	defer func() { _ = result.Cleanup() }()
+
+	for _, want := range []string{
+		"| name | score |",
+		"| --- | --- |",
+		"| alice | 90 |",
+		"| a\\|b | 85 |",
+	} {
+		if !strings.Contains(result.Markdown, want) {
+			t.Fatalf("markdown 缺少表格内容 %q:\n%s", want, result.Markdown)
+		}
+	}
+	// 表格文字已经从原文本块替换掉，不能再以纯文本形式重复出现。
+	if got := strings.Count(result.Markdown, "alice"); got != 1 {
+		t.Fatalf("表格文字重复出现 %d 次:\n%s", got, result.Markdown)
+	}
+	if result.ParserName() != "pymupdf" {
+		t.Fatalf("解析器身份不对: %q", result.ParserName())
+	}
+	if result.Metadata["table_mode"] != PDFTableModePymupdf {
+		t.Fatalf("metadata 未记录表格模式: %+v", result.Metadata)
+	}
+}
+
+func TestPythonScriptPDFTableModeOffKeepsPlainText(t *testing.T) {
+	python := testPython(t)
+	requirePyMuPDF(t, python)
+	allowImportProbe(t)
+
+	script, requirements := realScript(t)
+	pdfPath := filepath.Join(t.TempDir(), "table_off.pdf")
+	generateTablePDF(t, python, pdfPath)
+
+	parser, err := NewPythonParser(Config{
+		PythonPath:   python,
+		ScriptPath:   script,
+		Requirements: requirements,
+		PDFTableMode: PDFTableModeOff,
+	})
+	if err != nil {
+		t.Fatalf("构造解析器失败: %v", err)
+	}
+
+	result, err := parser.Parse(context.Background(), Request{Path: pdfPath})
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	defer func() { _ = result.Cleanup() }()
+
+	if strings.Contains(result.Markdown, "| --- |") {
+		t.Fatalf("关闭表格模式后不应出现 Markdown 表格:\n%s", result.Markdown)
+	}
+	if !strings.Contains(result.Markdown, "alice") {
+		t.Fatalf("纯文本内容不应丢失:\n%s", result.Markdown)
 	}
 }
 

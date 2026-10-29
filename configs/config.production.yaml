@@ -67,6 +67,7 @@ tts:
 document_parser:
   enabled: true
   python_path: /usr/local/bin/python3
+  pdf_table_mode: pymupdf
 
 knowledge_ingest:
   parse_concurrency: 1

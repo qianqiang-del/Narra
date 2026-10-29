@@ -761,9 +761,12 @@ func (i *Ingester) processExistingFile(
 			"parser":   parserName(result),
 			"parse_ms": time.Since(started).Milliseconds(),
 		}
-		// 视觉理解的现场（启用了哪个模型 / 是否发生降级 / 调用了几次）由脚本写进
-		// metadata，原样带进文档行，排障时不必翻 worker 日志。
-		for _, key := range []string{"vision", "vlm_model", "vlm_calls", "vision_fallback"} {
+		// 视觉理解与 PDF 表格提取的现场由脚本写进 metadata，原样带进文档行，
+		// 排障时不必翻 worker 日志。
+		for _, key := range []string{
+			"vision", "vlm_model", "vlm_calls", "vision_fallback",
+			"table_mode", "tables", "table_pages", "table_failed_pages",
+		} {
 			if value, ok := result.Metadata[key]; ok {
 				parseMetadata[key] = value
 			}

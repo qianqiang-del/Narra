@@ -127,6 +127,7 @@ npm run dev
 | --- | --- | --- |
 | 平台默认模型 | `default_llm` + `NARRA_DEFAULT_LLM_API_KEY` | 填写 OpenAI 兼容地址和模型 ID；用户也可在设置页添加个人模型 |
 | 个人知识库 | 设置页 Embedding 配置（平台默认：`embedding` + `EMBEDDING_API_KEY`） | 需要向量服务；PDF、Office 与图片解析还需启用本地文档解析器 |
+| PDF 表格 | `document_parser.pdf_table_mode: pymupdf` | 仅提取数字版 PDF 的表格结构；扫描页仍只走 OCR、表格退化为纯文本 |
 | 检索精排 | 设置页 Rerank 配置（平台默认：`rerank` + `RERANK_API_KEY`） | 启用后对召回结果精排；未配置时原样透传 |
 | 视觉理解 | 设置页 VLM 配置（平台默认：`vlm` + `VLM_API_KEY`） | 解析扫描件与图片时调用；未配置时退化为纯 OCR |
 | 语音讲解 | `tts` + `TTS_API_KEY` | 启用后使用百炼 TTS 合成讲解音频 |

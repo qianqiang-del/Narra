@@ -62,6 +62,9 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("document_parser.max_vlm_calls", 100)
 	v.SetDefault("document_parser.python_version", "3.12")
 	v.SetDefault("document_parser.ocr_engine", "rapidocr")
+	// PDF 表格提取默认关闭：它是增量结构信息，开启后输出形态会变化；
+	// 需要时在 config.yaml 里显式设为 pymupdf（仓库自带配置已打开）。
+	v.SetDefault("document_parser.pdf_table_mode", "off")
 	v.SetDefault("storage.upload_dir", "data/uploads")
 	v.SetDefault("storage.audio_dir", "data/audio")
 	// 知识库图片是持久资产：解析产出的图片发布在这里，收录成功也不能删（见 documentimage）。
