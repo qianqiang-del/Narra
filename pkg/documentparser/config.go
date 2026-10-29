@@ -19,6 +19,13 @@ const (
 )
 
 const (
+	// PDFTableModeOff 关闭数字版 PDF 的表格结构提取。
+	PDFTableModeOff = "off"
+	// PDFTableModePymupdf 使用 PyMuPDF 的 find_tables() 把数字版 PDF 表格转成 Markdown。
+	PDFTableModePymupdf = "pymupdf"
+)
+
+const (
 	// defaultPythonVersion uv 默认准备的解释器版本。docling 要求 >= 3.10。
 	defaultPythonVersion = "3.12"
 	// defaultParseTimeout 单次解析超时。CPU 上跑版面模型是分钟级的，所以给得比较宽。
@@ -83,6 +90,9 @@ type Config struct {
 	// MaxOCRPages 单次解析允许 OCR 的页数上限，必须为正。
 	// 超过时脚本快速失败（PARSER_TOO_MANY_OCR_PAGES），避免一份大扫描件占满解析预算。
 	MaxOCRPages int
+	// PDFTableMode 数字版 PDF 的表格提取方式：off 或 pymupdf。
+	// 仅对有文字层的页面生效；扫描页仍只走 OCR，不做表格结构还原。
+	PDFTableMode string
 	// MaxVLMCalls 单次解析允许调用视觉模型（VLM）的次数上限（扫描页 + 内嵌图 + 独立图片
 	// 合计），必须为正。超过时脚本快速失败（PARSER_TOO_MANY_VLM_CALLS）。
 	MaxVLMCalls int
@@ -126,6 +136,9 @@ func (c Config) WithDefaults() Config {
 	if c.MaxOCRPages <= 0 {
 		c.MaxOCRPages = defaultMaxOCRPages
 	}
+	if strings.TrimSpace(c.PDFTableMode) == "" {
+		c.PDFTableMode = PDFTableModeOff
+	}
 	if c.MaxVLMCalls <= 0 {
 		c.MaxVLMCalls = defaultMaxVLMCalls
 	}
@@ -157,6 +170,11 @@ func (c Config) Validate() error {
 	}
 	if c.MaxOCRPages <= 0 {
 		return fmt.Errorf("document_parser.max_ocr_pages 必须大于 0")
+	}
+	switch strings.TrimSpace(c.PDFTableMode) {
+	case "", PDFTableModeOff, PDFTableModePymupdf:
+	default:
+		return fmt.Errorf("document_parser.pdf_table_mode 必须是 %s 或 %s", PDFTableModeOff, PDFTableModePymupdf)
 	}
 	if c.MaxVLMCalls <= 0 {
 		return fmt.Errorf("document_parser.max_vlm_calls 必须大于 0")

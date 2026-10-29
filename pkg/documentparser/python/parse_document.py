@@ -6,6 +6,8 @@
 - .docx 通过 Docling 转换,文档内图片导出为临时文件并以路径引用
 - .pdf 优先提取数字版文字层；只有缺文字层的页才走 OCR —— 整份都没文字层的纯扫描件
   整份 OCR，文字层与扫描页混排的混合型只对缺文字层的扫描页 OCR，再按页号合并
+- 数字版 PDF 可选提取表格（--pdf-table-mode pymupdf），用 PyMuPDF 的 find_tables()
+  把表格转成 Markdown；扫描页不做表格结构还原
 - .jpg/.jpeg/.png 使用 RapidOCR 直接识别
 - 视觉模型（VLM）由设置页启用：启用后每个视觉单元（扫描页 / 内嵌图 / 独立图片）
   在 OCR 之外额外生成一段图片描述；单次调用失败自动降级为纯 OCR，不中断解析
@@ -113,7 +115,150 @@ def ocr_pdf(
     return backend(path, only_pages)
 
 
-def _extract_pdf_text(path: Path) -> tuple[str, list[dict[str, Any]], list[int]]:
+PDF_TABLE_MODES = ("off", "pymupdf")
+
+
+def _table_cell(value: Any) -> str:
+    """把单元格内容转成 GFM 安全的一格文本。"""
+    text = "" if value is None else str(value)
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    # 竖线和换行会破坏 Markdown 表格结构：前者转义，后者用 HTML 换行。
+    text = text.replace("|", "\\|")
+    return text.replace("\n", "<br>")
+
+
+def _table_markdown(table: Any) -> str:
+    """把 PyMuPDF 的 Table 转成 GFM Markdown；没有可用结构时返回空串。
+
+    不直接调用 ``Table.to_markdown()``：那个实现对单元格里的 ``|`` 不做转义，
+    而知识库正文里出现竖线的概率并不低（公式、代码、分隔符）。这里用
+    ``extract()`` 自行序列化，换取可控的转义与空表头兜底。
+    """
+    try:
+        extracted = table.extract()
+        rows = [list(row) for row in extracted if isinstance(row, (list, tuple))]
+    except Exception as exc:  # noqa: BLE001 - 单个表格失败只回退，不影响整页
+        print(f"表格内容提取失败: {exc}", file=sys.stderr)
+        return ""
+    if not rows:
+        return ""
+
+    width = max((len(row) for row in rows), default=0)
+    if width < 2:
+        return ""
+
+    header_names = list(getattr(getattr(table, "header", None), "names", []) or [])
+    header_external = bool(getattr(getattr(table, "header", None), "external", False))
+    if header_names:
+        header = [_table_cell(name) for name in header_names[:width]]
+        body = rows if header_external else rows[1:]
+    else:
+        header = [_table_cell(cell) for cell in rows[0][:width]]
+        body = rows[1:]
+    header += [""] * (width - len(header))
+    if not any(header):
+        # 空表头在 GFM 里仍然合法，但检索时缺少列名；给一个稳定占位。
+        header = [f"列{index + 1}" for index in range(width)]
+    if not body:
+        return ""
+
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join("---" for _ in range(width)) + " |",
+    ]
+    non_empty = sum(1 for cell in header if cell)
+    for row in body:
+        cells = [_table_cell(cell) for cell in row[:width]]
+        cells += [""] * (width - len(cells))
+        non_empty += sum(1 for cell in cells if cell)
+        lines.append("| " + " | ".join(cells) + " |")
+    if non_empty < 2:
+        return ""
+    return "\n".join(lines)
+
+
+def _bbox_intersection_ratio(
+    block: tuple[float, float, float, float],
+    bbox: tuple[float, float, float, float],
+) -> float:
+    """返回 block 被 bbox 覆盖的面积比例。"""
+    block_width = block[2] - block[0]
+    block_height = block[3] - block[1]
+    if block_width <= 0 or block_height <= 0:
+        return 0.0
+    width = min(block[2], bbox[2]) - max(block[0], bbox[0])
+    height = min(block[3], bbox[3]) - max(block[1], bbox[1])
+    if width <= 0 or height <= 0:
+        return 0.0
+    return (width * height) / (block_width * block_height)
+
+
+def _page_text_with_tables(page: Any) -> tuple[str, int, bool]:
+    """把一页里的表格替换成 Markdown；返回 ``(文本, 表格数, 是否检测失败)``。
+
+    仅用于有文字层的页面。表格按 bbox 与原文本块做替换，而不是整页重排：
+    表格外的标题、段落和阅读顺序都保持原样。
+    """
+    try:
+        finder = page.find_tables()
+        tables = list(getattr(finder, "tables", finder))
+    except Exception as exc:  # noqa: BLE001 - 表格是增量信息，不能拖垮整页
+        print(f"表格检测失败: {exc}", file=sys.stderr)
+        return "", 0, True
+
+    table_items: list[tuple[tuple[float, float, float, float], str]] = []
+    for table in tables:
+        markdown = _table_markdown(table)
+        if not markdown:
+            continue
+        bbox = table.bbox
+        table_items.append(
+            ((float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])), markdown)
+        )
+    if not table_items:
+        return "", 0, False
+
+    items: list[dict[str, Any]] = []
+    for block in page.get_text("blocks", sort=True):
+        if len(block) < 7 or block[6] != 0:
+            continue
+        text = str(block[4]).strip()
+        if not text:
+            continue
+        items.append(
+            {
+                "bbox": (float(block[0]), float(block[1]), float(block[2]), float(block[3])),
+                "text": text,
+                "table": False,
+            }
+        )
+
+    for table_bbox, markdown in table_items:
+        covered: list[int] = []
+        for index, item in enumerate(items):
+            if item["table"]:
+                continue
+            block_bbox = item["bbox"]
+            center_x = (block_bbox[0] + block_bbox[2]) / 2
+            center_y = (block_bbox[1] + block_bbox[3]) / 2
+            inside = (
+                table_bbox[0] <= center_x <= table_bbox[2]
+                and table_bbox[1] <= center_y <= table_bbox[3]
+            )
+            if inside or _bbox_intersection_ratio(block_bbox, table_bbox) >= 0.5:
+                covered.append(index)
+        for index in reversed(covered):
+            items.pop(index)
+        items.append({"bbox": table_bbox, "text": markdown, "table": True})
+
+    items.sort(key=lambda item: item["bbox"][1])
+    text = "\n\n".join(item["text"] for item in items if item["text"].strip())
+    return text, len(table_items), False
+
+
+def _extract_pdf_text(
+    path: Path, pdf_table_mode: str = "off"
+) -> tuple[str, list[dict[str, Any]], list[int], dict[str, Any]]:
     """提取 PDF 文字层，不碰 Docling 也不碰 OCR。
 
     除 markdown 与逐页文本外，还返回"没有文字层但含图片"的页号 —— 那才是真正需要
@@ -124,6 +269,9 @@ def _extract_pdf_text(path: Path) -> tuple[str, list[dict[str, Any]], list[int]]
     图片"，连内联图片、嵌在 Form XObject 里的都算 —— 那些正是会让扫描页被漏检、
     进而静默丢内容的形态。``get_images()`` 只看页资源字典里的 Image XObject。
 
+    数字版页面在 ``pdf_table_mode=pymupdf`` 时额外调用 PyMuPDF 的 ``find_tables()``，
+    把表格替换成 Markdown；失败或没有可用表格时原样返回纯文本。
+
     残留的已知短板：把文字转成曲线的矢量页（无文字层、无图片）仍会被当成空白页跳过。
     这类页面没有便宜的检测办法，且把它们一律送去 OCR 会把装饰性的空白页也识别出噪声。
     """
@@ -133,9 +281,18 @@ def _extract_pdf_text(path: Path) -> tuple[str, list[dict[str, Any]], list[int]]
     pages: list[dict[str, Any]] = []
     texts: list[str] = []
     scanned_pages: list[int] = []
+    table_stats: dict[str, Any] = {"tables": 0, "table_pages": [], "failed_pages": []}
     try:
         for number, page in enumerate(pdf, start=1):
             text = page.get_text("text").strip()
+            if text and pdf_table_mode == "pymupdf":
+                table_text, table_count, table_failed = _page_text_with_tables(page)
+                if table_failed:
+                    table_stats["failed_pages"].append(number)
+                if table_count:
+                    text = table_text or text
+                    table_stats["tables"] += table_count
+                    table_stats["table_pages"].append(number)
             pages.append({"number": number, "text": text})
             if text:
                 texts.append(f"<!-- page:{number} -->\n{text}")
@@ -143,7 +300,7 @@ def _extract_pdf_text(path: Path) -> tuple[str, list[dict[str, Any]], list[int]]
                 scanned_pages.append(number)
     finally:
         pdf.close()
-    return "\n\n".join(texts).strip(), pages, scanned_pages
+    return "\n\n".join(texts).strip(), pages, scanned_pages, table_stats
 
 
 def _run_pdf_ocr(
@@ -421,6 +578,19 @@ def _too_many_ocr_pages(count: int, limit: int) -> ParserError:
     )
 
 
+def _merge_table_metadata(
+    metadata: dict[str, Any], pdf_table_mode: str, table_stats: dict[str, Any]
+) -> None:
+    """把表格提取现场写进 metadata；没有表格且模式下不写，保持输出干净。"""
+    if pdf_table_mode != "off":
+        metadata["table_mode"] = pdf_table_mode
+    if table_stats["tables"]:
+        metadata["tables"] = table_stats["tables"]
+        metadata["table_pages"] = table_stats["table_pages"]
+    if table_stats["failed_pages"]:
+        metadata["table_failed_pages"] = table_stats["failed_pages"]
+
+
 def _parse_pdf(
     path: Path,
     result: ParseResult,
@@ -428,6 +598,7 @@ def _parse_pdf(
     api_base_url: str,
     api_key: str,
     api_model: str,
+    pdf_table_mode: str = "off",
     max_ocr_pages: int = 0,
     vision: VisionRunner | None = None,
 ) -> str:
@@ -437,8 +608,13 @@ def _parse_pdf(
     后面的扫描页根本不会出现在结果里，而 Markdown 看上去完全正常。这里改成按页判定：
     文字层覆盖的页保留原文，只有缺文字层的扫描页才送去 OCR，最后按页号合并，
     ``<!-- page:N -->`` 标记与页序都保持不变。
+
+    数字版页面的表格在 ``pdf_table_mode=pymupdf`` 时由 PyMuPDF ``find_tables()``
+    转成 Markdown；扫描页仍只走 OCR，不做表格结构还原。
     """
-    text_markdown, pages, scanned_pages = _extract_pdf_text(path)
+    text_markdown, pages, scanned_pages, table_stats = _extract_pdf_text(
+        path, pdf_table_mode
+    )
     text_pages = [page for page in pages if page["text"]]
 
     # 整份都没有文字层：纯扫描件，走整份 OCR。这里刻意不看图片检测结果 ——
@@ -478,7 +654,9 @@ def _parse_pdf(
     if not scanned_pages:
         result.pages = pages
         print("PDF 解析路径：数字版文字层提取（PyMuPDF）", file=sys.stderr)
-        result.metadata.update({"parser": "pymupdf", "fallback": False})
+        metadata: dict[str, Any] = {"parser": "pymupdf", "fallback": False}
+        _merge_table_metadata(metadata, pdf_table_mode, table_stats)
+        result.metadata.update(metadata)
         return text_markdown
 
     # 混合型：文字层 + 只对扫描页做 OCR，再按页号合并回原始顺序
@@ -507,16 +685,16 @@ def _parse_pdf(
         f"{parser} OCR {len(scanned_pages)} 页）",
         file=sys.stderr,
     )
-    result.metadata.update(
-        {
-            "parser": parser,
-            "fallback": True,
-            "fallback_reason": "text_layer_partial",
-            "mixed": True,
-            "text_layer_pages": len(text_pages),
-            "ocr_pages": len(scanned_pages),
-        }
-    )
+    metadata = {
+        "parser": parser,
+        "fallback": True,
+        "fallback_reason": "text_layer_partial",
+        "mixed": True,
+        "text_layer_pages": len(text_pages),
+        "ocr_pages": len(scanned_pages),
+    }
+    _merge_table_metadata(metadata, pdf_table_mode, table_stats)
+    result.metadata.update(metadata)
     return "\n\n".join(blocks).strip()
 
 
@@ -526,6 +704,7 @@ def parse_path(
     api_base_url: str = "",
     api_key: str = "",
     api_model: str = "",
+    pdf_table_mode: str = "off",
     work_dir: str = "",
     max_ocr_pages: int = 100,
     vlm_api_url: str = "",
@@ -541,6 +720,8 @@ def parse_path(
         raise ParserError("PARSER_OCR_ENGINE_INVALID", "不支持的 OCR 引擎")
     if ocr_engine == "api" and not api_base_url:
         raise ParserError("PARSER_OCR_CONFIG_MISSING", "未配置 OCR API 服务地址")
+    if pdf_table_mode not in PDF_TABLE_MODES:
+        raise ParserError("PARSER_PDF_TABLE_MODE_INVALID", "不支持的 PDF 表格模式")
     vlm_api_url = (vlm_api_url or "").strip()
     vlm_api_model = (vlm_api_model or "").strip()
     if bool(vlm_api_url) != bool(vlm_api_model):
@@ -560,7 +741,15 @@ def parse_path(
             result.metadata["parser"] = "docling"
         elif suffix == ".pdf":
             result.markdown = _parse_pdf(
-                path, result, ocr_engine, api_base_url, api_key, api_model, max_ocr_pages, vision
+                path,
+                result,
+                ocr_engine,
+                api_base_url,
+                api_key,
+                api_model,
+                pdf_table_mode,
+                max_ocr_pages,
+                vision,
             )
         elif suffix in IMAGE_EXTENSIONS:
             if ocr_engine == "api":
@@ -598,6 +787,12 @@ def main() -> None:
         help="通用 OCR API 访问凭证；默认读环境变量 NARRA_OCR_API_KEY，避免密钥出现在进程命令行里",
     )
     parser.add_argument("--ocr-api-model", default="", help="通用 OCR API 模型名称")
+    parser.add_argument(
+        "--pdf-table-mode",
+        choices=PDF_TABLE_MODES,
+        default="off",
+        help="数字版 PDF 表格提取模式: off(关闭) 或 pymupdf(本地表格检测)",
+    )
     parser.add_argument(
         "--work-dir",
         default="",
@@ -640,6 +835,7 @@ def main() -> None:
             args.ocr_api_url,
             args.ocr_api_key,
             args.ocr_api_model,
+            args.pdf_table_mode,
             args.work_dir,
             args.max_ocr_pages,
             args.vlm_api_url,

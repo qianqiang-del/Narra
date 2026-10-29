@@ -14,18 +14,19 @@ import (
 	"time"
 )
 
-// 错误码。前 5 个与 python/parse_document.py 的 error_code 一一对应；后 3 个是 Go 侧新增的
-// ——它们描述的是"还没到脚本那一步"就发生的事，脚本永远不会报这三个码。
+// 错误码。前 6 个与 python/parse_document.py 的 error_code 一一对应；
+// 其余按产生方在各自注释里说明（脚本报出、Go 侧新增、或 Go 侧结果后处理）。
 const (
-	CodeFileNotFound       = "PARSER_FILE_NOT_FOUND"
-	CodeUnsupportedType    = "PARSER_UNSUPPORTED_TYPE"
-	CodeOCRConfigMissing   = "PARSER_OCR_CONFIG_MISSING"
-	CodeOCREngineInvalid   = "PARSER_OCR_ENGINE_INVALID"
-	CodeFailed             = "PARSER_FAILED"
-	CodeRuntimeUnavailable = "PARSER_RUNTIME_UNAVAILABLE"
-	CodePrepareTimeout     = "PARSER_PREPARE_TIMEOUT"
-	CodeTimeout            = "PARSER_TIMEOUT"
-	CodeEncodingInvalid    = "PARSER_ENCODING_INVALID"
+	CodeFileNotFound        = "PARSER_FILE_NOT_FOUND"
+	CodeUnsupportedType     = "PARSER_UNSUPPORTED_TYPE"
+	CodeOCRConfigMissing    = "PARSER_OCR_CONFIG_MISSING"
+	CodeOCREngineInvalid    = "PARSER_OCR_ENGINE_INVALID"
+	CodePDFTableModeInvalid = "PARSER_PDF_TABLE_MODE_INVALID"
+	CodeFailed              = "PARSER_FAILED"
+	CodeRuntimeUnavailable  = "PARSER_RUNTIME_UNAVAILABLE"
+	CodePrepareTimeout      = "PARSER_PREPARE_TIMEOUT"
+	CodeTimeout             = "PARSER_TIMEOUT"
+	CodeEncodingInvalid     = "PARSER_ENCODING_INVALID"
 
 	// CodeVLMConfigMissing 由脚本报出：命令行给了视觉模型地址却没有模型名
 	// （或反之）。Go 侧只在"启用配置存在"时才下发参数，正常路径到不了这里，
@@ -114,6 +115,8 @@ func defaultUserMessage(code string) string {
 		return "这份文件需要 OCR，但还没配置 OCR 服务"
 	case CodeOCREngineInvalid:
 		return "OCR 引擎配置有误"
+	case CodePDFTableModeInvalid:
+		return "PDF 表格提取配置有误"
 	case CodeRuntimeUnavailable:
 		return "文档解析环境不可用"
 	case CodePrepareTimeout:
@@ -483,6 +486,7 @@ func (p *PythonParser) Parse(ctx context.Context, req Request) (result *Result, 
 		p.cfg.ScriptPath,
 		"--input", req.Path,
 		"--ocr-engine", firstNonEmpty(req.OCREngine, p.cfg.OCREngine),
+		"--pdf-table-mode", p.cfg.PDFTableMode,
 		"--work-dir", workDir,
 	}
 	if p.cfg.MaxOCRPages > 0 {

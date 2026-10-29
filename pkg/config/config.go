@@ -486,6 +486,7 @@ type DocumentParserConfig struct {
 	Timeout        time.Duration `mapstructure:"timeout"`         // 单次解析超时
 	PrepareTimeout time.Duration `mapstructure:"prepare_timeout"` // 首次环境准备（下载解释器与依赖）的墙钟上限
 	MaxOCRPages    int           `mapstructure:"max_ocr_pages"`   // 单次解析允许 OCR 的页数上限
+	PDFTableMode   string        `mapstructure:"pdf_table_mode"`  // 数字版 PDF 表格提取：off（默认）或 pymupdf
 	MaxVLMCalls    int           `mapstructure:"max_vlm_calls"`   // 单次解析允许调用视觉模型（VLM）的次数上限（扫描页 + 内嵌图 + 独立图片）
 	OCREngine      string        `mapstructure:"ocr_engine"`      // rapidocr（本地，默认）或 api（会把图片外发）
 	OCRAPIBaseURL  string        `mapstructure:"ocr_api_base_url"`
@@ -535,6 +536,11 @@ func (c DocumentParserConfig) Validate() error {
 	}
 	if c.MaxOCRPages <= 0 {
 		return fmt.Errorf("document_parser.max_ocr_pages 必须大于 0")
+	}
+	switch strings.TrimSpace(c.PDFTableMode) {
+	case "", "off", "pymupdf":
+	default:
+		return fmt.Errorf("document_parser.pdf_table_mode 必须是 off 或 pymupdf")
 	}
 	if c.MaxVLMCalls <= 0 {
 		return fmt.Errorf("document_parser.max_vlm_calls 必须大于 0")
