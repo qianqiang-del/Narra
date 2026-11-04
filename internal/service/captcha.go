@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	mathrand "math/rand/v2"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -99,13 +100,74 @@ func newCaptcha() (string, string, error) {
 	return base64.RawURLEncoding.EncodeToString(token[:]), fmt.Sprintf("%04d", n.Int64()), nil
 }
 
+var (
+	captchaFonts = []string{
+		"Arial, Helvetica, sans-serif",
+		"Verdana, Geneva, sans-serif",
+		"Tahoma, Geneva, sans-serif",
+		"Trebuchet MS, Helvetica, sans-serif",
+		"Courier New, monospace",
+	}
+	captchaWeights = []string{"600", "700", "800"}
+	captchaColors  = []string{
+		"263b53", "446b59", "7b4d53", "4e557e",
+		"374151", "1f4d5c", "5b3a29", "5d3f6b",
+	}
+	captchaBackgrounds = []string{"f1f5f9", "eef2f7", "f3f4f6", "f5f5f4"}
+	captchaNoiseColors = []string{"64748b", "94a3b8", "7c8ba1", "cbd5e1"}
+)
+
+// captchaImage 把 4 位数字画成一张带随机扰动的 SVG。
+// 每个字符的位置、字号、旋转、字体和颜色都逐次随机，再叠加噪点与干扰曲线；
+// 画布尺寸保持固定，底色只在几种浅灰之间切换，避免登录页布局跳动。
 func captchaImage(code string) string {
 	var svg strings.Builder
-	svg.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="48" viewBox="0 0 144 48"><rect width="144" height="48" rx="4" fill="#f1f5f9"/>`)
-	for i, digit := range code {
-		fmt.Fprintf(&svg, `<text x="%d" y="35" font-family="Arial,sans-serif" font-size="31" font-weight="700" fill="#%s" transform="rotate(%d %d 24)">%c</text>`,
-			12+i*33, []string{"263b53", "446b59", "7b4d53", "4e557e"}[i], []int{-7, 5, -4, 7}[i], 24+i*33, digit)
+	background := captchaBackgrounds[mathrand.IntN(len(captchaBackgrounds))]
+	svg.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" width="144" height="48" viewBox="0 0 144 48">`)
+	fmt.Fprintf(&svg, `<rect width="144" height="48" rx="4" fill="#%s"/>`, background)
+
+	for i := 0; i < 24+mathrand.IntN(12); i++ {
+		fmt.Fprintf(&svg, `<circle cx="%.1f" cy="%.1f" r="%.1f" fill="#%s" opacity="%.2f"/>`,
+			mathrand.Float64()*144,
+			mathrand.Float64()*48,
+			0.5+mathrand.Float64()*1.3,
+			captchaNoiseColors[mathrand.IntN(len(captchaNoiseColors))],
+			0.12+mathrand.Float64()*0.22,
+		)
 	}
-	svg.WriteString(`<path d="M6 14 Q65 38 138 12 M8 41 Q70 8 136 39" fill="none" stroke="#94a3b8" stroke-width="1" opacity=".6"/></svg>`)
+
+	for i, digit := range code {
+		centerX := 24 + i*33 + mathrand.IntN(9) - 4
+		centerY := 24 + mathrand.IntN(5) - 2
+		fontSize := 26 + mathrand.IntN(8)
+		baseline := float64(centerY) + float64(fontSize)*0.36
+		fmt.Fprintf(&svg,
+			`<text x="%d" y="%.1f" text-anchor="middle" font-family="%s" font-size="%d" font-weight="%s" fill="#%s" transform="rotate(%d %d %d)">%c</text>`,
+			centerX, baseline,
+			captchaFonts[mathrand.IntN(len(captchaFonts))],
+			fontSize,
+			captchaWeights[mathrand.IntN(len(captchaWeights))],
+			captchaColors[mathrand.IntN(len(captchaColors))],
+			mathrand.IntN(29)-14, centerX, centerY,
+			digit,
+		)
+	}
+
+	for i := 0; i < 2+mathrand.IntN(2); i++ {
+		fmt.Fprintf(&svg,
+			`<path d="M%.1f %.1f Q%.1f %.1f %.1f %.1f" fill="none" stroke="#%s" stroke-width="%.1f" opacity="%.2f"/>`,
+			mathrand.Float64()*18,
+			6+mathrand.Float64()*36,
+			30+mathrand.Float64()*84,
+			mathrand.Float64()*48,
+			126+mathrand.Float64()*18,
+			6+mathrand.Float64()*36,
+			captchaNoiseColors[mathrand.IntN(len(captchaNoiseColors))],
+			0.8+mathrand.Float64()*0.8,
+			0.35+mathrand.Float64()*0.3,
+		)
+	}
+
+	svg.WriteString(`</svg>`)
 	return "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svg.String()))
 }
