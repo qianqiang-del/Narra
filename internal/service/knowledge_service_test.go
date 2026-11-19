@@ -469,19 +469,23 @@ func TestSubmitFileMapsRequestAndResult(t *testing.T) {
 		Chunks: 51,
 	}}
 	svc := newTestService(querier, ingestion)
+	digest := strings.Repeat("a", 64)
 
 	document, err := svc.SubmitFile(context.Background(), requestdto.KnowledgeIngestFile{
 		Path:       "/tmp/upload.md",
 		Title:      "设计文档",
 		SourceType: testDocumentSource,
 		SourceURI:  "设计.md",
+		FileSHA256: digest,
 	})
 	if err != nil {
 		t.Fatalf("提交失败: %v", err)
 	}
 
-	// 请求的四个字段一个都不能丢，否则收录端拿不到路径或标题。
-	want := rag.FileInput{Path: "/tmp/upload.md", Title: "设计文档", SourceType: testDocumentSource, SourceURI: "设计.md"}
+	want := rag.FileInput{
+		Path: "/tmp/upload.md", Title: "设计文档", SourceType: testDocumentSource,
+		SourceURI: "设计.md", FileSHA256: digest,
+	}
 	if ingestion.fileInput != want {
 		t.Errorf("收录输入 = %+v，期望 %+v", ingestion.fileInput, want)
 	}

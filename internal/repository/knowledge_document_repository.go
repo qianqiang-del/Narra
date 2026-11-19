@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 
 	"narra/internal/model/entity"
@@ -187,7 +188,23 @@ func NewKnowledgeDocumentRepository(db *gorm.DB) KnowledgeDocumentRepository {
 
 // Create 插入一篇文档。实体里没有关联字段，所以不存在级联写入的副作用。
 func (r *knowledgeDocumentRepository) Create(ctx context.Context, document *entity.KnowledgeDocument) error {
-	return conn(ctx, r.db).Create(document).Error
+	err := conn(ctx, r.db).Create(document).Error
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "knowledge_documents_owner_file_sha256_key" {
+		return gorm.ErrDuplicatedKey
+	}
+	return err
+}
+
+func (r *knowledgeDocumentRepository) FindKnowledgeFileBySHA256(ctx context.Context, ownerID uint64, digest string) (*entity.KnowledgeDocument, error) {
+	var document entity.KnowledgeDocument
+	err := conn(ctx, r.db).Select("id", "status").
+		Where("kind = 'knowledge' AND owner_id = ? AND file_sha256 = ?", ownerID, digest).
+		Take(&document).Error
+	if err != nil {
+		return nil, err
+	}
+	return &document, nil
 }
 
 // GetByID 按主键取一篇文档，查不到时把 gorm.ErrRecordNotFound 原样交给调用方，

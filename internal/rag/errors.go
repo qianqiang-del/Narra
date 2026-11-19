@@ -39,6 +39,9 @@ var (
 	// 连原文件都没了才是真的无路可走，只能请用户重新上传。
 	ErrRecoveryInputMissing = errors.New("这次收录的输入已经全部丢失，请重新上传")
 
+	// ErrDuplicateKnowledgeFile 表示当前账号已有相同原始内容的知识库文件。
+	ErrDuplicateKnowledgeFile = errors.New("同一文件已存在于知识库")
+
 	// ErrIngestQueueFull 表示收录队列已经达到容量上限（pending + processing 行数），
 	// 此刻不再接受新的文件上传或重试入队。
 	//

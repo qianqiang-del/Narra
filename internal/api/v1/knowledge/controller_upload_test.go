@@ -3,6 +3,7 @@ package knowledge
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -69,7 +70,7 @@ func newUploadController(t *testing.T, svc service.KnowledgeService, limits conf
 //
 // field 是文件字段名（files 或 file）；files 会按顺序写进同一个请求，
 // 与浏览器多选后一次提交的形状一致。
-func uploadRequest(t *testing.T, field string, files []uploadTestFile) (*gin.Context, *httptest.ResponseRecorder) {
+func uploadRequest(t *testing.T, field string, files []uploadTestFile, purpose ...string) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -82,6 +83,11 @@ func uploadRequest(t *testing.T, field string, files []uploadTestFile) (*gin.Con
 		}
 		if _, err := part.Write([]byte(file.content)); err != nil {
 			t.Fatalf("写入 multipart 内容失败: %v", err)
+		}
+	}
+	if len(purpose) > 0 {
+		if err := writer.WriteField("purpose", purpose[0]); err != nil {
+			t.Fatalf("写入上传用途失败: %v", err)
 		}
 	}
 	if err := writer.Close(); err != nil {
@@ -125,10 +131,11 @@ func pendingEntries(t *testing.T, root string) []os.DirEntry {
 func TestUploadBatchAcceptsFiles(t *testing.T) {
 	svc := &stubUploadService{}
 	controller, root := newUploadController(t, svc, config.KnowledgeIngestConfig{})
-	ctx, recorder := uploadRequest(t, uploadFieldPlural, []uploadTestFile{
+	files := []uploadTestFile{
 		{name: "设计.md", content: "# 设计\n\n正文。"},
 		{name: "架构.md", content: "# 架构\n\n正文。"},
-	})
+	}
+	ctx, recorder := uploadRequest(t, uploadFieldPlural, files)
 
 	controller.Upload(ctx)
 
@@ -176,9 +183,34 @@ func TestUploadBatchAcceptsFiles(t *testing.T) {
 		if !stagingDir.MatchString(filepath.Base(dir)) {
 			t.Errorf("第 %d 个文件的目录名 %q 不是时间戳格式", index+1, filepath.Base(dir))
 		}
-		if _, err := os.Stat(input.Path); err != nil {
-			t.Errorf("第 %d 个文件应当已落盘: %v", index+1, err)
+		content, err := os.ReadFile(input.Path)
+		if err != nil {
+			t.Fatalf("第 %d 个文件应当已落盘: %v", index+1, err)
 		}
+		if string(content) != files[index].content {
+			t.Errorf("第 %d 个文件的暂存内容与上传内容不一致", index+1)
+		}
+		if want := fmt.Sprintf("%x", sha256.Sum256([]byte(files[index].content))); input.FileSHA256 != want {
+			t.Errorf("第 %d 个文件的 SHA-256 = %q，期望 %q", index+1, input.FileSHA256, want)
+		}
+	}
+}
+
+func TestUploadMaterialSkipsFileDigest(t *testing.T) {
+	svc := &stubUploadService{}
+	controller, _ := newUploadController(t, svc, config.KnowledgeIngestConfig{})
+	ctx, recorder := uploadRequest(t, uploadFieldPlural, []uploadTestFile{
+		{name: "讲义.md", content: "# 讲义"},
+	}, entity.KnowledgeDocumentKindMaterial)
+
+	controller.Upload(ctx)
+
+	if recorder.Code != http.StatusAccepted || len(svc.submitted) != 1 {
+		t.Fatalf("课程材料应提交一次并返回 202，实际状态 %d、提交 %d 次", recorder.Code, len(svc.submitted))
+	}
+	input := svc.submitted[0]
+	if input.Purpose != entity.KnowledgeDocumentKindMaterial || input.FileSHA256 != "" {
+		t.Fatalf("课程材料应保留用途且不传文件摘要，实际用途 %q、摘要 %q", input.Purpose, input.FileSHA256)
 	}
 }
 
@@ -253,6 +285,40 @@ func TestUploadDiscardsStagedFileWhenSubmitFails(t *testing.T) {
 	}
 	if entries := pendingEntries(t, root); len(entries) != 0 {
 		t.Errorf("提交失败后暂存目录应当被清掉，实际残留 %d 个", len(entries))
+	}
+}
+
+func TestUploadBatchRejectsOnlyDuplicate(t *testing.T) {
+	duplicateErr := fmt.Errorf("%w，原文件正在收录", service.ErrDuplicateKnowledgeFile)
+	svc := &stubUploadService{errs: []error{nil, duplicateErr}}
+	controller, root := newUploadController(t, svc, config.KnowledgeIngestConfig{})
+	ctx, recorder := uploadRequest(t, uploadFieldPlural, []uploadTestFile{
+		{name: "设计.md", content: "正文\r\n"},
+		{name: "设计备份.md", content: "正文\r\n"},
+	})
+
+	controller.Upload(ctx)
+
+	if recorder.Code != http.StatusAccepted || len(svc.submitted) != 2 {
+		t.Fatalf("期望 202 且提交两项，实际状态 %d、提交 %d 次", recorder.Code, len(svc.submitted))
+	}
+	first, duplicate := svc.submitted[0], svc.submitted[1]
+	if first.FileSHA256 == "" || duplicate.FileSHA256 != first.FileSHA256 {
+		t.Errorf("不同文件名的相同字节应产生相同的文件摘要")
+	}
+	var batch responsedto.KnowledgeIngestBatch
+	if err := json.Unmarshal(decodeEnvelope(t, recorder).Data, &batch); err != nil {
+		t.Fatalf("data 不是批量结果: %v", err)
+	}
+	if batch.Accepted != 1 || batch.Rejected != 1 || len(batch.Items) != 2 {
+		t.Fatalf("期望 1 项入队、1 项被拒，实际 %+v", batch)
+	}
+	item := batch.Items[1]
+	if item.Status != responsedto.KnowledgeIngestItemStatusRejected || item.DocumentID != nil || item.Error != duplicateErr.Error() {
+		t.Errorf("重复项应带拒绝原因且无文档 ID，实际 %+v", item)
+	}
+	if entries := pendingEntries(t, root); len(entries) != 1 || entries[0].Name() != filepath.Base(filepath.Dir(first.Path)) {
+		t.Errorf("应只保留已入队文件的暂存目录，实际 %+v", entries)
 	}
 }
 
@@ -352,18 +418,27 @@ func TestUploadLegacySingleFileKeepsShape(t *testing.T) {
 	}
 }
 
-func TestUploadLegacySingleFileConflictWhenQueueFull(t *testing.T) {
-	svc := &stubUploadService{errs: []error{fmt.Errorf("包装: %w", service.ErrIngestQueueFull)}}
-	controller, _ := newUploadController(t, svc, config.KnowledgeIngestConfig{})
-	ctx, recorder := uploadRequest(t, uploadFieldSingular, []uploadTestFile{
-		{name: "设计.md", content: "# 设计"},
-	})
+func TestUploadLegacySingleFileConflict(t *testing.T) {
+	for _, submitErr := range []error{
+		fmt.Errorf("%w，请稍后重试", service.ErrIngestQueueFull),
+		fmt.Errorf("%w，原文件正在收录", service.ErrDuplicateKnowledgeFile),
+	} {
+		t.Run(submitErr.Error(), func(t *testing.T) {
+			svc := &stubUploadService{errs: []error{submitErr}}
+			controller, root := newUploadController(t, svc, config.KnowledgeIngestConfig{})
+			ctx, recorder := uploadRequest(t, uploadFieldSingular, []uploadTestFile{
+				{name: "设计.md", content: "# 设计"},
+			})
+			controller.Upload(ctx)
 
-	controller.Upload(ctx)
-
-	env := decodeEnvelope(t, recorder)
-	if env.Code != apperrors.CodeConflict {
-		t.Fatalf("信封 code = %d，期望 %d（队列满按 409 处理）", env.Code, apperrors.CodeConflict)
+			env := decodeEnvelope(t, recorder)
+			if recorder.Code != http.StatusOK || env.Code != apperrors.CodeConflict || env.Message != submitErr.Error() {
+				t.Fatalf("期望 HTTP 200、业务码 409 且带原错误，实际 HTTP %d、信封 %+v", recorder.Code, env)
+			}
+			if entries := pendingEntries(t, root); len(entries) != 0 {
+				t.Errorf("提交冲突后暂存目录应当被清掉，实际残留 %d 个", len(entries))
+			}
+		})
 	}
 }
 
