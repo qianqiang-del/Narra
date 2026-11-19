@@ -36,6 +36,9 @@ type KnowledgeDocumentRepository interface {
 	// 落库后 document.ID 会被回填，后续的切片与向量都要挂在它下面。
 	Create(ctx context.Context, document *entity.KnowledgeDocument) error
 
+	// FindKnowledgeFileBySHA256 按账号和原件摘要取知识库文档的 ID 与状态。
+	FindKnowledgeFileBySHA256(ctx context.Context, ownerID uint64, digest string) (*entity.KnowledgeDocument, error)
+
 	// GetByID 按主键取文档。查不到返回 gorm.ErrRecordNotFound。
 	GetByID(ctx context.Context, id uint64) (*entity.KnowledgeDocument, error)
 	GetByIDAndOwner(ctx context.Context, id, ownerID uint64) (*entity.KnowledgeDocument, error)

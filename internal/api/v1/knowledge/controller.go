@@ -2,9 +2,12 @@ package knowledge
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"mime/multipart"
 	"net/http"
@@ -225,7 +228,7 @@ func (c *Controller) submitUpload(
 		return item, nil, err
 	}
 
-	path, err := c.stageUpload(ctx, header)
+	path, fileSHA256, err := c.stageUpload(header, purpose == "")
 	if err != nil {
 		err = fmt.Errorf("保存上传文件失败: %w", err)
 		item.Error = err.Error()
@@ -239,7 +242,8 @@ func (c *Controller) submitUpload(
 		// 来源标识用用户看到的原始文件名，而不是服务器上的临时路径。
 		SourceURI: filepath.Base(header.Filename),
 		// 字节数取自接收到的文件头，是这份文件在上传记录里唯一能显示的大小信息。
-		SizeBytes: header.Size,
+		SizeBytes:  header.Size,
+		FileSHA256: fileSHA256,
 		// 用途标记：material 表示课程材料（临时，未关联课堂时到期清理）。
 		Purpose: purpose,
 	})
@@ -257,9 +261,8 @@ func (c *Controller) submitUpload(
 	return item, &document, nil
 }
 
-// respondLegacyUpload 用旧契约回单文件上传：成功返回文档对象（HTTP 200），
-// 失败按原因翻成 409 / 400 —— 与批量接口的 202 + 逐项结果刻意不同，
-// 只为让还没升级的调用方行为不变。
+// respondLegacyUpload 用旧契约回单文件上传。成功返回文档对象，队列满或文件重复
+// 返回业务码 409，其余失败返回业务码 400。
 func (c *Controller) respondLegacyUpload(
 	ctx *gin.Context,
 	item responsedto.KnowledgeIngestItem,
@@ -270,7 +273,7 @@ func (c *Controller) respondLegacyUpload(
 		response.SuccessWithMessage(ctx, "文档已收录", document)
 		return
 	}
-	if errors.Is(err, service.ErrIngestQueueFull) {
+	if errors.Is(err, service.ErrIngestQueueFull) || errors.Is(err, service.ErrDuplicateKnowledgeFile) {
 		response.Conflict(ctx, item.Error)
 		return
 	}
@@ -292,7 +295,7 @@ func summarizeIngestBatch(items []responsedto.KnowledgeIngestItem) responsedto.K
 	}
 }
 
-// stageUpload 把一个上传文件落到独立暂存目录里，返回最终路径。
+// stageUpload 把一个上传文件落到独立暂存目录里，按需计算原始文件摘要。
 //
 // 目录名用服务器本地时间的纳秒时间戳（如 20261009-214512.123456789）：按名字
 // 排序就是按上传时间排序，翻磁盘找陈旧目录不用查库，与日志也对得上同一条时间线。
@@ -303,12 +306,15 @@ func summarizeIngestBatch(items []responsedto.KnowledgeIngestItem) responsedto.K
 // 文件名必须由服务端固定，不能沿用用户给的名字：那个名字可能带 ../ 或盘符，
 // 拼进路径等于把"往任意位置写文件"的能力交给调用方。但后缀要保留 ——
 // 解析器正是按后缀选实现的（见 safeExtension）。
-//
-// 落盘后核对实际字节数：SaveUploadedFile 不检查 Close 的写入错误，磁盘写满时
-// 可能留下一个被截断的文件，而它一旦建了 pending 行就会被 worker 拿去解析。
-func (c *Controller) stageUpload(ctx *gin.Context, header *multipart.FileHeader) (string, error) {
+func (c *Controller) stageUpload(header *multipart.FileHeader, hashFile bool) (string, string, error) {
+	source, err := header.Open()
+	if err != nil {
+		return "", "", err
+	}
+	defer source.Close()
+
 	if err := os.MkdirAll(c.pendingRoot(), 0o755); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	var lastErr error
@@ -319,26 +325,42 @@ func (c *Controller) stageUpload(ctx *gin.Context, header *multipart.FileHeader)
 				lastErr = err
 				continue
 			}
-			return "", err
+			return "", "", err
 		}
 
 		path := filepath.Join(directory, "upload"+safeExtension(header.Filename))
-		if err := ctx.SaveUploadedFile(header, path); err != nil {
-			_ = os.RemoveAll(directory)
-			return "", err
-		}
-		info, err := os.Stat(path)
+		fileSHA256, err := writeStagedUpload(path, source, header.Size, hashFile)
 		if err != nil {
-			_ = os.RemoveAll(directory)
-			return "", err
+			c.discardUpload(path)
+			return "", "", err
 		}
-		if info.Size() != header.Size {
-			_ = os.RemoveAll(directory)
-			return "", fmt.Errorf("写入 %d 字节，与上传声明的大小 %d 不一致", info.Size(), header.Size)
-		}
-		return path, nil
+		return path, fileSHA256, nil
 	}
-	return "", fmt.Errorf("生成暂存目录名多次冲突: %w", lastErr)
+	return "", "", fmt.Errorf("生成暂存目录名多次冲突: %w", lastErr)
+}
+
+func writeStagedUpload(path string, source io.Reader, expectedSize int64, hashFile bool) (string, error) {
+	file, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	var writer io.Writer = file
+	digest := sha256.New()
+	if hashFile {
+		writer = io.MultiWriter(file, digest)
+	}
+
+	written, copyErr := io.Copy(writer, source)
+	if err := errors.Join(copyErr, file.Close()); err != nil {
+		return "", err
+	}
+	if written != expectedSize {
+		return "", fmt.Errorf("写入 %d 字节，与上传声明的大小 %d 不一致", written, expectedSize)
+	}
+	if hashFile {
+		return hex.EncodeToString(digest.Sum(nil)), nil
+	}
+	return "", nil
 }
 
 // discardUpload 删掉一份已经落盘但没能入队的原件，失败时留 warning。

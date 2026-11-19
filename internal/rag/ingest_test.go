@@ -121,6 +121,15 @@ func (s *fakeDocumentStore) GetByID(ctx context.Context, id uint64) (*entity.Kno
 	return s.created, nil
 }
 
+func (s *fakeDocumentStore) FindKnowledgeFileBySHA256(_ context.Context, ownerID uint64, digest string) (*entity.KnowledgeDocument, error) {
+	document := s.created
+	if document == nil || document.OwnerID != ownerID || document.Kind != entity.KnowledgeDocumentKindKnowledge ||
+		document.FileSHA256 == nil || *document.FileSHA256 != digest {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return document, nil
+}
+
 func (s *fakeDocumentStore) MarkProcessing(ctx context.Context, id uint64) error {
 	s.processing = true
 	return nil

@@ -53,7 +53,7 @@ const (
 // 处理完就退出索引，索引一直很小。它的 WHERE 谓词含逗号，写法见 CreatedAt 字段上的注释。
 type KnowledgeDocument struct {
 	BaseModel
-	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_knowledge_documents_owner_id;comment:所属用户 ID" json:"-"`
+	OwnerID uint64 `gorm:"column:owner_id;not null;index:idx_knowledge_documents_owner_id;uniqueIndex:knowledge_documents_owner_file_sha256_key,priority:1,where:kind = 'knowledge' AND file_sha256 IS NOT NULL;comment:所属用户 ID" json:"-"`
 	Owner   *User  `gorm:"foreignKey:OwnerID;constraint:knowledge_documents_owner_id_fkey,OnDelete:RESTRICT" json:"-"`
 
 	Title           string  `gorm:"column:title;type:varchar(300);not null;comment:文章展示名，上限 300 字；留空时由正文首个一级标题、再退到原始文件名顶替" json:"title"`                                                                                                                                                  // 文章展示标题
@@ -63,6 +63,9 @@ type KnowledgeDocument struct {
 	ContentChecksum *string `gorm:"column:content_checksum;type:char(64);comment:正文的 SHA-256 摘要（64 位十六进制），用于判断内容变没变、要不要重新切片" json:"content_checksum"`                                                                                                                                     // 原文内容的 SHA-256 摘要，用于判断是否需要重新切片
 	Enabled         bool    `gorm:"column:enabled;not null;comment:是否参与知识检索；为 false 时本文档的切片不会被召回" json:"enabled"`                                                                                                                                                                         // 是否允许该文章的切片参与 RAG 检索
 	Status          string  `gorm:"column:status;type:varchar(32);not null;default:pending;check:knowledge_documents_status_check,status IN ('pending', 'processing', 'ready', 'failed');comment:处理状态，取值 pending（排队）/ processing（处理中）/ ready（可用）/ failed（失败，原因在 metadata）" json:"status"` // 处理状态：pending、processing、ready 或 failed
+
+	// FileSHA256 是上传原件的摘要，用于在同一账号内识别重复的知识库文件。
+	FileSHA256 *string `gorm:"column:file_sha256;type:char(64);uniqueIndex:knowledge_documents_owner_file_sha256_key,priority:2;comment:上传原件的 SHA-256 摘要" json:"-"`
 
 	// Kind 是文档类型：knowledge 知识库文档 / material 课程材料。材料不参与全局检索，
 	// 只被它关联的课堂按 document_id 定向取用；知识库文档默认可见、可检索。

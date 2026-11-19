@@ -21,6 +21,8 @@ type KnowledgeIngestFile struct {
 	// SizeBytes 原始文件的字节数。只写进上传记录供界面显示"这份文件有多大"，
 	// 收录链路本身不用它；0 表示调用方没提供。
 	SizeBytes int64 `json:"size_bytes"`
+	// FileSHA256 由服务端根据暂存的原始字节计算，用于普通知识库上传去重。
+	FileSHA256 string `json:"-"`
 	// Purpose 是入库用途标记。空 = 普通知识库文档；取值 material 表示这是课程材料：
 	// 未关联课堂时带 expires_at，到期由后台清理；关联后长期保留。取值见 entity.KnowledgeDocumentKindXxx。
 	Purpose string `json:"purpose"`

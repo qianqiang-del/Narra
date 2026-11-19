@@ -122,6 +122,7 @@ type FileInput struct {
 	SourceType string // manual / import；为空时按 import 处理
 	SourceURI  string // 用户看到的来源标识；为空时取 Path 的文件名部分
 	SizeBytes  int64  // 原始文件的字节数，只写进上传记录供界面显示；0 表示调用方没提供
+	FileSHA256 string // 服务端暂存知识库上传原件时计算的 SHA-256
 	// Purpose 是入库用途标记。空 = 普通知识库文档；material = 课程材料（临时，
 	// 未关联课堂时带 expires_at，到期由后台清理）。取值见 entity.KnowledgeDocumentKindXxx。
 	Purpose string
@@ -271,6 +272,9 @@ type Ingester struct {
 // 消费方有两处：Worker（抢任务、处理、收尾）与 Ingester（SubmitFile 发任务、
 // Retry 重新入队）。
 type FileTaskStore interface {
+	// FindKnowledgeFileBySHA256 按账号查找相同原件，未命中返回 gorm.ErrRecordNotFound。
+	FindKnowledgeFileBySHA256(ctx context.Context, ownerID uint64, digest string) (*entity.KnowledgeDocument, error)
+
 	// SetMetadata 覆盖文档的 metadata，用于记下上传的暂存路径与标题回落标记。
 	SetMetadata(context.Context, uint64, json.RawMessage) error
 
@@ -469,6 +473,15 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 	if title == "" {
 		title = sourceURI
 	}
+	fileSHA256 := input.FileSHA256
+	if input.Purpose == entity.KnowledgeDocumentKindMaterial {
+		fileSHA256 = ""
+	}
+	if fileSHA256 != "" {
+		if err := checkKnowledgeFileDuplicate(ctx, store, fileSHA256); err != nil {
+			return IngestResult{}, err
+		}
+	}
 	metadata := map[string]any{
 		"upload_path":    path,
 		"explicit_title": strings.TrimSpace(input.Title) != "",
@@ -495,8 +508,11 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 			return err
 		}
 
-		created, err := i.createDocument(ctx, title, sourceType, sourceURI, input.Purpose)
+		created, err := i.createDocument(ctx, title, sourceType, sourceURI, input.Purpose, fileSHA256)
 		if err != nil {
+			if fileSHA256 != "" && errors.Is(err, gorm.ErrDuplicatedKey) {
+				return ErrDuplicateKnowledgeFile
+			}
 			return err
 		}
 		if err := store.SetMetadata(ctx, created.ID, payload); err != nil {
@@ -533,9 +549,33 @@ func (i *Ingester) SubmitFile(ctx context.Context, input FileInput) (IngestResul
 					zap.String("key", uploadKey), zap.Error(deleteErr))
 			}
 		}
+		// 另一次提交可能在前置检查之后入队，也可能抢走了最后一个队列名额。
+		if fileSHA256 != "" && (errors.Is(err, ErrDuplicateKnowledgeFile) || errors.Is(err, ErrIngestQueueFull)) {
+			if duplicate := checkKnowledgeFileDuplicate(ctx, store, fileSHA256); errors.Is(duplicate, ErrDuplicateKnowledgeFile) {
+				err = duplicate
+			}
+		}
 		return IngestResult{}, err
 	}
 	return IngestResult{Document: document}, nil
+}
+
+func checkKnowledgeFileDuplicate(ctx context.Context, store FileTaskStore, digest string) error {
+	document, err := store.FindKnowledgeFileBySHA256(ctx, ownership.FromContext(ctx), digest)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("检查文件是否重复失败: %w", err)
+	}
+	switch document.Status {
+	case entity.KnowledgeDocumentStatusPending, entity.KnowledgeDocumentStatusProcessing:
+		return fmt.Errorf("%w，原文件正在收录", ErrDuplicateKnowledgeFile)
+	case entity.KnowledgeDocumentStatusFailed:
+		return fmt.Errorf("%w，上次收录失败，请到上传记录重试；如果恢复材料已丢失，删除失败记录后再上传", ErrDuplicateKnowledgeFile)
+	default:
+		return ErrDuplicateKnowledgeFile
+	}
 }
 
 // FetchOriginal 把一份原件从对象存储下载到本地路径，供 Worker 在解析阶段使用。
@@ -884,7 +924,7 @@ func (i *Ingester) IngestText(ctx context.Context, input TextInput) (IngestResul
 		title = preferHeadingTitle(firstLineTitle(content), content)
 	}
 
-	document, err := i.createDocument(ctx, title, sourceType, strings.TrimSpace(input.SourceURI), "")
+	document, err := i.createDocument(ctx, title, sourceType, strings.TrimSpace(input.SourceURI), "", "")
 	if err != nil {
 		return IngestResult{}, err
 	}
@@ -1029,11 +1069,12 @@ func (i *Ingester) cleanupUnusedModels(ctx context.Context, ownerID uint64) {
 //
 // purpose = material 时按课程材料入库：kind 标 material 并带上 expires_at（未关联
 // 课堂时到期由 retention 清理）；普通知识库文档 kind = knowledge、expires_at 为空。
-func (i *Ingester) createDocument(ctx context.Context, title, sourceType, sourceURI, purpose string) (*entity.KnowledgeDocument, error) {
+func (i *Ingester) createDocument(ctx context.Context, title, sourceType, sourceURI, purpose, fileSHA256 string) (*entity.KnowledgeDocument, error) {
 	document := &entity.KnowledgeDocument{
 		OwnerID:    ownership.FromContext(ctx),
 		Title:      truncateTitle(title),
 		SourceType: sourceType,
+		FileSHA256: optionalString(fileSHA256),
 		Enabled:    true,
 		Status:     entity.KnowledgeDocumentStatusPending,
 		Kind:       entity.KnowledgeDocumentKindKnowledge,

@@ -142,6 +142,9 @@ type retriever interface {
 // 哨兵值直接复用 rag 侧的：容量判定与报错都在收录事务里做，两边认的必须是同一个值。
 var ErrIngestQueueFull = rag.ErrIngestQueueFull
 
+// ErrDuplicateKnowledgeFile 表示当前账号已提交过相同的知识库文件。
+var ErrDuplicateKnowledgeFile = rag.ErrDuplicateKnowledgeFile
+
 // ErrRetryNotFailed 表示这份文档不是失败状态，不需要（也不能）重试。
 //
 // 与 ErrIngestQueueFull 同属"现在不行"这一类的可判定错误，接口层一并翻成 409。
@@ -201,6 +204,7 @@ func (s *knowledgeService) SubmitFile(ctx context.Context, input requestdto.Know
 		SourceType: input.SourceType,
 		SourceURI:  input.SourceURI,
 		SizeBytes:  input.SizeBytes,
+		FileSHA256: input.FileSHA256,
 		Purpose:    input.Purpose,
 	})
 	if err != nil {
@@ -278,6 +282,9 @@ func (s *knowledgeService) Retry(ctx context.Context, id uint64) (responsedto.Kn
 	}
 	stage, err := s.resolveRecoveryStage(ctx, document)
 	if err != nil {
+		if errors.Is(err, ErrRecoveryInputMissing) && document.FileSHA256 != nil {
+			err = fmt.Errorf("%w（请先删除这条失败的上传记录）", err)
+		}
 		return responsedto.KnowledgeDocument{}, err
 	}
 
