@@ -62,3 +62,28 @@ test('keeps HTML as text instead of executable markup', () => {
     { type: 'paragraph', children: [{ type: 'text', value: '<script>alert(1)</script>' }] },
   ])
 })
+
+test('renders local and OSS image references and normal links in document previews', () => {
+  const local = '/knowledge/images/42/0123456789abcdef.png'
+  const oss = 'https://bucket.example.com/knowledge/images/42/fedcba9876543210.jpg?token=a%2Bb'
+  const source = `正文\n![架构图](${local})\n\n![](<${oss}>)\n\n[打开原图](${local})`
+
+  const [first, second, third] = parseMarkdown(source, true)
+  assert.deepEqual(first.children, [
+    { type: 'text', value: '正文\n' },
+    { type: 'image', url: local, alt: '架构图' },
+  ])
+  assert.deepEqual(second.children, [{ type: 'image', url: oss, alt: '' }])
+  assert.deepEqual(third.children, [{ type: 'link', url: local, label: '打开原图' }])
+  assert.equal(parseMarkdown(source)[0].children[0].value, `正文\n![架构图](${local})`)
+})
+
+test('leaves unsafe media URLs, raw HTML and code inert in document previews', () => {
+  const reference = '![example](https://cdn.example.com/picture.png)'
+  const markup = '[script](javascript:alert) ![remote](//cdn.example.com/x.png) <img src="https://cdn.example.com/x.png">'
+  const [text, inline, fenced] = parseMarkdown(`${markup}\n\n\`${reference}\`\n\n\`\`\`md\n${reference}\n\`\`\``, true)
+
+  assert.deepEqual(text.children, [{ type: 'text', value: markup }])
+  assert.deepEqual(inline.children, [{ type: 'code', value: reference }])
+  assert.deepEqual(fenced, { type: 'codeBlock', language: 'md', value: reference })
+})

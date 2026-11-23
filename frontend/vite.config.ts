@@ -17,13 +17,17 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // 后端为 Go 服务，开发期统一走 /api 前缀代理
+    // 开发期将 API 与同源媒体转发给 Go 服务。
     proxy: {
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
       '/audio': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/knowledge/images/': {
         target: 'http://localhost:8080',
         changeOrigin: true,
       },

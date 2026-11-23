@@ -557,6 +557,7 @@ export default {
       loading: 'Loading…',
       empty: 'No parsed text',
       close: 'Close',
+      imageUnavailable: 'Image failed to load. Open the original.',
     },
     remove: {
       title: 'Delete knowledge base',

@@ -3,6 +3,8 @@ export type MarkdownInlineNode =
   | { type: 'strong'; children: MarkdownInlineNode[] }
   | { type: 'emphasis'; children: MarkdownInlineNode[] }
   | { type: 'code'; value: string }
+  | { type: 'link'; url: string; label: string }
+  | { type: 'image'; url: string; alt: string }
 
 export type MarkdownBlockNode =
   | { type: 'paragraph'; children: MarkdownInlineNode[] }
@@ -49,12 +51,41 @@ function pushText(nodes: MarkdownInlineNode[], value: string) {
   else nodes.push({ type: 'text', value })
 }
 
-export function parseInline(source: string): MarkdownInlineNode[] {
+const markdownLink = /^(!?)\[([^\]\n]*)\]\((?:<([^\s<>]+)>|([^\s<>()]+))(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'))?[ \t]*\)/
+
+function isPreviewURL(raw: string): boolean {
+  if (/[\s\\\u0000-\u001f\u007f]/.test(raw)) return false
+  if (!/^https?:\/\//i.test(raw) && !/^\/(?!\/)/.test(raw)) return false
+  try {
+    const url = new URL(raw, 'https://preview.invalid')
+    return !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
+export function parseInline(source: string, linksAndImages = false): MarkdownInlineNode[] {
   const nodes: MarkdownInlineNode[] = []
   let cursor = 0
 
   while (cursor < source.length) {
     const rest = source.slice(cursor)
+    if (linksAndImages && (rest[0] === '[' || rest[0] === '!')) {
+      const reference = markdownLink.exec(rest)
+      if (reference) {
+        const [, image, label, wrappedURL, plainURL] = reference
+        const url = wrappedURL ?? plainURL
+        if (!isPreviewURL(url) || source[cursor - 1] === '\\') {
+          pushText(nodes, reference[0])
+        } else if (image) {
+          nodes.push({ type: 'image', url, alt: label })
+        } else {
+          nodes.push({ type: 'link', url, label: label || url })
+        }
+        cursor += reference[0].length
+        continue
+      }
+    }
     const match = /^(\*\*|__)(.+?)\1|^(\*|_)([^*_\n]+?)\3|^`([^`\n]+)`/.exec(rest)
     if (!match) {
       pushText(nodes, source[cursor])
@@ -63,10 +94,10 @@ export function parseInline(source: string): MarkdownInlineNode[] {
     }
 
     if (match[1]) {
-      nodes.push({ type: 'strong', children: parseInline(match[2]) })
+      nodes.push({ type: 'strong', children: parseInline(match[2], linksAndImages) })
       cursor += match[0].length
     } else if (match[3]) {
-      nodes.push({ type: 'emphasis', children: parseInline(match[4]) })
+      nodes.push({ type: 'emphasis', children: parseInline(match[4], linksAndImages) })
       cursor += match[0].length
     } else {
       nodes.push({ type: 'code', value: match[5] })
@@ -77,16 +108,17 @@ export function parseInline(source: string): MarkdownInlineNode[] {
   return nodes
 }
 
-export function parseMarkdown(source: string): MarkdownBlockNode[] {
+export function parseMarkdown(source: string, linksAndImages = false): MarkdownBlockNode[] {
   const lines = normalizeMarkdown(source.replace(/\r\n?/g, '\n')).split('\n')
   const nodes: MarkdownBlockNode[] = []
+  const inline = (text: string) => parseInline(text, linksAndImages)
   let paragraph: string[] = []
   let list: { ordered: boolean; items: MarkdownInlineNode[][] } | null = null
   let code: { language: string; lines: string[] } | null = null
 
   const flushParagraph = () => {
     if (paragraph.length) {
-      nodes.push({ type: 'paragraph', children: parseInline(paragraph.join('\n')) })
+      nodes.push({ type: 'paragraph', children: inline(paragraph.join('\n')) })
       paragraph = []
     }
   }
@@ -124,9 +156,9 @@ export function parseMarkdown(source: string): MarkdownBlockNode[] {
       lineIndex++
       while (lineIndex + 1 < lines.length && lines[lineIndex + 1].trim() && lines[lineIndex + 1].includes('|') && !/^```/.test(lines[lineIndex + 1])) {
         const cells = tableCells(lines[++lineIndex])
-        rows.push(headers.map((_, index) => parseInline(cells[index] ?? '')))
+        rows.push(headers.map((_, index) => inline(cells[index] ?? '')))
       }
-      nodes.push({ type: 'table', headers: headers.map(parseInline), alignments, rows })
+      nodes.push({ type: 'table', headers: headers.map(inline), alignments, rows })
       continue
     }
 
@@ -134,7 +166,7 @@ export function parseMarkdown(source: string): MarkdownBlockNode[] {
     if (heading) {
       flushParagraph()
       flushList()
-      nodes.push({ type: 'heading', level: heading[1].length, children: parseInline(heading[2]) })
+      nodes.push({ type: 'heading', level: heading[1].length, children: inline(heading[2]) })
       continue
     }
 
@@ -146,7 +178,7 @@ export function parseMarkdown(source: string): MarkdownBlockNode[] {
         flushList()
         list = { ordered, items: [] }
       }
-      list.items.push(parseInline(item[3]))
+      list.items.push(inline(item[3]))
       continue
     }
 
