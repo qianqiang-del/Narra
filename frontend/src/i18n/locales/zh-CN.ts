@@ -553,6 +553,7 @@ export default {
       loading: '加载中…',
       empty: '暂无解析正文',
       close: '关闭',
+      imageUnavailable: '图片加载失败，打开原图',
     },
     remove: {
       title: '删除知识库',

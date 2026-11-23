@@ -3,11 +3,22 @@ import { computed, defineComponent, h, type VNode } from 'vue'
 
 import { parseMarkdown, type MarkdownBlockNode, type MarkdownInlineNode } from '@/lib/markdown'
 
+import MarkdownImage from './MarkdownImage.vue'
+
 function renderInline(nodes: MarkdownInlineNode[]): VNode[] {
   return nodes.map((node) => {
     if (node.type === 'text') return h('span', node.value)
     if (node.type === 'code') {
       return h('code', { class: 'rounded bg-black/5 px-1 py-0.5 font-mono text-[0.9em] dark:bg-white/10' }, node.value)
+    }
+    if (node.type === 'image') return h(MarkdownImage, { src: node.url, alt: node.alt })
+    if (node.type === 'link') {
+      return h('a', {
+        href: node.url,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        class: 'text-primary underline underline-offset-2 hover:text-primary/80',
+      }, node.label)
     }
     return h(node.type === 'strong' ? 'strong' : 'em', {}, renderInline(node.children))
   })
@@ -49,9 +60,10 @@ export default defineComponent({
   name: 'MarkdownText',
   props: {
     source: { type: String, required: true },
+    linksAndImages: Boolean,
   },
   setup(props) {
-    const blocks = computed(() => parseMarkdown(props.source))
+    const blocks = computed(() => parseMarkdown(props.source, props.linksAndImages))
     return () => h('div', { class: 'markdown-text space-y-2' }, blocks.value.map(renderBlock))
   },
 })

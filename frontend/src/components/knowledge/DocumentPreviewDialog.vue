@@ -11,6 +11,7 @@ import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
 
+import MarkdownText from '@/components/shared/MarkdownText.vue'
 import { useKnowledgeStore } from '@/stores/knowledge'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -46,6 +47,7 @@ watch([open, () => props.documentId], async ([isOpen, id]) => {
   <DialogRoot v-model:open="open">
     <DialogPortal>
       <DialogContent
+        :aria-describedby="undefined"
         class="fixed top-1/2 left-1/2 z-[105] flex max-h-[85vh] w-[min(760px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-2xl focus:outline-none"
       >
         <header class="flex items-center gap-3 border-b border-border px-5 py-4">
@@ -66,9 +68,10 @@ watch([open, () => props.documentId], async ([isOpen, id]) => {
         <div v-if="loading" class="flex flex-1 items-center justify-center p-10">
           <Loader2 class="size-5 animate-spin text-zinc-500" />
         </div>
-        <pre v-else class="flex-1 overflow-auto p-5 text-[13px] leading-7 whitespace-pre-wrap">{{
-          content || t('knowledge.preview.empty')
-        }}</pre>
+        <div v-else class="min-h-0 flex-1 overflow-auto p-5 text-[13px] leading-7">
+          <MarkdownText v-if="content" :source="content" links-and-images />
+          <p v-else class="text-muted-foreground">{{ t('knowledge.preview.empty') }}</p>
+        </div>
       </DialogContent>
     </DialogPortal>
   </DialogRoot>
