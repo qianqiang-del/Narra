@@ -1,22 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Narra favicon">
-  <title>Narra 标志（小尺寸简化版）</title>
-  <desc>为 favicon 制作：外围节点由 5 个减为 3 个并放大，圆环加粗，中心点加大，保证 16px 下不糊、不误读。</desc>
-  <style>
-    .ring { stroke: #46639c; }
-    .node { fill: #46639c; }
-    .core { fill: #c3a05c; }
-    @media (prefers-color-scheme: dark) {
-      .ring { stroke: #93a9cf; }
-      .node { fill: #93a9cf; }
-      .core { fill: #d4b678; }
-    }
-  </style>
+  <title>Narra 标签页图标</title>
 
-  <circle class="ring" cx="32" cy="32" r="20" fill="none" stroke-width="5.5"/>
+  <circle cx="32" cy="32" r="20" fill="none" stroke="#46639c" stroke-width="2.5"/>
 
-  <circle class="node" cx="32"    cy="12"    r="6"/>
-  <circle class="node" cx="49.32" cy="41"    r="6"/>
-  <circle class="node" cx="14.68" cy="41"    r="6"/>
+  <g fill="#46639c">
+    <circle cx="32" cy="12" r="3.4"/>
+    <circle cx="51.02" cy="25.82" r="3.4"/>
+    <circle cx="43.76" cy="48.18" r="3.4"/>
+    <circle cx="20.24" cy="48.18" r="3.4"/>
+    <circle cx="12.98" cy="25.82" r="3.4"/>
+  </g>
 
-  <circle class="core" cx="32" cy="32" r="7.5"/>
+  <circle cx="32" cy="32" r="6.2" fill="#c3a05c"/>
 </svg>
