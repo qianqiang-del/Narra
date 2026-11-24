@@ -37,7 +37,6 @@ npm run preview  # 预览构建产物
 
 ```
 frontend/
-├── assets/                     # 静态资源（演示 gif、banner 等，24 个）
 ├── docs/
 │   └── UI-还原文档.md           # ★ 重写界面的唯一依据（1200 行）
 ├── public/                     # 站点资源：avatars/ logos/ vendor/ 图标字体
